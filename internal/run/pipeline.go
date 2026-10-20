@@ -190,6 +190,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			Period:  period,
 			Title:   string(aud),
 			Project: project,
+			Public:  aud == prompt.AudienceCustomer,
 		})
 		if err != nil {
 			return res, fmt.Errorf("write %s: %w", aud, err)
@@ -242,6 +243,7 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 			Period:  period,
 			Title:   "rollup " + string(aud),
 			Project: "",
+			Public:  aud == prompt.AudienceCustomer,
 		})
 		if err != nil {
 			return files, fmt.Errorf("write rollup %s: %w", aud, err)

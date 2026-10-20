@@ -22,13 +22,20 @@ const (
 // Ref is set by the Publisher to whatever identifier the sink uses
 // (filesystem path, GitLab web URL, etc.).
 type Request struct {
-	Name   string   // file basename, e.g. "group-proj--7d--customer.md"
-	Body   []byte   // raw Markdown bytes (no frontmatter wrapping)
-	Force  bool     // overwrite existing target if true
-	Kind   FileKind // per-project or rollup
-	Period string   // "2026-10-19" or "2026-W42" — the MR branch slug
-	Title  string   // "customer" / "team" — used for frontmatter + MR title
-	Project string  // GitLab project path — used for frontmatter UID + tags
+	Name    string   // file basename, e.g. "group-proj--7d--customer.md"
+	Body    []byte   // raw Markdown bytes (no frontmatter wrapping)
+	Force   bool     // overwrite existing target if true
+	Kind    FileKind // per-project or rollup
+	Period  string   // "2026-10-19" or "2026-W42" — the MR branch slug
+	Title   string   // "customer" / "team" — used for frontmatter + MR title
+	Project string   // GitLab project path — used for frontmatter UID + tags
+
+	// Public controls docbuilder's external publication flag (the
+	// `public: true` frontmatter key). True means docbuilder will index
+	// the document for external/customer visibility; false means
+	// internal-only. Caller should set this true for customer-audience
+	// reports and false for team/internal ones.
+	Public bool
 }
 
 // Result is what a Publisher returns from Publish.

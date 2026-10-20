@@ -163,6 +163,11 @@ func TestGitLabPublisher_PublishFlow(t *testing.T) {
 	if res.Ref == "" || !strings.Contains(res.Ref, "summarizer/2026-10-19") {
 		t.Errorf("Ref should be a web URL pointing at the file: %q", res.Ref)
 	}
+	// Path is now <prefix>/<period>/<name> — confirm the period subdir
+	// shows up in the Ref (the web URL encodes the path).
+	if !strings.Contains(res.Ref, "reports/2026-10-19/") {
+		t.Errorf("Ref should include prefix/period subdirectory: %q", res.Ref)
+	}
 }
 
 func TestGitLabPublisher_IdempotentSamePeriod(t *testing.T) {

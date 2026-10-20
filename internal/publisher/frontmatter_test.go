@@ -61,3 +61,24 @@ func TestNewFrontmatter_UIDIsDeterministic(t *testing.T) {
 		t.Errorf("fingerprint should change with body content: %q", fm1.Fingerprint)
 	}
 }
+
+// TestFrontmatter_PublicFlag: when Public is true, render emits
+// "public: true"; when false (default), the key is OMITTED so docbuilder's
+// default (internal) applies.
+func TestFrontmatter_PublicFlag(t *testing.T) {
+	now := time.Now()
+	fm := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"))
+	body := string(fm.Render([]byte("hi")))
+
+	// Default: key absent.
+	if strings.Contains(body, "public:") {
+		t.Errorf("Public false should not emit any 'public:' line, got:\n%s", body)
+	}
+
+	// Set true: line present.
+	fm.Public = true
+	body = string(fm.Render([]byte("hi")))
+	if !strings.Contains(body, "public: true") {
+		t.Errorf("Public true should emit 'public: true', got:\n%s", body)
+	}
+}

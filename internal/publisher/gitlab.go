@@ -66,13 +66,24 @@ func (g *GitLabPublisher) PeriodBranch(period string) string {
 	return g.SourceBranchPrefix + "/" + period
 }
 
-// targetPath builds the repo-relative file path for a given name under
-// the configured prefix.
-func (g *GitLabPublisher) targetPath(name string) string {
+// targetPath builds the repo-relative file path for one report, with a
+// per-period subdirectory so each week's reports stay grouped together.
+// After every week's MR is merged into the default branch, the target
+// repo's main tree looks like:
+//
+//	reports/2026-10-13/  group-proj--7d--customer.md
+//	                     group-proj--7d--team.md
+//	                     combined--7d--customer.md
+//	                     combined--7d--team.md
+//	reports/2026-10-20/  ...
+//
+// Browsable week-by-week in the GitLab UI; docbuilder indexes recursively
+// so all weeks are reachable from the search.
+func (g *GitLabPublisher) targetPath(period, name string) string {
 	if g.Prefix == "" {
-		return name
+		return period + "/" + name
 	}
-	return g.Prefix + "/" + name
+	return g.Prefix + "/" + period + "/" + name
 }
 
 // pathEscape calls url.PathEscape (/) → (%2F); GitLab's Files API takes
@@ -131,13 +142,16 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 	}
 
 	branch := g.PeriodBranch(req.Period)
-	path := g.targetPath(req.Name)
+	path := g.targetPath(req.Period, req.Name)
 
 	// Wrap the body with docbuilder-format frontmatter. The fingerprint
 	// in the frontmatter is a SHA-256 of the raw body, so even if the
 	// title/date change between runs, a content-equivalent re-run is
-	// detectable by docbuilder.
+	// detectable by docbuilder. Public is set per Request — customer
+	// reports get public: true so docbuilder exposes them externally;
+	// team reports omit the key (internal-only).
 	fm := NewFrontmatter(req.Project, req.Title, req.Period, req.Kind, time.Now().UTC(), req.Body)
+	fm.Public = req.Public
 	finalBody := fm.Render(req.Body)
 	encoded := base64.StdEncoding.EncodeToString(finalBody)
 

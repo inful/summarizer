@@ -77,10 +77,27 @@ summarizer run --project group/proj --since 7d
 What you get:
 
 1. For each run, a source branch is created (e.g. `summarizer/2026-10-19`) from `<default_branch>` if it doesn't exist.
-2. Each rendered report (per project, per audience) is committed to that branch, wrapped in **docbuilder-format frontmatter** (`uid`, `title`, `date`, `lastmod`, `fingerprint`, `tags`, `categories`, `aliases`). docbuilder in your `reports` project indexes them automatically.
+2. Each rendered report (per project, per audience) is committed to that branch under `<prefix>/<period>/<filename>`, wrapped in **docbuilder-format frontmatter** (`uid`, `title`, `date`, `lastmod`, `fingerprint`, `tags`, `categories`, `aliases`, plus `public: true` for customer-audience reports). docbuilder in your `reports` project indexes them automatically.
 3. A single MR is opened against `<default_branch>` with body: "Summarizer rollup 2026-10-19".
 4. Re-runs for the same period accumulate commits on the same MR — no branch/MR sprawl.
 5. If a prior MR for the period is already merged, summarizer refuses rather than reopen it; pick a new period slug or merge yourself.
+
+### Resulting directory tree (after every week's MR is merged into `main`):
+
+```
+reports/
+  2026-10-13/
+    group-proj--7d--customer.md    # public: true → customer index
+    group-proj--7d--team.md        # no public key    → internal index
+    other-proj--7d--customer.md   # public: true
+    other-proj--7d--team.md
+    combined--7d--customer.md      # cross-project rollup (when --project appears >1 time)
+    combined--7d--team.md
+  2026-10-20/
+    ...
+```
+
+Each weekly run = one folder. The GitLab UI and `git log` both let you browse week-by-week. `public: true` on customer reports means docbuilder exposes them externally; team reports stay inside the team's index — defense-in-depth on top of the folder layout.
 
 ### Why a separate token
 

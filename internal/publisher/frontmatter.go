@@ -22,6 +22,13 @@ type Frontmatter struct {
 	Tags        []string
 	Categories  []string
 	Aliases     []string
+
+	// Public controls docbuilder's external publication flag. When true,
+	// docbuilder exposes the document beyond the team's internal index;
+	// when false (default), the document is internal-only. Summarizer
+	// sets this to true only for customer-audience reports so the team
+	// reports never bleed into customer-visible surfaces by mistake.
+	Public bool
 }
 
 // Render produces the YAML frontmatter block (including the --- fences)
@@ -36,6 +43,11 @@ func (f Frontmatter) Render(body []byte) []byte {
 	sb.WriteString(fmt.Sprintf("date: %s\n", f.Date.UTC().Format(time.RFC3339)))
 	sb.WriteString(fmt.Sprintf("lastmod: %s\n", f.LastMod.UTC().Format(time.RFC3339)))
 	sb.WriteString(fmt.Sprintf("fingerprint: %s\n", f.Fingerprint))
+	if f.Public {
+		// Only emit when true; absence implies false (docbuilder's
+		// default). Emitting "public: false" would be redundant.
+		sb.WriteString("public: true\n")
+	}
 	if len(f.Categories) > 0 {
 		sb.WriteString("categories:\n")
 		for _, c := range f.Categories {
