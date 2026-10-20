@@ -2,6 +2,17 @@
 
 One command turns a week of GitLab activity into two readable Markdown reports — one for the project's customers, one for the team and their peers.
 
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [`docs/quickstart.md`](docs/quickstart.md) | 30-second operator view: install, env vars, one example run |
+| [`README.md`](README.md) | Full feature reference (this file) |
+| [`docs/how-it-works.md`](docs/how-it-works.md) | Data flow diagram + component map; for extending |
+| [`docs/frontmatter-schema.md`](docs/frontmatter-schema.md) | Every docbuilder key in the published output; for docbuilder operators |
+| [`docs/runbook.md`](docs/runbook.md) | Operator playbook: exit codes, guard scenarios, token rotation, troubleshooting |
+| [`CHANGELOG.md`](CHANGELOG.md) | Notable changes per release |
+
 ## What it does
 
 `fetch → normalize → prompt ×2 → complete ×2 → write`. One invocation, one GitLab project, two Markdown files. MVP; built to be scheduled by cron.
