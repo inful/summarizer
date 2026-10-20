@@ -133,6 +133,12 @@ Why a separate decision API rather than asking the LLM "is this safe?":
 
 Cost: 1 extra `decide.SystemOne` call per LLM generation (so ~4N+2 per multi-project run for N projects). Cheap; the doubled latency is the real consideration.
 
+### Soft-fail on guard errors, hard-fail on injection
+
+If the `/v1/systemone` API is down, returns malformed data, or times out, summarizer logs a `WARN safety guard unavailable` line and proceeds with the LLM call anyway. A flaky decision API does not block your weekly cron — you lose only the second-opinion verdict, not the structural defense (`<data>` markers, system-prompt-level refusal rules).
+
+A **prompt-injection verdict** (`VerdictInjection`) is the one case that hard-fails the run with a non-zero exit. That's the scenario where the guard did its job and we should respect it.
+
 ## `--include-diffs` (team prompt only)
 
 ```bash

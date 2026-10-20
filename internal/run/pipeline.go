@@ -278,23 +278,34 @@ func periodSlug(window time.Duration) string {
 	return time.Now().UTC().Format("2006-01-02")
 }
 
-// checkPrompt runs the rendered prompt through the safety guard. On a
-// "safe" verdict, returns nil and the LLM call proceeds. On "injection"
-// or any guard error, returns a wrapped ErrInjection so main can emit a
-// clean stderr line and exit non-zero — the same hard-fail contract
-// other pipeline errors use.
+// checkPrompt runs the rendered prompt through the safety guard.
+//
+// Verdict handling:
+//   - "safe"            → continue with the LLM call (logged at info level)
+//   - "injection"       → hard-fail. ErrInjection wraps the score so main
+//                         can emit a clean stderr line and exit non-zero.
+//                         This is the case where we DO trust the guard's
+//                         answer — a deliberate prompt-injection attempt
+//                         should stop the run, not slide through.
+//   - guard error       → soft-fail. A flaky /v1/systemone instance
+//                         (network blip, transient 5xx, malformed
+//                         response) does NOT block summary generation.
+//                         The structural defense — <data> markers, system
+//                         prompt refusing to obey data-tagged instructions
+//                         — is still in place; we lose only the second-
+//                         opinions verdict. Logged as a warning so the
+//                         operator notices on the next cron run.
 func (p *Pipeline) checkPrompt(ctx context.Context, project string, aud prompt.Audience, prompt string) error {
 	verdict, score, err := p.Guard.Check(ctx, prompt)
 	if err != nil {
-		return fmt.Errorf("safety check (%s/%s): %w", project, aud, err)
+		fmt.Fprintf(os.Stderr, "summarizer: WARN safety guard unavailable for %s/%s — proceeding without check: %v\n", project, aud, err)
+		return nil
 	}
 	if verdict == safety.VerdictInjection {
-		fmt.Fprintf(os.Stderr, "summarizer: safety guard rejected prompt for %s/%s (score=%.3f >= threshold)\n", project, aud, score)
+		fmt.Fprintf(os.Stderr, "summarizer: safety guard REJECTED prompt for %s/%s (score=%.3f >= threshold)\n", project, aud, score)
 		return fmt.Errorf("%w (score=%.3f): %s/%s", ErrInjection, score, project, aud)
 	}
-	if verdict == safety.VerdictSafe && score > 0 {
-		fmt.Fprintf(os.Stderr, "summarizer: safety guard cleared %s/%s (score=%.3f)\n", project, aud, score)
-	}
+	fmt.Fprintf(os.Stderr, "summarizer: safety guard cleared %s/%s (score=%.3f)\n", project, aud, score)
 	return nil
 }
 
