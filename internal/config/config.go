@@ -59,6 +59,25 @@ type Config struct {
 	// rollup (combined--<since>d--customer.md and --team.md) by feeding
 	// the per-project reports to one extra LLM call per audience.
 	Projects []string `yaml:"projects"`
+
+	// Publish configures the optional GitLab MR-based publisher.
+	// When enabled, the local disk writer is skipped and every report
+	// file is committed to a per-period branch with a reviewable MR
+	// against the configured default branch.
+	Publish PublishConfig `yaml:"publish"`
+}
+
+// PublishConfig is the GitLab-MR publisher configuration. All-zero value
+// means "use the local disk writer"; a non-zero Enabled implies the rest
+// of the fields must be set.
+type PublishConfig struct {
+	Enabled            bool   `yaml:"enabled"`              // when true, use GitLab MR publisher
+	Host               string `yaml:"host"`                 // API base URL (default = same as GitLab host)
+	TokenEnv           string `yaml:"token_env"`            // env var name holding a PAT with api scope on the target project; default "GITLAB_REPORTS_TOKEN"
+	Project            string `yaml:"project"`              // target project path on the same host
+	Prefix             string `yaml:"prefix"`               // repo path prefix for reports (e.g. "reports"); "" = repo root
+	DefaultBranch      string `yaml:"default_branch"`       // MR target; default "main"
+	SourceBranchPrefix string `yaml:"source_branch_prefix"` // e.g. "summarizer"; branch = "<prefix>/<period>"
 }
 
 // Defaults fills in zero values with sensible built-ins.

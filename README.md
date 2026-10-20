@@ -51,6 +51,51 @@ summarizer run --project group/subgroup/project --model Qwen/Qwen2.5-Coder-32B-I
 
 Either bare-host (`http://localhost:11434`) or `/v1`-suffixed (`http://localhost:11434/v1`) forms are accepted; the normalizer canonicalizes to one.
 
+## Publishing to a GitLab project (reviewable MRs)
+
+Default output is local Markdown files. To publish instead — committed to a GitLab project as merge requests — add a `publish:` block to `summarizer.yaml`:
+
+```yaml
+gitlab_host: "https://gitlab.example.com"
+publish:
+  enabled: true
+  host: "https://gitlab.example.com"     # default = same as gitlab_host
+  token_env: "GITLAB_REPORTS_TOKEN"       # PAT with api scope on the *target* project
+  project: "group/reports"               # target project path
+  prefix: "reports"                       # repo path prefix; "" = repo root
+  default_branch: "main"
+  source_branch_prefix: "summarizer"
+```
+
+Then:
+
+```bash
+export GITLAB_REPORTS_TOKEN="glpat-..."   # separate from $GITLAB_TOKEN
+summarizer run --project group/proj --since 7d
+```
+
+What you get:
+
+1. For each run, a source branch is created (e.g. `summarizer/2026-10-19`) from `<default_branch>` if it doesn't exist.
+2. Each rendered report (per project, per audience) is committed to that branch, wrapped in **docbuilder-format frontmatter** (`uid`, `title`, `date`, `lastmod`, `fingerprint`, `tags`, `categories`, `aliases`). docbuilder in your `reports` project indexes them automatically.
+3. A single MR is opened against `<default_branch>` with body: "Summarizer rollup 2026-10-19".
+4. Re-runs for the same period accumulate commits on the same MR — no branch/MR sprawl.
+5. If a prior MR for the period is already merged, summarizer refuses rather than reopen it; pick a new period slug or merge yourself.
+
+### Why a separate token
+
+`GITLAB_TOKEN` (used for source fetch) only needs `read_api` on the source project. The publishing identity (`GITLAB_REPORTS_TOKEN`) needs `api` scope on the *target* project — and a different audit trail. Splitting them means the publishing identity can be revoked without losing the read side, and vice versa.
+
+### Cron-friendly
+
+The same cron line that runs the local-disk variant runs the publishing variant:
+
+```cron
+0 9 * * 1 summarizer run --config /etc/summarizer/subscriptions.yaml --project group/proj --since 7d
+```
+
+When `publish.enabled: true`, the local disk write is skipped — every report file lives only in the GitLab target until a human merges the MR. Summarizer succeeds (exit 0) when the commits land; it does not wait for MR merge.
+
 ## `--include-diffs` (team prompt only)
 
 ```bash

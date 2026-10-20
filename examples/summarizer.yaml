@@ -46,3 +46,26 @@ projects:
   - group/subgroup/project-a
   - group/subgroup/project-b
   - group/subgroup/project-c
+
+# Optional: publish to a GitLab project as MRs for review instead of
+# writing Markdown locally. Reports are committed per-period on a branch
+# named "<source_branch_prefix>/<period>" (default: summarizer/2026-10-19)
+# and opened as a single MR against <default_branch>. Re-runs for the
+# same period accumulate commits on the existing MR.
+#
+# When enabled, the local disk writer is skipped — every report file
+# lives only in the GitLab target until a human merges the MR.
+#
+# `token_env` points to the env var that holds a PAT with api scope on
+# the target project. Defaults to GITLAB_REPORTS_TOKEN. Use a *separate*
+# PAT from the source-fetch one (`GITLAB_TOKEN`) so the operator's read
+# scope and the publishing identity can be revoked independently.
+#
+# publish:
+#   enabled: true
+#   host: "https://gitlab.example.com"  # default = same as gitlab_host above
+#   token_env: "GITLAB_REPORTS_TOKEN"
+#   project: "group/reports"
+#   prefix: "reports"                    # repo path; "" = repo root
+#   default_branch: "main"
+#   source_branch_prefix: "summarizer"

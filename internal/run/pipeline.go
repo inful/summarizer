@@ -17,7 +17,7 @@ import (
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/llm"
 	"github.com/inful/summarizer/internal/prompt"
-	"github.com/inful/summarizer/internal/writer"
+	"github.com/inful/summarizer/internal/publisher"
 )
 
 // Options are run-time parameters resolved at the CLI boundary.
@@ -54,16 +54,18 @@ type Result struct {
 
 // Pipeline is the configured orchestrator. Construct in main.
 type Pipeline struct {
-	Cfg     *config.Config
-	GitLab  *gitlab.Client
-	LLM     llm.Provider
-	Writer  *writer.Writer
-	Opts    Options
+	Cfg       *config.Config
+	GitLab    *gitlab.Client
+	LLM       llm.Provider
+	Publisher publisher.Publisher
+	Opts      Options
 }
 
-// New wires the orchestrator. Caller passes in already-constructed clients.
-func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, w *writer.Writer, opts Options) *Pipeline {
-	return &Pipeline{Cfg: cfg, GitLab: gc, LLM: p, Writer: w, Opts: opts}
+// New wires the orchestrator. Caller passes in already-constructed
+// clients. publisher is chosen by main based on config (local disk
+// by default, GitLab MR when PublishConfig.Enabled is true).
+func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Publisher, opts Options) *Pipeline {
+	return &Pipeline{Cfg: cfg, GitLab: gc, LLM: p, Publisher: pub, Opts: opts}
 }
 
 // Run executes the pipeline. Returns a Result on success; on failure
@@ -179,11 +181,20 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		}
 
 		name := filename(window, project, aud)
-		path, err := p.Writer.Write(p.Cfg.OutputDir, name, []byte(text), p.Opts.Force)
+		period := periodSlug(p.Opts.Since)
+		res2, err := p.Publisher.Publish(publisher.Request{
+			Name:    name,
+			Body:    []byte(text),
+			Force:   p.Opts.Force,
+			Kind:    publisher.KindPerProject,
+			Period:  period,
+			Title:   string(aud),
+			Project: project,
+		})
 		if err != nil {
 			return res, fmt.Errorf("write %s: %w", aud, err)
 		}
-		res.FilesWritten = append(res.FilesWritten, path)
+		res.FilesWritten = append(res.FilesWritten, res2.Ref)
 	}
 
 	return res, nil
@@ -222,13 +233,30 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 		}
 
 		name := rollupFilename(p.Opts.Since, aud)
-		path, err := p.Writer.Write(p.Cfg.OutputDir, name, []byte(resp.Text), p.Opts.Force)
+		period := periodSlug(p.Opts.Since)
+		res2, err := p.Publisher.Publish(publisher.Request{
+			Name:    name,
+			Body:    []byte(resp.Text),
+			Force:   p.Opts.Force,
+			Kind:    publisher.KindRollup,
+			Period:  period,
+			Title:   "rollup " + string(aud),
+			Project: "",
+		})
 		if err != nil {
 			return files, fmt.Errorf("write rollup %s: %w", aud, err)
 		}
-		files = append(files, path)
+		files = append(files, res2.Ref)
 	}
 	return files, nil
+}
+
+// periodSlug returns the YYYY-MM-DD slug for the period end-date. The
+// GitLab publisher uses this as the source-branch suffix so a re-run on
+// the same day lands on the same branch (and updates the same MR) rather
+// than spawning a new branch per re-invocation.
+func periodSlug(window time.Duration) string {
+	return time.Now().UTC().Format("2006-01-02")
 }
 
 // filename: <sanitized project>--<since-days>d--<audience>.md. The "since"

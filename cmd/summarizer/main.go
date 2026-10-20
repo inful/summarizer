@@ -33,7 +33,7 @@ import (
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/llm"
 	"github.com/inful/summarizer/internal/run"
-	"github.com/inful/summarizer/internal/writer"
+	"github.com/inful/summarizer/internal/publisher"
 )
 
 const version = "0.1.0"
@@ -178,6 +178,23 @@ Env:
 
 	gc := gitlab.New(cfg.GitLabHost, gitlabTokenVal, 30*time.Second)
 
+	// Validate the optional GitLab publisher up front so its config
+	// errors surface before the (more common) LLM provider check.
+	if cfg.Publish.Enabled {
+		tokenEnv := cfg.Publish.TokenEnv
+		if tokenEnv == "" {
+			tokenEnv = "GITLAB_REPORTS_TOKEN"
+		}
+		if os.Getenv(tokenEnv) == "" {
+			fmt.Fprintf(os.Stderr, "error: publish.enabled=true but $%s is not set\n", tokenEnv)
+			return exitEnv
+		}
+		if cfg.Publish.Project == "" {
+			fmt.Fprintln(os.Stderr, "error: publish.enabled=true but publish.project is empty")
+			return exitConfig
+		}
+	}
+
 	// Resolve LLM provider and keys.
 	var llmProvider llm.Provider
 	switch cfg.Provider {
@@ -211,7 +228,28 @@ Env:
 		return exitConfig
 	}
 
-	pipe := run.New(cfg, gc, llmProvider, writer.New(), run.Options{
+	// Pick a publisher. Local disk by default; GitLab MR when
+// cfg.Publish.Enabled is true (token env was validated earlier so we
+// can just read it now).
+	var pub publisher.Publisher
+	if cfg.Publish.Enabled {
+		host := cfg.Publish.Host
+		if host == "" {
+			host = cfg.GitLabHost
+		}
+		tokenEnv := cfg.Publish.TokenEnv
+		if tokenEnv == "" {
+			tokenEnv = "GITLAB_REPORTS_TOKEN"
+		}
+		pub = publisher.NewGitLab(
+			host, os.Getenv(tokenEnv), cfg.Publish.Project,
+			cfg.Publish.Prefix, cfg.Publish.DefaultBranch, cfg.Publish.SourceBranchPrefix,
+		)
+	} else {
+		pub = publisher.NewLocal(cfg.OutputDir)
+	}
+
+	pipe := run.New(cfg, gc, llmProvider, pub, run.Options{
 		Projects:     projects,
 		Since:        cfg.Lookback(),
 		Provider:     cfg.Provider,
@@ -276,7 +314,7 @@ func classify(err error) int {
 	switch {
 	case err == nil:
 		return exitOK
-	case errors.Is(err, writer.ErrExists):
+	case errors.Is(err, publisher.ErrExists):
 		return exitWrite
 	}
 	msg := err.Error()
