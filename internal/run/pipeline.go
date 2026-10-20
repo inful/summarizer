@@ -22,12 +22,13 @@ import (
 
 // Options are run-time parameters resolved at the CLI boundary.
 type Options struct {
-	Projects []string      // required: one or more GitLab paths "group/subgroup/proj"
-	Since    time.Duration // window: now - Since < since
-	Provider string        // "openai" or "anthropic" (overrides config)
-	Model    string        // overrides config
-	Force    bool          // overwrite existing reports
-	DryRun   bool          // fetch + print + exit; no LLM call, no file write
+	Projects    []string      // required: one or more GitLab paths "group/subgroup/proj"
+	Since       time.Duration // window: now - Since < since
+	Provider    string        // "openai" or "anthropic" (overrides config)
+	Model       string        // overrides config
+	Force       bool          // overwrite existing reports
+	DryRun      bool          // fetch + print + exit; no LLM call, no file write
+	IncludeDiffs bool         // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
 }
 
 // ProjectResult describes what one project produced. Used to feed the
@@ -117,6 +118,9 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		return res, fmt.Errorf("fetch mrs: %w", err)
 	}
 	fillMRChanges(ctx, p.GitLab, project, mrs)
+	if p.Opts.IncludeDiffs {
+		fillMRDetails(ctx, p.GitLab, project, mrs)
+	}
 
 	issues, err := p.GitLab.FetchIssues(ctx, project, since)
 	if err != nil {
@@ -260,6 +264,41 @@ func fillMRChanges(ctx context.Context, gc *gitlab.Client, project string, mrs [
 				return
 			}
 			mrs[i].Changes = &s
+		}(i)
+	}
+	wg.Wait()
+}
+
+// fillMRDetails fans out the per-MR /changes call *with diff bodies* across
+// changeConcurrency workers and attaches the per-file chunks onto each
+// MergeRequest. Same worker pool as fillMRChanges; sequential on the
+// per-MR scale so the two can run concurrently if the operator enables
+// both (currently they always do — fillMRDetails is only called when
+// --include-diffs is on, alongside fillMRChanges).
+//
+// Failures on a single MR are logged and the MR proceeds with no diff
+// data. The prompts that include these chunks use <data> markers and
+// instruct the model to "infer what the MR does from the diff —
+// paraphrase, never paste code into the report", which treats the diff
+// as data, not instructions.
+func fillMRDetails(ctx context.Context, gc *gitlab.Client, project string, mrs []gitlab.MergeRequest) {
+	if len(mrs) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, changeConcurrency)
+	for i := range mrs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			chunks, err := gc.FetchMRDetail(ctx, project, mrs[i].IID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "summarizer: diff fetch for MR %d failed: %v (skipping)\n", mrs[i].IID, err)
+				return
+			}
+			mrs[i].DiffChunks = chunks
 		}(i)
 	}
 	wg.Wait()

@@ -51,6 +51,39 @@ summarizer run --project group/subgroup/project --model Qwen/Qwen2.5-Coder-32B-I
 
 Either bare-host (`http://localhost:11434`) or `/v1`-suffixed (`http://localhost:11434/v1`) forms are accepted; the normalizer canonicalizes to one.
 
+## `--include-diffs` (team prompt only)
+
+```bash
+summarizer run --project group/proj --include-diffs
+```
+
+Default off. When on, summarizer fetches per-MR diff text from `GET /merge_requests/:iid/changes` and folds it into the **team** prompt only. The customer prompt is unaffected.
+
+How it lands:
+
+```
+- [MR #847] (merged, by alice) "Add login button" [+412/-89 in 12 files] [comments: 12] — https://gitlab...
+  body: <data>Implements the v3 login redesign.</data>
+  diff: <data>internal/auth/auth.go (+312/-89):
++func (a *Auth) Login(...) (token Rotation, biometricEnabled bool) error
+---
+internal/auth/session.go (+50/-0):
++a new helper for rotating sessions
+---</data>
+```
+
+The diff text is always wrapped in `<data>` markers (same OWASP LLM01:2025 mitigation as descriptions). The team prompt instructions tell the model to **infer what each MR does from the diff — paraphrase, never paste code**. So even with the diff in front of it, the model writes things like "alice refactored the auth layer to support token rotation" rather than copying function bodies into the report.
+
+### Caps
+
+| Cap | Value | Source |
+|---|---|---|
+| Per-file diff (decode-time, memory bound) | 600 runes | `internal/gitlab/client.go` `maxDiffRunesPerFile` |
+| Per-MR diff total (prompt-time) | 4000 runes | `internal/prompt/prompt.go` `diffMaxPerMR` |
+| Wire cost | One extra `/changes` call per MR | worker pool, 4 concurrent |
+
+For a project with 50 MRs, `--include-diffs` adds one extra HTTP round-trip per MR (50 calls, ~50s parallel-ish at 4-concurrency). The model already produces the team report; the diff lands in the existing prompt context, so no extra LLM call is added.
+
 ## Run
 
 ```bash

@@ -9,10 +9,12 @@ import (
 	"embed"
 	"fmt"
 	"sort"
+	"strings"
 	"text/template"
 	"time"
 
 	"github.com/inful/summarizer/internal/events"
+	"github.com/inful/summarizer/internal/gitlab"
 )
 
 //go:embed templates/*.tmpl
@@ -217,10 +219,40 @@ func formatEvents(evs []events.NormalizedEvent, aud Audience) string {
 			// anything inside <data>. Mitigates OWASP LLM01:2025.
 			fmt.Fprintf(&buf, "\n  body: <data>%s</data>", e.TeamOnly.Description)
 		}
+		if aud == AudienceTeam && len(e.DiffChunks) > 0 {
+			diff := formatDiffChunks(e.DiffChunks)
+			fmt.Fprintf(&buf, "\n  diff: <data>%s</data>", diff)
+		}
 		buf.WriteByte('\n')
 	}
 	return buf.String()
 }
+
+// formatDiffChunks renders per-file diff chunks as a compact listing of
+// "path (+a/-d): <truncated hunk>". Each chunk's diff text was capped at
+// maxDiffRunesPerFile by the client; this function adds one more level of
+// capping (per-MR total) so a single MR with many big files doesn't blow
+// the team prompt budget.
+func formatDiffChunks(chunks []gitlab.DiffChunk) string {
+	var buf bytes.Buffer
+	remaining := diffMaxPerMR
+	for _, c := range chunks {
+		if remaining <= 0 {
+			break
+		}
+		var diffPart string
+		if len(c.Diff) > remaining {
+			diffPart = c.Diff[:remaining] + "...[truncated]"
+		} else {
+			diffPart = c.Diff
+		}
+		remaining -= len(c.Diff)
+		fmt.Fprintf(&buf, "%s (+%d/-%d):\n%s\n---\n", c.Path, c.Additions, c.Deletions, diffPart)
+	}
+	return strings.TrimRight(buf.String(), "\n-")
+}
+
+const diffMaxPerMR = 4000 // total diff text per event, summed across files
 
 func kindLabel(k events.Kind) string {
 	switch k {

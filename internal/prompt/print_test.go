@@ -21,6 +21,11 @@ func TestPrintSamplePrompts(t *testing.T) {
 			Labels: []string{"feature", "frontend"}, Comments: 12,
 			Created: now.AddDate(0, 0, -3), Updated: now,
 			Changes: &gitlab.ChangesSummary{Files: 12, Additions: 412, Deletions: 89},
+			DiffChunks: []gitlab.DiffChunk{
+				{Path: "internal/auth/auth.go", Additions: 312, Deletions: 89, Diff: "+func (a *Auth) Login(...) (token Rotation, biometricEnabled bool) error"},
+				{Path: "internal/auth/session.go", Additions: 50, Deletions: 0, Diff: "+a new helper for rotating sessions"},
+				{Path: "cmd/login/main.go", Additions: 50, Deletions: 0, Diff: "+wire biometric into the login flow"},
+			},
 			TeamOnly: &events.TeamOnlyFields{
 				Description: "Implements the v3 login redesign. Adds biometric auth on iOS.",
 			},

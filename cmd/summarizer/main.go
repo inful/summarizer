@@ -111,6 +111,7 @@ Env:
 		maxEvents      = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
 		force          = fs.Bool("force", false, "overwrite existing output files")
 		dryRun         = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
+		includeDiffs   = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
 		gitlabHost     = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
 		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
 		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
@@ -211,12 +212,13 @@ Env:
 	}
 
 	pipe := run.New(cfg, gc, llmProvider, writer.New(), run.Options{
-		Projects: projects,
-		Since:    cfg.Lookback(),
-		Provider: cfg.Provider,
-		Model:    cfg.Model,
-		Force:    *force,
-		DryRun:   *dryRun,
+		Projects:     projects,
+		Since:        cfg.Lookback(),
+		Provider:     cfg.Provider,
+		Model:        cfg.Model,
+		Force:        *force,
+		DryRun:       *dryRun,
+		IncludeDiffs: *includeDiffs,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

@@ -71,6 +71,13 @@ type MergeRequest struct {
 	// for MRs that haven't been detailed (or whose detail call failed).
 	// The list endpoint doesn't expose per-file stats.
 	Changes *ChangesSummary `json:"-"`
+
+	// DiffChunks is populated by FetchMRDetail when the operator opts
+	// into --include-diffs. Each chunk's Diff field is capped at
+	// maxDiffRunesPerFile to keep memory bounded even on multi-MB
+	// refactors. Empty for MRs that haven't been detailed, or when the
+	// feature is off.
+	DiffChunks []DiffChunk `json:"-"`
 }
 
 // ChangesSummary is the per-MR aggregate of the GitLab /changes endpoint:
@@ -154,27 +161,116 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 // One call per MR. Callers fetching N MRs should fan out concurrently to
 // keep total wall time bounded; the pipeline does this with a worker pool.
 func (c *Client) FetchMRChanges(ctx context.Context, projectPath string, iid int) (ChangesSummary, error) {
+	chunks, err := c.fetchMRChangesRaw(ctx, projectPath, iid)
+	if err != nil {
+		return ChangesSummary{}, err
+	}
+	return summarizeChunks(chunks), nil
+}
+
+// FetchMRDetail returns the full per-file diff chunks for an MR, including
+// the per-file diff body. Each chunk's Diff is capped at maxDiffRunesPerFile
+// to keep memory bounded even when GitLab returns multi-MB diffs (typical
+// for big refactors). Use FetchMRChanges when only the aggregate is
+// needed — same wire call, no diff bodies parsed.
+//
+// When --include-diffs is on, the pipeline calls this per MR in the
+// worker pool and feeds the chunks into the team prompt so the model can
+// reason about code changes rather than just metadata.
+func (c *Client) FetchMRDetail(ctx context.Context, projectPath string, iid int) ([]DiffChunk, error) {
+	chunks, err := c.fetchMRChangesRaw(ctx, projectPath, iid)
+	if err != nil {
+		return nil, err
+	}
+	// Truncate each chunk's Diff at maxDiffRunesPerFile.
+	for i := range chunks {
+		if r := []rune(chunks[i].Diff); len(r) > maxDiffRunesPerFile {
+			chunks[i].Diff = string(r[:maxDiffRunesPerFile]) + "...[truncated]"
+		}
+	}
+	return chunks, nil
+}
+
+// fetchMRChangesRaw hits /changes once and returns the per-file chunks
+// (with diff bodies in the wire payload). Internal: FetchMRChanges and
+// FetchMRDetail thin it differently — see those.
+//
+// The wire struct intentionally includes the diff field; the JSON
+// decoder skips it for callers that don't want it, but for callers that
+// do (FetchMRDetail) it's already parsed and ready. This is the cleanest
+// way to avoid decoding the same body twice for the same MR.
+func (c *Client) fetchMRChangesRaw(ctx context.Context, projectPath string, iid int) ([]DiffChunk, error) {
 	var resp struct {
 		Changes []struct {
-			OldPath    string `json:"old_path"`
-			NewPath    string `json:"new_path"`
-			NewFile    bool   `json:"new_file"`
-			DeletedFile bool  `json:"deleted_file"`
-			RenamedFile bool  `json:"renamed_file"`
-			Additions  int    `json:"additions"`
-			Deletions  int    `json:"deletions"`
+			OldPath     string `json:"old_path"`
+			NewPath     string `json:"new_path"`
+			NewFile     bool   `json:"new_file"`
+			DeletedFile bool   `json:"deleted_file"`
+			RenamedFile bool   `json:"renamed_file"`
+			Additions   int    `json:"additions"`
+			Deletions   int    `json:"deletions"`
+			Diff        string `json:"diff"`
 		} `json:"changes"`
 	}
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/changes", url.PathEscape(projectPath), iid)
 	if err := c.getJSON(ctx, path, nil, &resp); err != nil {
-		return ChangesSummary{}, err
+		return nil, err
 	}
-	s := ChangesSummary{Files: len(resp.Changes)}
+	chunks := make([]DiffChunk, 0, len(resp.Changes))
 	for _, f := range resp.Changes {
-		s.Additions += f.Additions
-		s.Deletions += f.Deletions
+		chunks = append(chunks, DiffChunk{
+			Path:      filePath(f.OldPath, f.NewPath),
+			Additions: f.Additions,
+			Deletions: f.Deletions,
+			Diff:      f.Diff,
+		})
 	}
-	return s, nil
+	return chunks, nil
+}
+
+// maxDiffRunesPerFile caps the per-file diff body retained in memory
+// after decoding. GitLab can return multi-MB diffs for big refactors;
+// we don't need all of it to summarize — pick a value that's big enough
+// to capture intent (function signature + first hunk) and small enough
+// to keep per-MR memory bounded. The prompt formatter applies
+// additional per-MR and total caps.
+const maxDiffRunesPerFile = 600
+
+// DiffChunk is one file's worth of /changes data. Diff is the raw text and
+// is bounded at decode time by maxDiffRunesPerFile.
+type DiffChunk struct {
+	Path      string // display path: old→new for renames, otherwise the current path
+	Additions int
+	Deletions int
+	Diff      string // truncated at maxDiffRunesPerFile
+}
+
+// filePath picks the path to display for a /changes entry: the new path
+// unless the file was deleted, in which case the old path. For renames,
+// joins "old → new" so the engineer scanning the report can tell at a
+// glance that a file moved.
+func filePath(oldPath, newPath string) string {
+	switch {
+	case oldPath == newPath:
+		return newPath
+	case newPath == "":
+		return oldPath
+	case oldPath == "":
+		return newPath
+	default:
+		return oldPath + " → " + newPath
+	}
+}
+
+// summarizeChunks aggregates per-file stats. Caller is responsible for
+// any truncation applied to the chunks before this.
+func summarizeChunks(chunks []DiffChunk) ChangesSummary {
+	s := ChangesSummary{Files: len(chunks)}
+	for _, c := range chunks {
+		s.Additions += c.Additions
+		s.Deletions += c.Deletions
+	}
+	return s
 }
 
 // getAll walks offset pagination until the response is empty. Honors 429

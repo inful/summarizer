@@ -46,6 +46,13 @@ type NormalizedEvent struct {
 	// present, the prompt formatter appends "+N/-M in K files" so the
 	// model can distinguish a 30-file refactor from a 5-line bug fix.
 	Changes *gitlab.ChangesSummary `json:"changes,omitempty"`
+
+	// DiffChunks is the per-file diff text for the MR. Populated only
+	// when the operator passes --include-diffs; nil otherwise. Diff bodies
+	// are a high-blast-radius prompt-injection surface, so the team
+	// prompt instructions tell the model to "infer what the MR does from
+	// the diff" rather than reproduce code into the report.
+	DiffChunks []gitlab.DiffChunk `json:"diff_chunks,omitempty"`
 }
 
 type TeamOnlyFields struct {
