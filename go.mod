@@ -1,6 +1,6 @@
 module github.com/inful/summarizer
 
-go 1.26.8
+go 1.26.9
 
 require (
 	github.com/inful/decide v0.0.0-20261008064855-f78fd7ad59b9

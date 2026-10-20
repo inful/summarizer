@@ -32,8 +32,8 @@ import (
 	"github.com/inful/summarizer/internal/config"
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/llm"
-	"github.com/inful/summarizer/internal/run"
 	"github.com/inful/summarizer/internal/publisher"
+	"github.com/inful/summarizer/internal/run"
 	"github.com/inful/summarizer/internal/safety"
 )
 
@@ -74,13 +74,13 @@ Run 'summarizer run --help' for run flags.
 
 // exit codes — distinct branches in a cron script can react to each.
 const (
-	exitOK           = 0
-	exitUsage        = 2
-	exitConfig       = 3
-	exitGitLab       = 4
-	exitLLM          = 5
-	exitWrite        = 6
-	exitEnv          = 7
+	exitOK     = 0
+	exitUsage  = 2
+	exitConfig = 3
+	exitGitLab = 4
+	exitLLM    = 5
+	exitWrite  = 6
+	exitEnv    = 7
 )
 
 func runCmd(args []string) int {
@@ -105,23 +105,23 @@ Env:
 	}
 
 	var (
-		since          = fs.Duration("since", 0, "rolling window: '168h' for 7d, '720h' for 30d. Default from config.")
-		provider       = fs.String("provider", "", "LLM provider: openai or anthropic (default from config)")
-		model          = fs.String("model", "", "LLM model id (default from config)")
-		outputDir      = fs.String("output-dir", "", "output directory (default from config)")
-		maxEvents      = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
-		force          = fs.Bool("force", false, "overwrite existing output files")
-		dryRun         = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
-		includeDiffs   = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
-		safetyURL       = fs.String("safety-url", "", "decision API base URL for prompt-injection guard (default from config safety.decision_url)")
-		safetyToken     = fs.String("safety-token", "", "decision API token (default from $SAFETY_DECISION_TOKEN env or config)")
-		safetyEnabled   = fs.Bool("safety-enabled", false, "gate every LLM call through the prompt-injection detector; hard-fails the run on verdict (default off)")
-		gitlabHost     = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
-		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
-		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
-		openaiBaseURL  = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
-		anthropicKey   = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
-		configPath     = fs.String("config", "./summarizer.yaml", "path to YAML config file")
+		since         = fs.Duration("since", 0, "rolling window: '168h' for 7d, '720h' for 30d. Default from config.")
+		provider      = fs.String("provider", "", "LLM provider: openai or anthropic (default from config)")
+		model         = fs.String("model", "", "LLM model id (default from config)")
+		outputDir     = fs.String("output-dir", "", "output directory (default from config)")
+		maxEvents     = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
+		force         = fs.Bool("force", false, "overwrite existing output files")
+		dryRun        = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
+		includeDiffs  = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
+		safetyURL     = fs.String("safety-url", "", "decision API base URL for prompt-injection guard (default from config safety.decision_url)")
+		safetyToken   = fs.String("safety-token", "", "decision API token (default from $SAFETY_DECISION_TOKEN env or config)")
+		safetyEnabled = fs.Bool("safety-enabled", false, "gate every LLM call through the prompt-injection detector; hard-fails the run on verdict (default off)")
+		gitlabHost    = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
+		gitlabToken   = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
+		openaiKey     = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
+		openaiBaseURL = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
+		anthropicKey  = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
+		configPath    = fs.String("config", "./summarizer.yaml", "path to YAML config file")
 	)
 	fs.Var(&projects, "project", "GitLab project path (repeatable, or comma-separated). Examples: --project group/a --project group/b, or --project group/a,group/b. At least one required.")
 	if err := fs.Parse(args); err != nil {
@@ -233,8 +233,8 @@ Env:
 	}
 
 	// Pick a publisher. Local disk by default; GitLab MR when
-// cfg.Publish.Enabled is true (token env was validated earlier so we
-// can just read it now).
+	// cfg.Publish.Enabled is true (token env was validated earlier so we
+	// can just read it now).
 	var pub publisher.Publisher
 	if cfg.Publish.Enabled {
 		host := cfg.Publish.Host
@@ -254,7 +254,7 @@ Env:
 	}
 
 	// Safety guard. Disabled by default. When enabled, every LLM call is
-// preceded by a prompt-injection check via the decide API.
+	// preceded by a prompt-injection check via the decide API.
 	var guard safety.Guard = safety.NoopGuard{}
 	safetyOn := *safetyEnabled || cfg.Safety.Enabled
 	if safetyOn {

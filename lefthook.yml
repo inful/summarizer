@@ -1,16 +1,24 @@
 # yaml-language-server: $schema=https://lefthook.dev/schema.json
 #
-# Imports the shared lefthook configuration from github.com/inful/lefthooks.
-# Pin `ref` to a tag for reproducible builds.
+# ─── Canonical consumer lefthook.yml ───────────────────────────────────────
+# Centralized config imported from github.com/inful/lefthooks@v0.5.0.
+# Shared hooks include gofmt, go vet, golangci-lint, go test -race,
+# govulncheck, markdownlint, docbuilder-lint, conventional-commit checks,
+# trailing-whitespace / merge-conflict / large-file guards, and more —
+# each self-gated by glob + skip conditions so they only fire when the
+# project's shape permits.
 #
-# Hook behavior is defined in https://github.com/inful/lefthooks and
-# self-gates per-consumer via glob/skip conditions — no per-repo overrides
-# needed for the standard Go / Markdown / sqlc checks.
+# See https://github.com/inful/lefthooks for the full hook inventory.
+#
+# To reproduce locally: `lefthook install`. Hooks then run automatically
+# on every `git commit` (pre-commit), `git commit -m "..."` (commit-msg),
+# and `git push` (pre-push). Failures block the operation; CI also runs
+# the test+lint+govulncheck suite for the same reason as a safety net.
 
 min_version: 2.1.0
 
 remotes:
-  - git_url: https://github.com:inful/lefthooks.git
+  - git_url: https://github.com/inful/lefthooks.git
     ref: v0.5.0
     configs:
       - lefthook.yml

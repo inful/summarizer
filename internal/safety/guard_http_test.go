@@ -32,7 +32,7 @@ func TestDecideGuard_ThresholdBoundary(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprintf(w, `{"answers":{"prompt_injection":{"type":"noul","noul":%f,"confidence":0.9,"action":{"act_probability":1.0}}}}`, tc.noul)
+				_, _ = fmt.Fprintf(w, `{"answers":{"prompt_injection":{"type":"noul","noul":%f,"confidence":0.9,"action":{"act_probability":1.0}}}}`, tc.noul)
 			}))
 			defer srv.Close()
 
@@ -57,7 +57,7 @@ func TestDecideGuard_ThresholdBoundary(t *testing.T) {
 func TestDecideGuard_MalformedResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"answers":{}}`)) // missing prompt_injection
+		_, _ = w.Write([]byte(`{"answers":{}}`)) // missing prompt_injection
 	}))
 	defer srv.Close()
 
@@ -86,7 +86,7 @@ func TestDecideGuard_RequestShape(t *testing.T) {
 			t.Errorf("request body should declare noul type: %s", bs)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"answers":{"prompt_injection":{"type":"noul","noul":0.05,"confidence":0.9,"action":{"act_probability":1.0}}}}`))
+		_, _ = w.Write([]byte(`{"answers":{"prompt_injection":{"type":"noul","noul":0.05,"confidence":0.9,"action":{"act_probability":1.0}}}}`))
 	}))
 	defer srv.Close()
 
@@ -101,7 +101,7 @@ func TestDecideGuard_RequestShape(t *testing.T) {
 func TestDecideGuard_DefaultThreshold(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"answers":{"prompt_injection":{"type":"noul","noul":0.05,"confidence":0.9,"action":{"act_probability":1.0}}}}`))
+		_, _ = w.Write([]byte(`{"answers":{"prompt_injection":{"type":"noul","noul":0.05,"confidence":0.9,"action":{"act_probability":1.0}}}}`))
 	}))
 	defer srv.Close()
 

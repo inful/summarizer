@@ -40,10 +40,10 @@ type Request struct {
 
 // Result is what a Publisher returns from Publish.
 type Result struct {
-	Ref      string // display path / URL for the run summary log
-	Branch   string // GitLab branch the file landed on; empty for local
-	MRURL    string // GitLab MR web URL when one was created or updated; empty for local
-	Skipped  bool   // true when refuse-first policy declined the write
+	Ref     string // display path / URL for the run summary log
+	Branch  string // GitLab branch the file landed on; empty for local
+	MRURL   string // GitLab MR web URL when one was created or updated; empty for local
+	Skipped bool   // true when refuse-first policy declined the write
 }
 
 // Publisher writes one Markdown file at a time. Implementations are

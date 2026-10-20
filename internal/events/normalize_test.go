@@ -11,16 +11,16 @@ func TestMR_ActionAndRefs(t *testing.T) {
 	merged := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
 	g := gitlab.MergeRequest{
 		IID: 42, Title: "Add login button",
-		Description: "Implements the new login form per design v3.",
-		State: "merged",
-		Author: gitlab.User{Username: "alice"},
-		WebURL: "https://gitlab.example.com/group/proj/-/merge_requests/42",
-		Labels: []string{"feature", "frontend"},
+		Description:    "Implements the new login form per design v3.",
+		State:          "merged",
+		Author:         gitlab.User{Username: "alice"},
+		WebURL:         "https://gitlab.example.com/group/proj/-/merge_requests/42",
+		Labels:         []string{"feature", "frontend"},
 		UserNotesCount: 3,
-		CreatedAt: time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC),
-		UpdatedAt: merged,
-		MergedAt: &merged,
-		Changes: &gitlab.ChangesSummary{Files: 5, Additions: 312, Deletions: 47},
+		CreatedAt:      time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC),
+		UpdatedAt:      merged,
+		MergedAt:       &merged,
+		Changes:        &gitlab.ChangesSummary{Files: 5, Additions: 312, Deletions: 47},
 	}
 	e := MR(g)
 	if e.Kind != KindMR || e.Action != "merged" || e.Ref != "#42" || e.Author != "alice" {
@@ -44,9 +44,9 @@ func TestIssue_ClosedCarriesClosedTime(t *testing.T) {
 	closed := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
 	g := gitlab.Issue{
 		IID: 7, Title: "Typo in docs",
-		State: "closed",
-		Author: gitlab.User{Username: "bob"},
-		WebURL: "https://gitlab.example.com/group/proj/-/issues/7",
+		State:    "closed",
+		Author:   gitlab.User{Username: "bob"},
+		WebURL:   "https://gitlab.example.com/group/proj/-/issues/7",
 		ClosedAt: &closed,
 	}
 	e := Issue(g)
@@ -62,7 +62,7 @@ func TestCommit_AuthorFromEmail(t *testing.T) {
 	g := gitlab.Commit{
 		ShortID: "abc1234", Title: "wip",
 		AuthorName: "Carol Q.", AuthorEmail: "carol@example.com",
-		WebURL: "https://gitlab.example.com/group/proj/-/commit/abc1234",
+		WebURL:    "https://gitlab.example.com/group/proj/-/commit/abc1234",
 		CreatedAt: time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC),
 	}
 	e := Commit(g)

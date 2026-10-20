@@ -56,7 +56,7 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	if err != nil {
 		return Response{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return Response{}, fmt.Errorf("openai: %d %s", resp.StatusCode, truncate(string(respBody), 300))

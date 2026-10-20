@@ -3,10 +3,10 @@
 // of this package is one struct, one Load() function, and one Validate().
 //
 // Resolution precedence (highest wins):
-//   1. CLI flag (applied by main before Load is called)
-//   2. Env var
-//   3. YAML file
-//   4. Built-in default
+//  1. CLI flag (applied by main before Load is called)
+//  2. Env var
+//  3. YAML file
+//  4. Built-in default
 package config
 
 import (
@@ -89,9 +89,9 @@ type PublishConfig struct {
 // sent to a decision API (inful/decide) before the LLM call; noul above
 // the threshold = injection = hard-fail the run.
 type SafetyConfig struct {
-	Enabled           bool    `yaml:"enabled"`             // when true, every LLM call is gated
-	DecisionURL       string  `yaml:"decision_url"`        // base URL of the /v1/systemone API
-	DecisionTokenEnv  string  `yaml:"decision_token_env"` // env var holding the API token; default "SAFETY_DECISION_TOKEN"
+	Enabled            bool    `yaml:"enabled"`             // when true, every LLM call is gated
+	DecisionURL        string  `yaml:"decision_url"`        // base URL of the /v1/systemone API
+	DecisionTokenEnv   string  `yaml:"decision_token_env"`  // env var holding the API token; default "SAFETY_DECISION_TOKEN"
 	InjectionThreshold float64 `yaml:"injection_threshold"` // noul above this = injection; default 0.7
 }
 

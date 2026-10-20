@@ -67,7 +67,7 @@ func TestFetchMRChanges_httptest(t *testing.T) {
 			t.Errorf("missing PRIVATE-TOKEN header")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{
+		_, _ = w.Write([]byte(`{
 				"id": 1, "iid": 847, "title": "Add login",
 				"changes": [
 					{"old_path":"a","new_path":"a","new_file":false,"deleted_file":false,"renamed_file":false,"additions":10,"deletions":2,"diff":"@@ -1 +1 @@\n-foo\n+bar"},

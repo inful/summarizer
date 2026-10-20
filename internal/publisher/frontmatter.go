@@ -46,11 +46,11 @@ type Frontmatter struct {
 func (f Frontmatter) Render(body []byte) []byte {
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("uid: %s\n", f.UID))
-	sb.WriteString(fmt.Sprintf("title: %q\n", f.Title))
-	sb.WriteString(fmt.Sprintf("date: %s\n", f.Date.UTC().Format(time.RFC3339)))
-	sb.WriteString(fmt.Sprintf("lastmod: %s\n", f.LastMod.UTC().Format(time.RFC3339)))
-	sb.WriteString(fmt.Sprintf("fingerprint: %s\n", f.Fingerprint))
+	fmt.Fprintf(&sb, "uid: %s\n", f.UID)
+	fmt.Fprintf(&sb, "title: %q\n", f.Title)
+	fmt.Fprintf(&sb, "date: %s\n", f.Date.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&sb, "lastmod: %s\n", f.LastMod.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&sb, "fingerprint: %s\n", f.Fingerprint)
 	if f.Public {
 		// Only emit when true; absence implies false (docbuilder's
 		// default). Emitting "public: false" would be redundant.
@@ -59,19 +59,19 @@ func (f Frontmatter) Render(body []byte) []byte {
 	if len(f.Categories) > 0 {
 		sb.WriteString("categories:\n")
 		for _, c := range f.Categories {
-			sb.WriteString(fmt.Sprintf("  - %s\n", c))
+			fmt.Fprintf(&sb, "  - %s\n", c)
 		}
 	}
 	if len(f.Tags) > 0 {
 		sb.WriteString("tags:\n")
 		for _, t := range f.Tags {
-			sb.WriteString(fmt.Sprintf("  - %s\n", t))
+			fmt.Fprintf(&sb, "  - %s\n", t)
 		}
 	}
 	if len(f.Aliases) > 0 {
 		sb.WriteString("aliases:\n")
 		for _, a := range f.Aliases {
-			sb.WriteString(fmt.Sprintf("  - %s\n", a))
+			fmt.Fprintf(&sb, "  - %s\n", a)
 		}
 	}
 	sb.WriteString("---\n\n")

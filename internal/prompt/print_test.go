@@ -48,7 +48,7 @@ func TestPrintSamplePrompts(t *testing.T) {
 		},
 		{
 			Kind: events.KindCommit, Action: "pushed", Ref: "9f3a21c",
-			Title: "tweak login form focus styles",
+			Title:  "tweak login form focus styles",
 			Author: "alice", URL: "https://gitlab.example.com/group/proj/-/commit/9f3a21c",
 			Created: now.AddDate(0, 0, -2), Updated: now.AddDate(0, 0, -2),
 		},

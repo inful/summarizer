@@ -20,12 +20,12 @@ import (
 // GET /repository/files/:path (for read-before-write), GET/POST /merge_requests.
 // It records each request so the test can assert on the wire shape.
 type fakeGitLab struct {
-	branches        sync.Map // branch name → bool (existence)
-	branchCreates   atomic.Int64
-	filePuts        atomic.Int64
-	fileReads       atomic.Int64
-	mergeRequests   []mergeRequest
-	mrCreateCount   atomic.Int64
+	branches      sync.Map // branch name → bool (existence)
+	branchCreates atomic.Int64
+	filePuts      atomic.Int64
+	fileReads     atomic.Int64
+	mergeRequests []mergeRequest
+	mrCreateCount atomic.Int64
 
 	// files pre-populates "branch -> path -> content" so read-before-write
 	// tests can put a file on the branch before the publisher's
@@ -56,7 +56,7 @@ func (f *fakeGitLab) handler() http.Handler {
 		}
 		var b branchReq
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &b)
+		_ = json.Unmarshal(body, &b)
 		// Idempotent: if the branch exists, return ok.
 		if _, ok := f.branches.Load(b.Branch); ok {
 			w.WriteHeader(http.StatusOK)
@@ -81,7 +81,7 @@ func (f *fakeGitLab) handler() http.Handler {
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"encoding":"text","content":%q}`, content)
+			_, _ = fmt.Fprintf(w, `{"encoding":"text","content":%q}`, content)
 			return
 		}
 		if r.Method != http.MethodPut {
@@ -94,7 +94,7 @@ func (f *fakeGitLab) handler() http.Handler {
 		}
 		var fr fileReq
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &fr)
+		_ = json.Unmarshal(body, &fr)
 		// Verify content is actually base64 and decodes back to a non-empty body.
 		decoded, err := base64.StdEncoding.DecodeString(fr.Content)
 		if err != nil || len(decoded) == 0 {
@@ -124,7 +124,7 @@ func (f *fakeGitLab) handler() http.Handler {
 				}
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(filtered)
+			_ = json.NewEncoder(w).Encode(filtered)
 			return
 		}
 		if r.Method != http.MethodPost {
@@ -133,7 +133,7 @@ func (f *fakeGitLab) handler() http.Handler {
 		}
 		var mr mrReq
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &mr)
+		_ = json.Unmarshal(body, &mr)
 		if mr.SourceBranch == "" || mr.TargetBranch == "" || mr.Title == "" {
 			http.Error(w, "missing mr fields", http.StatusBadRequest)
 			return
@@ -148,7 +148,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			Title:        mr.Title,
 		})
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(f.mergeRequests[len(f.mergeRequests)-1])
+		_ = json.NewEncoder(w).Encode(f.mergeRequests[len(f.mergeRequests)-1])
 	})
 	return mux
 }
@@ -159,12 +159,12 @@ func TestGitLabPublisher_PublishFlow(t *testing.T) {
 	defer srv.Close()
 
 	p := NewGitLab(
-		srv.URL,        // host (no trailing path; client adds /api/v4)
-		"glpat-test",   // token
+		srv.URL,         // host (no trailing path; client adds /api/v4)
+		"glpat-test",    // token
 		"group/reports", // project
-		"reports",      // prefix
-		"main",         // default branch
-		"summarizer",   // source branch prefix
+		"reports",       // prefix
+		"main",          // default branch
+		"summarizer",    // source branch prefix
 	)
 
 	res, err := p.Publish(Request{
@@ -376,5 +376,3 @@ func TestGitLabPublisher_FreshFileMintsUUID(t *testing.T) {
 		t.Errorf("fresh-file mint should produce a UUID v7, got %q", uidLine)
 	}
 }
-
-

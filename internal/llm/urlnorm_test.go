@@ -11,7 +11,7 @@ func TestNormalizeBaseURL(t *testing.T) {
 		{"https://api.anthropic.com", "https://api.anthropic.com"},
 		{"https://api.anthropic.com/v1", "https://api.anthropic.com"},
 		{"https://example.com/v1/chat/completions", "https://example.com/v1/chat/completions"}, // /v1 not trailing, untouched
-		{"http://localhost:11434", "http://localhost:11434"},                               // Ollama default
+		{"http://localhost:11434", "http://localhost:11434"},                                   // Ollama default
 		{"http://localhost:11434/v1", "http://localhost:11434"},
 	}
 	for _, c := range cases {

@@ -139,14 +139,14 @@ func RenderRollup(aud Audience, window time.Duration, projects []ProjectReport) 
 	}
 
 	data := struct {
-		Window       string
-		ProjectCount int
-		ProjectNames []string
+		Window        string
+		ProjectCount  int
+		ProjectNames  []string
 		ProjectBodies map[string]string
 	}{
-		Window:       fmt.Sprintf("last %s", window),
-		ProjectCount: len(projects),
-		ProjectNames: names,
+		Window:        fmt.Sprintf("last %s", window),
+		ProjectCount:  len(projects),
+		ProjectNames:  names,
 		ProjectBodies: bodies,
 	}
 
@@ -184,7 +184,7 @@ type ProjectReport struct {
 // ~16 KB (drops oldest projects first).
 const (
 	rollupPerBodyCap = 4000
-	rollupTotalCap  = 16000
+	rollupTotalCap   = 16000
 )
 
 // formatEvents renders events as a compact, deterministic, sorted list.

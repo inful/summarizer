@@ -25,13 +25,13 @@ const (
 // through without sanitization.
 type NormalizedEvent struct {
 	Kind     Kind      `json:"kind"`
-	Action   string    `json:"action"`            // "opened" | "merged" | "closed" | "pushed"
-	Ref      string    `json:"ref"`               // bare identifier, e.g. "#42" or "abc1234"
-	Title    string    `json:"title"`             // MR/issue title or commit subject (capped)
-	Author   string    `json:"author"`            // username only — no email, no display name
-	URL      string    `json:"url"`               // GitLab path, e.g. "/group/proj/-/issues/42"
-	Labels   []string  `json:"labels,omitempty"`  // empty for commits
-	Comments int       `json:"comments"`          // count only; bodies are not carried
+	Action   string    `json:"action"`           // "opened" | "merged" | "closed" | "pushed"
+	Ref      string    `json:"ref"`              // bare identifier, e.g. "#42" or "abc1234"
+	Title    string    `json:"title"`            // MR/issue title or commit subject (capped)
+	Author   string    `json:"author"`           // username only — no email, no display name
+	URL      string    `json:"url"`              // GitLab path, e.g. "/group/proj/-/issues/42"
+	Labels   []string  `json:"labels,omitempty"` // empty for commits
+	Comments int       `json:"comments"`         // count only; bodies are not carried
 	Created  time.Time `json:"created"`
 	Updated  time.Time `json:"updated,omitempty"`
 

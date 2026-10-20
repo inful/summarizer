@@ -32,13 +32,13 @@ import (
 // same MR. Each re-run only changes the files for that audience — old
 // files are untouched (Files API is content-addressed).
 type GitLabPublisher struct {
-	Host       string // e.g. "https://gitlab.example.com"
-	Token      string // PAT with api scope on the target project
-	Project    string // path "group/subgroup/project"
-	Prefix     string // path prefix for reports, e.g. "reports" ("" = repo root)
-	DefaultBranch string // typically "main"; MR target
+	Host               string // e.g. "https://gitlab.example.com"
+	Token              string // PAT with api scope on the target project
+	Project            string // path "group/subgroup/project"
+	Prefix             string // path prefix for reports, e.g. "reports" ("" = repo root)
+	DefaultBranch      string // typically "main"; MR target
 	SourceBranchPrefix string // e.g. "summarizer"; full branch is "<prefix>/<period>"
-	HTTP *http.Client
+	HTTP               *http.Client
 }
 
 // NewGitLab constructs a publisher. host + token + project are required;
@@ -103,23 +103,23 @@ func pathPrefix(s string) string {
 // API request/response shapes.
 
 type branchReq struct {
-	Branch string `json:"branch"`
+	Branch     string `json:"branch"`
 	StartPoint string `json:"start_point,omitempty"`
 }
 
 type fileReq struct {
 	Branch        string `json:"branch"`
 	CommitMessage string `json:"commit_message"`
-	Content       string `json:"content"`     // base64
-	Encoding      string `json:"encoding"`    // "base64"
+	Content       string `json:"content"`  // base64
+	Encoding      string `json:"encoding"` // "base64"
 }
 
 type mrReq struct {
-	SourceBranch string `json:"source_branch"`
-	TargetBranch string `json:"target_branch"`
-	Title        string `json:"title"`
-	Description  string `json:"description"`
-	RemoveSourceBranch bool `json:"remove_source_branch,omitempty"`
+	SourceBranch       string `json:"source_branch"`
+	TargetBranch       string `json:"target_branch"`
+	Title              string `json:"title"`
+	Description        string `json:"description"`
+	RemoveSourceBranch bool   `json:"remove_source_branch,omitempty"`
 }
 
 type mergeRequest struct {
@@ -241,7 +241,7 @@ func (g *GitLabPublisher) readExistingUID(path, branch string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
@@ -343,7 +343,7 @@ func (g *GitLabPublisher) findOrCreateMR(branch string, req Request) (string, er
 				"- **Audience:** %s\n\n"+
 				"Files in this branch have docbuilder-format frontmatter.\n\n"+
 				"Merge to publish.",
- req.Period, req.Name, req.Kind),
+			req.Period, req.Name, req.Kind),
 	})
 	var mr mergeRequest
 	if err := g.api(createURL, "POST", body, &mr); err != nil {
@@ -381,7 +381,7 @@ func (g *GitLabPublisher) api(urlStr, method string, body []byte, out any) error
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("%s %s: %d %s", method, urlStr, resp.StatusCode, truncate(string(respBody), 300))

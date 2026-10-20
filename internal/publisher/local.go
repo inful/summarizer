@@ -11,10 +11,10 @@ import (
 var ErrExists = errors.New("output file already exists")
 
 // Local writes Markdown reports to a local directory under Dir. The flow:
-//   1. Refuse if dir/name exists and !Force
-//   2. mkdir -p dir
-//   3. write to dir/.name.tmp-<pid>-<rand>
-//   4. rename tmp -> dir/name
+//  1. Refuse if dir/name exists and !Force
+//  2. mkdir -p dir
+//  3. write to dir/.name.tmp-<pid>-<rand>
+//  4. rename tmp -> dir/name
 //
 // Rename is atomic on POSIX (same filesystem); a crash before step 4
 // leaves no half-written file in the target path.
@@ -51,11 +51,11 @@ func (l *Local) Publish(req Request) (Result, error) {
 		}
 	}()
 	if _, err := tmp.Write(req.Body); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // best-effort cleanup; the Write error is what we report
 		return Result{}, fmt.Errorf("write tmp: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return Result{}, fmt.Errorf("fsync tmp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

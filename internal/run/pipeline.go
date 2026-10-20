@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -23,24 +22,24 @@ import (
 
 // Options are run-time parameters resolved at the CLI boundary.
 type Options struct {
-	Projects    []string      // required: one or more GitLab paths "group/subgroup/proj"
-	Since       time.Duration // window: now - Since < since
-	Provider    string        // "openai" or "anthropic" (overrides config)
-	Model       string        // overrides config
-	Force       bool          // overwrite existing reports
-	DryRun      bool          // fetch + print + exit; no LLM call, no file write
-	IncludeDiffs bool         // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
+	Projects     []string      // required: one or more GitLab paths "group/subgroup/proj"
+	Since        time.Duration // window: now - Since < since
+	Provider     string        // "openai" or "anthropic" (overrides config)
+	Model        string        // overrides config
+	Force        bool          // overwrite existing reports
+	DryRun       bool          // fetch + print + exit; no LLM call, no file write
+	IncludeDiffs bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
 }
 
 // ProjectResult describes what one project produced. Used to feed the
 // rollup step (when len(Projects) > 1) without re-reading from disk.
 type ProjectResult struct {
-	Project         string
-	EventsFetched   int
-	EventsUsed      int
-	CustomerText    string // rendered markdown for the customer audience
-	TeamText        string // rendered markdown for the team audience
-	FilesWritten    []string
+	Project          string
+	EventsFetched    int
+	EventsUsed       int
+	CustomerText     string // rendered markdown for the customer audience
+	TeamText         string // rendered markdown for the team audience
+	FilesWritten     []string
 	TokensByAudience map[string]llm.Usage
 }
 
@@ -48,8 +47,8 @@ type ProjectResult struct {
 // run summary. Projects is the per-project list; RollupFiles holds the
 // combined-customer.md and combined-team.md paths when len(Projects) > 1.
 type Result struct {
-	Projects      []ProjectResult
-	RollupFiles   []string
+	Projects         []ProjectResult
+	RollupFiles      []string
 	TokensByAudience map[string]llm.Usage // rollup token usage, when applicable
 }
 
@@ -119,8 +118,8 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 // still records the LLM call's text).
 func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectResult, error) {
 	res := ProjectResult{
-		Project:         project,
-		FilesWritten:    []string{},
+		Project:          project,
+		FilesWritten:     []string{},
 		TokensByAudience: map[string]llm.Usage{},
 	}
 
@@ -283,18 +282,18 @@ func periodSlug(window time.Duration) string {
 // Verdict handling:
 //   - "safe"            → continue with the LLM call (logged at info level)
 //   - "injection"       → hard-fail. ErrInjection wraps the score so main
-//                         can emit a clean stderr line and exit non-zero.
-//                         This is the case where we DO trust the guard's
-//                         answer — a deliberate prompt-injection attempt
-//                         should stop the run, not slide through.
+//     can emit a clean stderr line and exit non-zero.
+//     This is the case where we DO trust the guard's
+//     answer — a deliberate prompt-injection attempt
+//     should stop the run, not slide through.
 //   - guard error       → soft-fail. A flaky /v1/systemone instance
-//                         (network blip, transient 5xx, malformed
-//                         response) does NOT block summary generation.
-//                         The structural defense — <data> markers, system
-//                         prompt refusing to obey data-tagged instructions
-//                         — is still in place; we lose only the second-
-//                         opinions verdict. Logged as a warning so the
-//                         operator notices on the next cron run.
+//     (network blip, transient 5xx, malformed
+//     response) does NOT block summary generation.
+//     The structural defense — <data> markers, system
+//     prompt refusing to obey data-tagged instructions
+//     — is still in place; we lose only the second-
+//     opinions verdict. Logged as a warning so the
+//     operator notices on the next cron run.
 func (p *Pipeline) checkPrompt(ctx context.Context, project string, aud prompt.Audience, prompt string) error {
 	verdict, score, err := p.Guard.Check(ctx, prompt)
 	if err != nil {
@@ -415,13 +414,4 @@ func sanitize(s string) string {
 		return "report"
 	}
 	return string(out)
-}
-
-// dirExists is a small helper for the run summary in main; lives here
-// because it derives from pipeline state.
-func (p *Pipeline) dir() string {
-	if abs, err := filepath.Abs(p.Cfg.OutputDir); err == nil {
-		return abs
-	}
-	return p.Cfg.OutputDir
 }

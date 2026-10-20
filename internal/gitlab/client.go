@@ -54,18 +54,18 @@ func normalizeGitLabURL(raw string) string {
 // MergeRequest is the subset of GitLab's /merge_requests response shape we use.
 // json tags match GitLab's wire format; ignore fields we don't need.
 type MergeRequest struct {
-	IID          int       `json:"iid"`
-	Title        string    `json:"title"`
-	Description  string    `json:"description"`
-	State        string    `json:"state"` // "opened" | "closed" | "merged"
-	Author       User      `json:"author"`
-	WebURL       string    `json:"web_url"`
-	Labels       []string  `json:"labels"`
-	UserNotesCount int     `json:"user_notes_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	ClosedAt     *time.Time `json:"closed_at"`
-	MergedAt     *time.Time `json:"merged_at"`
+	IID            int        `json:"iid"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	State          string     `json:"state"` // "opened" | "closed" | "merged"
+	Author         User       `json:"author"`
+	WebURL         string     `json:"web_url"`
+	Labels         []string   `json:"labels"`
+	UserNotesCount int        `json:"user_notes_count"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	ClosedAt       *time.Time `json:"closed_at"`
+	MergedAt       *time.Time `json:"merged_at"`
 
 	// Changes is populated by FetchMRChanges after the list fetch; nil
 	// for MRs that haven't been detailed (or whose detail call failed).
@@ -92,28 +92,28 @@ type ChangesSummary struct {
 
 // Issue is the subset of GitLab's /issues response shape we use.
 type Issue struct {
-	IID          int       `json:"iid"`
-	Title        string    `json:"title"`
-	Description  string    `json:"description"`
-	State        string    `json:"state"`
-	Author       User      `json:"author"`
-	WebURL       string    `json:"web_url"`
-	Labels       []string  `json:"labels"`
-	UserNotesCount int     `json:"user_notes_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	ClosedAt     *time.Time `json:"closed_at"`
+	IID            int        `json:"iid"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	State          string     `json:"state"`
+	Author         User       `json:"author"`
+	WebURL         string     `json:"web_url"`
+	Labels         []string   `json:"labels"`
+	UserNotesCount int        `json:"user_notes_count"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	ClosedAt       *time.Time `json:"closed_at"`
 }
 
 // Commit is the subset of GitLab's /repository/commits response shape we use.
 type Commit struct {
-	ID           string    `json:"id"`
-	ShortID      string    `json:"short_id"`
-	Title        string    `json:"title"`
-	AuthorName   string    `json:"author_name"`
-	AuthorEmail  string    `json:"author_email"`
-	WebURL       string    `json:"web_url"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	ShortID     string    `json:"short_id"`
+	Title       string    `json:"title"`
+	AuthorName  string    `json:"author_name"`
+	AuthorEmail string    `json:"author_email"`
+	WebURL      string    `json:"web_url"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // User is the GitLab user summary embedded in MR/issue responses.
@@ -329,7 +329,7 @@ func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode f
 			return err
 		}
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
