@@ -43,8 +43,14 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	if err != nil {
 		return Response{}, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	// Local OpenAI-compatible servers (Ollama, vLLM, LM Studio) usually
+	// don't require auth. Sending "Authorization: Bearer " with an empty
+	// key is rejected by some of them, so omit the header entirely when
+	// no key is configured.
+	if o.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
+	}
 
 	resp, err := o.HTTP.Do(httpReq)
 	if err != nil {

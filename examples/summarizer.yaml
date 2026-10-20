@@ -22,3 +22,15 @@ model: "gpt-4o-mini"
 # truncation is disclosed in the report's prompt. Tune for your busiest
 # project's typical weekly volume.
 max_events: 200
+
+# OpenAI-compatible base URL. Default points at api.openai.com. For local
+# servers, set to e.g. "http://localhost:11434/v1" (Ollama),
+# "http://localhost:1234/v1" (LM Studio), or "http://localhost:8000/v1"
+# (vLLM). Either bare host or /v1-suffixed forms are accepted. The
+# $OPENAI_BASE_URL env var and --openai-base-url CLI flag override.
+#
+# When this points anywhere other than api.openai.com, OPENAI_API_KEY is
+# treated as optional — most local servers ignore the Authorization
+# header entirely.
+# openai_base_url: "https://api.openai.com/v1"
+# openai_base_url: "http://localhost:11434/v1"  # Ollama

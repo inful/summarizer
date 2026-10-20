@@ -26,9 +26,30 @@ Secrets come from environment, never from config:
 
 ```bash
 export GITLAB_TOKEN="glpat-..."          # required
-export OPENAI_API_KEY="sk-..."           # required for provider=openai (default)
-# export ANTHROPIC_API_KEY="sk-ant-..."  # required for provider=anthropic
+export OPENAI_API_KEY="sk-..."           # required when provider=openai and baseURL is api.openai.com; optional otherwise
+# export OPENAI_BASE_URL="http://localhost:11434/v1"  # for local Ollama/vLLM/LM Studio
+# export ANTHROPIC_API_KEY="sk-ant-..."  # required when provider=anthropic
 ```
+
+### Local LLM providers
+
+Any OpenAI-Chat-Completions-compatible endpoint works: Ollama, vLLM, LM Studio, llama.cpp, llama-stack, OpenRouter. Point `OPENAI_BASE_URL` (or `openai_base_url` in config, or `--openai-base-url` flag) at the local host. `OPENAI_API_KEY` is optional in this case — most local servers ignore the `Authorization` header.
+
+```bash
+# Ollama (default port 11434)
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+summarizer run --project group/subgroup/project --model llama3.1
+
+# LM Studio (default port 1234)
+export OPENAI_BASE_URL="http://localhost:1234/v1"
+summarizer run --project group/subgroup/project --model qwen2.5-coder
+
+# vLLM (default port 8000)
+export OPENAI_BASE_URL="http://localhost:8000/v1"
+summarizer run --project group/subgroup/project --model Qwen/Qwen2.5-Coder-32B-Instruct
+```
+
+Either bare-host (`http://localhost:11434`) or `/v1`-suffixed (`http://localhost:11434/v1`) forms are accepted; the normalizer canonicalizes to one.
 
 ## Run
 

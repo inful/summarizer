@@ -41,6 +41,13 @@ type Config struct {
 
 	// Per-project default provider: "openai" or "anthropic". CLI flag overrides.
 	Provider string `yaml:"provider"`
+
+	// OpenAIBaseURL overrides the OpenAI-compatible endpoint. Default
+	// points at api.openai.com; for local servers set to e.g.
+	// "http://localhost:11434/v1" (Ollama), "http://localhost:1234/v1"
+	// (LM Studio), or "http://localhost:8000/v1" (vLLM). The URL
+	// normalizer accepts both bare-host and /v1-suffixed forms.
+	OpenAIBaseURL string `yaml:"openai_base_url"`
 }
 
 // Defaults fills in zero values with sensible built-ins.
@@ -59,6 +66,9 @@ func (c *Config) Defaults() {
 	}
 	if c.Provider == "" {
 		c.Provider = "openai"
+	}
+	if c.OpenAIBaseURL == "" {
+		c.OpenAIBaseURL = "https://api.openai.com/v1"
 	}
 }
 

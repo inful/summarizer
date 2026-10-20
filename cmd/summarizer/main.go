@@ -13,7 +13,8 @@
 // Env vars (do not store tokens in config files):
 //
 //	GITLAB_TOKEN       required for fetch
-//	OPENAI_API_KEY     required when --provider openai (default)
+//	OPENAI_API_KEY     required when --provider openai (default) and baseURL is api.openai.com; optional otherwise
+//	OPENAI_BASE_URL    overrides the OpenAI-compatible endpoint (Ollama, vLLM, LM Studio)
 //	ANTHROPIC_API_KEY  required when --provider anthropic
 package main
 
@@ -94,7 +95,8 @@ CLI wins. See examples/summarizer.yaml.
 
 Env:
   GITLAB_TOKEN       required
-  OPENAI_API_KEY     required when --provider openai (default)
+  OPENAI_API_KEY     required when --provider openai (default); optional if --openai-base-url points at a local server
+  OPENAI_BASE_URL    overrides the OpenAI-compatible endpoint (Ollama, vLLM, LM Studio)
   ANTHROPIC_API_KEY  required when --provider anthropic
 `)
 	}
@@ -110,7 +112,8 @@ Env:
 		dryRun      = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
 		gitlabHost  = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
 		gitlabToken = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
-		openaiKey   = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Prefer env var.")
+		openaiKey    = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
+		openaiBaseURL = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
 		anthropicKey = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
 		configPath  = fs.String("config", "./summarizer.yaml", "path to YAML config file")
 	)
@@ -134,6 +137,11 @@ Env:
 	}
 	if *model != "" {
 		cfg.Model = *model
+	}
+	if *openaiBaseURL != "" {
+		cfg.OpenAIBaseURL = *openaiBaseURL
+	} else if env := os.Getenv("OPENAI_BASE_URL"); env != "" {
+		cfg.OpenAIBaseURL = env
 	}
 	if *outputDir != "" {
 		cfg.OutputDir = *outputDir
@@ -175,11 +183,16 @@ Env:
 		if key == "" {
 			key = os.Getenv("OPENAI_API_KEY")
 		}
-		if key == "" {
-			fmt.Fprintln(os.Stderr, "error: provider=openai but OPENAI_API_KEY is not set")
+		// Local OpenAI-compatible servers (Ollama, vLLM, LM Studio, llama.cpp)
+		// typically don't require auth. Treat an empty key as opt-in to
+		// "no auth" when the baseURL points somewhere other than the
+		// canonical api.openai.com. For api.openai.com we still require
+		// a key — better to fail loud than to silently send empty bearer.
+		if key == "" && cfg.OpenAIBaseURL == "https://api.openai.com/v1" {
+			fmt.Fprintln(os.Stderr, "error: provider=openai but OPENAI_API_KEY is not set (or set --openai-base-url for a local server)")
 			return exitEnv
 		}
-		llmProvider = llm.NewOpenAI(key, cfg.Model, "")
+		llmProvider = llm.NewOpenAI(key, cfg.Model, cfg.OpenAIBaseURL)
 	case "anthropic":
 		key := *anthropicKey
 		if key == "" {
