@@ -1,0 +1,24 @@
+# summarizer config — copy to ./summarizer.yaml and edit.
+#
+# CLI flags override anything here. Secrets (GitLab PAT, LLM API keys) come
+# from env vars, never this file.
+
+# Required: GitLab base URL. For gitlab.com use "https://gitlab.com".
+gitlab_host: "https://gitlab.example.com"
+
+# Output directory for the two reports (one per audience).
+output_dir: "./summarizer-out"
+
+# Default rolling window when --since is not passed on the CLI. Go duration:
+# "168h" is 7 days, "720h" is 30 days. CLI flag overrides.
+default_lookback: "168h"
+
+# LLM provider and model. Per-audience override is not yet supported;
+# one model drives both reports. CLI flag overrides.
+provider: "openai"
+model: "gpt-4o-mini"
+
+# Hard cap on events sent to the LLM. Excess (oldest) is dropped and the
+# truncation is disclosed in the report's prompt. Tune for your busiest
+# project's typical weekly volume.
+max_events: 200
