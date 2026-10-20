@@ -65,13 +65,26 @@ summarizer run --project group/subgroup/project --since 30d --provider anthropic
 
 # Cron-friendly: refuse to overwrite an existing report unless --force.
 summarizer run --project group/subgroup/project --force
+
+# Multi-project: --project is repeatable; comma-separated works too.
+summarizer run --project group/a --project group/b
+summarizer run --project group/a,group/b
+
+# When --project appears more than once, summarizer also writes a
+# combined rollup (combined--<since>d--customer.md and --team.md) by
+# feeding the per-project reports to one extra LLM call per audience.
 ```
 
-Output files are written under `--output-dir` (or `output_dir` from config) as:
+Output files are written under `--output-dir` (or `output_dir` from config):
 
 ```
-<project>--<since-days>d--customer.md
-<project>--<since-days>d--team.md
+# Single-project run:
+<project>--<duration>d--customer.md
+<project>--<duration>d--team.md
+
+# Multi-project run (additionally):
+combined--<duration>d--customer.md
+combined--<duration>d--team.md
 ```
 
 ## Schedule

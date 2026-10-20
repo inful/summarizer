@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,9 +83,10 @@ const (
 )
 
 func runCmd(args []string) int {
+	var projects stringSliceFlag
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, `summarizer run — fetch + summarize one GitLab project
+		fmt.Fprintf(os.Stderr, `summarizer run — fetch + summarize one or more GitLab projects
 
 Flags:
 `)
@@ -102,27 +104,27 @@ Env:
 	}
 
 	var (
-		project     = fs.String("project", "", "GitLab project path, e.g. group/subgroup/project (required)")
-		since       = fs.Duration("since", 0, "rolling window: '168h' for 7d, '720h' for 30d. Default from config.")
-		provider    = fs.String("provider", "", "LLM provider: openai or anthropic (default from config)")
-		model       = fs.String("model", "", "LLM model id (default from config)")
-		outputDir   = fs.String("output-dir", "", "output directory (default from config)")
-		maxEvents   = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
-		force       = fs.Bool("force", false, "overwrite existing output files")
-		dryRun      = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
-		gitlabHost  = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
-		gitlabToken = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
-		openaiKey    = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
-		openaiBaseURL = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
-		anthropicKey = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
-		configPath  = fs.String("config", "./summarizer.yaml", "path to YAML config file")
+		since          = fs.Duration("since", 0, "rolling window: '168h' for 7d, '720h' for 30d. Default from config.")
+		provider       = fs.String("provider", "", "LLM provider: openai or anthropic (default from config)")
+		model          = fs.String("model", "", "LLM model id (default from config)")
+		outputDir      = fs.String("output-dir", "", "output directory (default from config)")
+		maxEvents      = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
+		force          = fs.Bool("force", false, "overwrite existing output files")
+		dryRun         = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
+		gitlabHost     = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
+		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
+		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
+		openaiBaseURL  = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
+		anthropicKey   = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
+		configPath     = fs.String("config", "./summarizer.yaml", "path to YAML config file")
 	)
+	fs.Var(&projects, "project", "GitLab project path (repeatable, or comma-separated). Examples: --project group/a --project group/b, or --project group/a,group/b. At least one required.")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 
-	if *project == "" {
-		fmt.Fprintln(os.Stderr, "error: --project is required")
+	if len(projects) == 0 {
+		fmt.Fprintln(os.Stderr, "error: at least one --project is required")
 		return exitUsage
 	}
 
@@ -209,7 +211,7 @@ Env:
 	}
 
 	pipe := run.New(cfg, gc, llmProvider, writer.New(), run.Options{
-		Project:  *project,
+		Projects: projects,
 		Since:    cfg.Lookback(),
 		Provider: cfg.Provider,
 		Model:    cfg.Model,
@@ -230,13 +232,31 @@ Env:
 
 func printSummary(res run.Result, err error, dryRun bool, window time.Duration) {
 	if err == nil && !dryRun {
-		fmt.Fprintf(os.Stderr, "summarizer: ok — wrote %d file(s) using %d of %d event(s) (window=%s)\n",
-			len(res.FilesWritten), res.EventsUsed, res.EventsFetched, window)
-		for _, p := range res.FilesWritten {
-			fmt.Fprintf(os.Stderr, "  → %s\n", p)
+		var totalEvents, usedEvents int
+		for _, p := range res.Projects {
+			totalEvents += p.EventsFetched
+			usedEvents += p.EventsUsed
+		}
+		fileCount := 2 * len(res.Projects)
+		if len(res.RollupFiles) > 0 {
+			fileCount += len(res.RollupFiles)
+		}
+		fmt.Fprintf(os.Stderr, "summarizer: ok — %d project(s), %d event(s) (%d used), %d file(s) written (window=%s)\n",
+			len(res.Projects), totalEvents, usedEvents, fileCount, window)
+		for _, p := range res.Projects {
+			for _, f := range p.FilesWritten {
+				fmt.Fprintf(os.Stderr, "  → %s\n", f)
+			}
+			for aud, u := range p.TokensByAudience {
+				fmt.Fprintf(os.Stderr, "  tokens[%s/%s]: prompt=%d completion=%d total=%d\n",
+					p.Project, aud, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+			}
+		}
+		for _, f := range res.RollupFiles {
+			fmt.Fprintf(os.Stderr, "  → %s (rollup)\n", f)
 		}
 		for aud, u := range res.TokensByAudience {
-			fmt.Fprintf(os.Stderr, "  tokens[%s]: prompt=%d completion=%d total=%d\n",
+			fmt.Fprintf(os.Stderr, "  tokens[rollup/%s]: prompt=%d completion=%d total=%d\n",
 				aud, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
 		}
 		return
@@ -284,4 +304,26 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// stringSliceFlag is a custom flag.Value that accepts both repeated
+// invocations (--project X --project Y) and comma-separated values
+// (--project X,Y) in a single invocation. Empty entries are dropped so
+// "--project X,,Y" doesn't produce an empty string.
+//
+// stdlib flag (as of Go 1.26) doesn't ship a slice type, and pulling in
+// cobra for one flag is overkill. ~15 lines of custom code wins either way.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(v string) error {
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			*s = append(*s, p)
+		}
+	}
+	return nil
 }

@@ -34,3 +34,15 @@ max_events: 200
 # header entirely.
 # openai_base_url: "https://api.openai.com/v1"
 # openai_base_url: "http://localhost:11434/v1"  # Ollama
+
+# Multi-project runs. When more than one project is listed, summarizer
+# writes a combined rollup (combined--<duration>d--customer.md and
+# --team.md) by feeding the per-project reports to one extra LLM call
+# per audience. Per-project reports stay the same.
+#
+# CLI --project is repeatable and/or comma-separated; YAML projects:
+# is appended to the CLI list.
+projects:
+  - group/subgroup/project-a
+  - group/subgroup/project-b
+  - group/subgroup/project-c

@@ -48,6 +48,17 @@ type Config struct {
 	// (LM Studio), or "http://localhost:8000/v1" (vLLM). The URL
 	// normalizer accepts both bare-host and /v1-suffixed forms.
 	OpenAIBaseURL string `yaml:"openai_base_url"`
+
+	// Projects is the list of GitLab project paths to summarize in one run.
+	// CLI --project is repeatable; each occurrence adds to the slice. The
+	// YAML key accepts a list, e.g.:
+	//   projects:
+	//     - group/subgroup/project-a
+	//     - group/subgroup/project-b
+	// When len(Projects) > 1, the pipeline also writes a top-level
+	// rollup (combined--<since>d--customer.md and --team.md) by feeding
+	// the per-project reports to one extra LLM call per audience.
+	Projects []string `yaml:"projects"`
 }
 
 // Defaults fills in zero values with sensible built-ins.
