@@ -196,7 +196,7 @@ type ProjectSummary struct {
 	ID             int       `json:"id"`
 	LastActivityAt time.Time `json:"last_activity_at"`
 	// Topics is the project's GitLab topic list. summarizer reads
-	// `summarizer` and `summarizer-team-only` from this list to
+	// `summarize` and `summarize-team-only` from this list to
 	// decide audience policy (see internal/policy.Classify). Free-
 	// tier compatible.
 	Topics []string `json:"topics"`

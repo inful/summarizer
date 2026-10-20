@@ -20,13 +20,13 @@ const (
 	// it flips the default from team-only to full output (customer +
 	// team). On an explicit-listed project, it's a no-op (those
 	// default to full output already).
-	TopicSummarizer = "summarizer"
+	TopicSummarizer = "summarize"
 
-	// TopicSummarizerTeamOnly is the override. Wherever it appears,
+	// TopicSummarizeTeamOnly is the override. Wherever it appears,
 	// the project produces team output only. It's sticky across all
 	// sources (config + CLI + topic): if any of them says "team only",
 	// team only wins.
-	TopicSummarizerTeamOnly = "summarizer-team-only"
+	TopicSummarizeTeamOnly = "summarize-team-only"
 )
 
 // ProjectSource identifies how the project entered the run. Used by
@@ -64,7 +64,7 @@ type ProjectPolicy struct {
 //
 // Two OR-gates drive TeamOnly:
 //
-//	explicitTeamOnly         := inList OR hasTopic(TopicSummarizerTeamOnly)
+//	explicitTeamOnly         := inList OR hasTopic(TopicSummarizeTeamOnly)
 //	discoveredWithoutOptIn   := source == SourceDiscovered AND
 //	                              NOT hasTopic(TopicSummarizer)
 //	teamOnly                  := explicitTeamOnly OR discoveredWithoutOptIn
@@ -79,7 +79,7 @@ type ProjectPolicy struct {
 //
 // Truth table lives in policy_test.go.
 func Classify(source ProjectSource, topics []string, inList bool) ProjectPolicy {
-	explicitTeamOnly := inList || hasTopic(topics, TopicSummarizerTeamOnly)
+	explicitTeamOnly := inList || hasTopic(topics, TopicSummarizeTeamOnly)
 	discoveredWithoutOptIn := source == SourceDiscovered && !hasTopic(topics, TopicSummarizer)
 	teamOnly := explicitTeamOnly || discoveredWithoutOptIn
 	return ProjectPolicy{
@@ -91,7 +91,7 @@ func Classify(source ProjectSource, topics []string, inList bool) ProjectPolicy 
 
 // hasTopic is an exact-token lookup. Empty input never matches.
 // Topic labels are tokens — substring or prefix matching would be
-// wrong (a topic "summarizer-beta" should NOT match "summarizer").
+// wrong (a topic "summarize-beta" should NOT match "summarize").
 func hasTopic(topics []string, want string) bool {
 	for _, t := range topics {
 		if t == want {

@@ -20,22 +20,22 @@ func TestClassify(t *testing.T) {
 	cases := []tc{
 		// Explicit-listed: operator's "I trust this" default.
 		{"explicit, no topics, no override", SourceExplicit, nil, false, false, true},
-		{"explicit, summarizer topic, no override", SourceExplicit, []string{"summarizer"}, false, false, true},
-		{"explicit, summarizer-team-only, no override", SourceExplicit, []string{"summarizer-team-only"}, false, true, false},
-		{"explicit, both topics", SourceExplicit, []string{"summarizer", "summarizer-team-only"}, false, true, false},
+		{"explicit, summarizer topic, no override", SourceExplicit, []string{"summarize"}, false, false, true},
+		{"explicit, summarizer-team-only, no override", SourceExplicit, []string{"summarize-team-only"}, false, true, false},
+		{"explicit, both topics", SourceExplicit, []string{"summarize", "summarize-team-only"}, false, true, false},
 		{"explicit, irrelevant topic", SourceExplicit, []string{"ruby", "kubernetes"}, false, false, true},
 
 		// Discovered: default safe (team-only unless summarizer).
-		{"discovered, summarizer topic", SourceDiscovered, []string{"summarizer"}, false, false, true},
-		{"discovered, summarizer-team-only", SourceDiscovered, []string{"summarizer-team-only"}, false, true, false},
-		{"discovered, both topics", SourceDiscovered, []string{"summarizer", "summarizer-team-only"}, false, true, false},
+		{"discovered, summarizer topic", SourceDiscovered, []string{"summarize"}, false, false, true},
+		{"discovered, summarizer-team-only", SourceDiscovered, []string{"summarize-team-only"}, false, true, false},
+		{"discovered, both topics", SourceDiscovered, []string{"summarize", "summarize-team-only"}, false, true, false},
 		{"discovered, no topics", SourceDiscovered, nil, false, true, false},
 		{"discovered, irrelevant topic", SourceDiscovered, []string{"ruby"}, false, true, false},
 
 		// Override (config / CLI) — always wins.
-		{"explicit + override", SourceExplicit, []string{"summarizer"}, true, true, false},
+		{"explicit + override", SourceExplicit, []string{"summarize"}, true, true, false},
 		{"discovered + override, no topics", SourceDiscovered, nil, true, true, false},
-		{"discovered + override, summarizer topic", SourceDiscovered, []string{"summarizer"}, true, true, false},
+		{"discovered + override, summarizer topic", SourceDiscovered, []string{"summarize"}, true, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -60,10 +60,10 @@ func TestClassify(t *testing.T) {
 // is NOT a feature — operators who write `Summarizer` get a different
 // result from `summarizer`.
 func TestClassify_TopicCaseSensitive(t *testing.T) {
-	lowercase := Classify(SourceDiscovered, []string{"summarizer"}, false)
+	lowercase := Classify(SourceDiscovered, []string{"summarize"}, false)
 	mixedcase := Classify(SourceDiscovered, []string{"Summarizer"}, false)
 	if lowercase.CustomerOn != true {
-		t.Errorf("lowercase 'summarizer' should opt-in to customer")
+		t.Errorf("lowercase 'summarize' should opt-in to customer")
 	}
 	if mixedcase.CustomerOn != false {
 		t.Errorf("'Summarizer' (capitalized) should NOT opt-in; topics are case-sensitive")
@@ -81,12 +81,12 @@ func TestHasTopic(t *testing.T) {
 		want   string
 		out    bool
 	}{
-		{[]string{"summarizer"}, "summarizer", true},
-		{[]string{"summarizer-team-only"}, "summarizer-team-only", true},
-		{[]string{"summarizer-team-only", "ruby"}, "summarizer", false},
-		{[]string{"ruby", "summarizer"}, "summarizer", true},
-		{nil, "summarizer", false},
-		{[]string{}, "summarizer", false},
+		{[]string{"summarize"}, "summarize", true},
+		{[]string{"summarize-team-only"}, "summarize-team-only", true},
+		{[]string{"summarize-team-only", "ruby"}, "summarize", false},
+		{[]string{"ruby", "summarize"}, "summarize", true},
+		{nil, "summarize", false},
+		{[]string{}, "summarize", false},
 	}
 	for _, c := range cases {
 		got := hasTopic(c.topics, c.want)

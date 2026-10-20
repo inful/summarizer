@@ -23,7 +23,7 @@ import (
 // No LLM call, no customer-facing file. Team side still produces.
 //
 // We arrange team-only via InternalOnlyProjects (union source #2 of 3).
-// The third source (the GitLab-side `summarizer-team-only` topic) is
+// The third source (the GitLab-side `summarize-team-only` topic) is
 // tested in policy's own truth table.
 func TestRunOneProject_SkipsCustomerForTeamOnlyProject(t *testing.T) {
 	p, llm, pub := newTeamOnlyPipeline(t)

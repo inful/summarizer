@@ -7,7 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **D5 — GitLab-as-control-plane audience policy** (D5 from `docs/deferred.md`). Three sources of "is this project customer-eligible" union together: the YAML `internal_only_projects:` block, the `--internal-only-project` CLI flag, and the GitLab project's topics (`summarizer` for opt-in to customer output; `summarizer-team-only` for the override). Discovered projects (via `--discover-group`) default to team-only unless `summarizer` is set — the default-safe behavior keeps the customer side bounded even when the operator doesn't know what's in a group.
+- **D5 — GitLab-as-control-plane audience policy** (D5 from `docs/deferred.md`). Three sources of "is this project customer-eligible" union together: the YAML `internal_only_projects:` block, the `--internal-only-project` CLI flag, and the GitLab project's topics (`summarize` for opt-in to customer output; `summarize-team-only` for the override). Discovered projects (via `--discover-group`) default to team-only unless `summarize` is set — the default-safe behavior keeps the customer side bounded even when the operator doesn't know what's in a group.
 - **Cross-project epic rollup file** (`combined--epics--<period>--<audience>.md`). Fires whenever ≥1 active epic exists anywhere in the run, independent of project count. Each project's active epics land in dedicated `# Project: …` sections with title, state, web URL, and event count; the LLM synthesizes cross-project themes for both customer and team audiences. One extra LLM call per audience per run.
 - **Epic-level rollup in per-project reports.** When a project's GitLab group has epics (Premium/Ultimate feature), the customer and team prompts surface them as `## Epics active this period` with one H3 per epic, linked issues nested underneath, and an `## Other activity` section for events without an epic link.
   - Activity gate: an epic only counts toward the `maxActiveEpics=20` cap when at least one of its linked issues has `updated_at` within the window. Dormant epics (no issue activity this period) are silently dropped — they don't surface in the report and don't burn the cap.
@@ -32,7 +32,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - New `run.Options.DiscoveredGroups` field. `ProjectResult.FromDiscovery` (new bool) flags per-project whether the project came from discovery vs. explicit listing.
 
 ### Internals (D5 / audience policy)
-- New `internal/policy` package — `ProjectSource` enum (`SourceExplicit`, `SourceDiscovered`), `ProjectPolicy`, and a pure-function `Classify(source, topics, inList)`. The 13-row truth table is the project's truth-table test (`policy_test.go`). Topics are case-sensitive exact-token matches (`"summarizer-team-only"` is a distinct label from `"Summarizer-Team-Only"`).
+- New `internal/policy` package — `ProjectSource` enum (`SourceExplicit`, `SourceDiscovered`), `ProjectPolicy`, and a pure-function `Classify(source, topics, inList)`. The 13-row truth table is the project's truth-table test (`policy_test.go`). Topics are case-sensitive exact-token matches (`"summarize-team-only"` is a distinct label from `"Summarize-Team-Only"`).
 - Discovery manifest annotates each scanned project with a `(team-only)` tag when the classifier says so, so the operator's stderr audit trail tells them what's classified how.
 
 ## [0.1.0] - 2026-10-20

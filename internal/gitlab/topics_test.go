@@ -23,7 +23,7 @@ func TestFetchProjectSummary_HappyPath(t *testing.T) {
 			"id": 1,
 			"path_with_namespace": "group/payments",
 			"last_activity_at": "2026-10-19T00:00:00Z",
-			"topics": ["summarizer", "ruby", "kubernetes"]
+			"topics": ["summarize", "ruby", "kubernetes"]
 		}`))
 	}))
 	defer srv.Close()
@@ -36,7 +36,7 @@ func TestFetchProjectSummary_HappyPath(t *testing.T) {
 	if got.Path != "group/payments" {
 		t.Errorf("path: %q", got.Path)
 	}
-	wantTopics := []string{"summarizer", "ruby", "kubernetes"}
+	wantTopics := []string{"summarize", "ruby", "kubernetes"}
 	if len(got.Topics) != len(wantTopics) {
 		t.Errorf("topics: want %v, got %v", wantTopics, got.Topics)
 	}

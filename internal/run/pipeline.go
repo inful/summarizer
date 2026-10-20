@@ -32,7 +32,7 @@ type Options struct {
 	DryRun               bool          // fetch + print + exit; no LLM call, no file write
 	IncludeDiffs         bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
 	DiscoveredGroups     []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
-	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarizer-team-only" classification; team-only projects produce no customer-facing report.
+	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a

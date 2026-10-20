@@ -15,11 +15,11 @@ import (
 // would be wasted bandwidth.
 func TestFetchGroupProjects_HappyPath(t *testing.T) {
 	page1 := `[
-		{"id": 1, "path_with_namespace": "infra/payments", "last_activity_at": "2026-10-18T12:00:00Z", "topics": ["summarizer"]},
+		{"id": 1, "path_with_namespace": "infra/payments", "last_activity_at": "2026-10-18T12:00:00Z", "topics": ["summarize"]},
 		{"id": 2, "path_with_namespace": "infra/auth",     "last_activity_at": "2026-09-04T12:00:00Z"}
 	]`
 	page2 := `[
-		{"id": 3, "path_with_namespace": "infra/search",   "last_activity_at": "2026-10-19T08:00:00Z", "topics": ["summarizer-team-only", "billing"]}
+		{"id": 3, "path_with_namespace": "infra/search",   "last_activity_at": "2026-10-19T08:00:00Z", "topics": ["summarize-team-only", "billing"]}
 	]`
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v4/groups/infra/projects", func(w http.ResponseWriter, r *http.Request) {
@@ -51,16 +51,16 @@ func TestFetchGroupProjects_HappyPath(t *testing.T) {
 	if got[2].Path != "infra/search" {
 		t.Errorf("project 2 wrong: %+v", got[2])
 	}
-	// Topics field flows through: project 0 has [summarizer],
-	// project 1 has [], project 2 has [summarizer-team-only, billing].
-	if len(got[0].Topics) != 1 || got[0].Topics[0] != "summarizer" {
-		t.Errorf("project 0 topics: want [summarizer], got %+v", got[0].Topics)
+	// Topics field flows through: project 0 has [summarize],
+	// project 1 has [], project 2 has [summarize-team-only, billing].
+	if len(got[0].Topics) != 1 || got[0].Topics[0] != "summarize" {
+		t.Errorf("project 0 topics: want [summarize], got %+v", got[0].Topics)
 	}
 	if len(got[1].Topics) != 0 {
 		t.Errorf("project 1 topics: want [], got %+v", got[1].Topics)
 	}
-	if len(got[2].Topics) != 2 || got[2].Topics[0] != "summarizer-team-only" {
-		t.Errorf("project 2 topics: want [summarizer-team-only billing], got %+v", got[2].Topics)
+	if len(got[2].Topics) != 2 || got[2].Topics[0] != "summarize-team-only" {
+		t.Errorf("project 2 topics: want [summarize-team-only billing], got %+v", got[2].Topics)
 	}
 }
 

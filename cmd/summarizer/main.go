@@ -127,7 +127,7 @@ Env:
 	)
 	fs.Var(&projects, "project", "GitLab project path (repeatable, or comma-separated). Examples: --project group/a --project group/b, or --project group/a,group/b. Composes with --discover-group; an explicit listing takes precedence on duplicate paths.")
 	fs.Var(&discoverGroups, "discover-group", "GitLab group path to scan for active projects (repeatable, or comma-separated). Each project's MRs in the window are probed; active ones join the run alongside any --project listings. Recursion into subgroups is not implemented in v1 — pass the leaf group you want covered.")
-	fs.Var(&internalOnly, "internal-only-project", "Project path whose customer-facing output is suppressed (repeatable, or comma-separated). Same effect as setting the `summarizer-team-only` GitLab topic on the project. The three sources (this flag, the YAML `internal_only_projects:` block, the GitLab topic) union together.")
+	fs.Var(&internalOnly, "internal-only-project", "Project path whose customer-facing output is suppressed (repeatable, or comma-separated). Same effect as setting the `summarize-team-only` GitLab topic on the project. The three sources (this flag, the YAML `internal_only_projects:` block, the GitLab topic) union together.")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}

@@ -216,8 +216,8 @@ summarizer run --discover-group group/team-a --project group/team-a/flagship --s
 # Audience policy: which projects produce customer-facing output?
 # Three sources union together: --internal-only-project flag,
 # summarizer.yaml's internal_only_projects block, and the GitLab-side
-# `summarizer-team-only` topic on the project. Discovered projects
-# default to team-only unless the project carries the `summarizer`
+# `summarize-team-only` topic on the project. Discovered projects
+# default to team-only unless the project carries the `summarize`
 # topic (opt-in to customer output). The auditor-friendly rule:
 # absence of any topic = team only for discovered, both audiences
 # for explicit-listed.
