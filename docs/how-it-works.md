@@ -99,7 +99,12 @@ the data flow and the components.
 | `internal/safety` | `Guard` interface. `DecideGuard` wraps `inful/decide` for pre-LLM prompt-injection checks. `NoopGuard` is the default-off path. `FakeGuard` for tests. |
 | `internal/run` | The pipeline. `runOneProject` does fetch + normalise + 2× LLM + 2× publish per project. `runRollup` does the cross-project synthesis. Per-MR `fillMRChanges` worker pool. |
 
-## What stays out of scope (today)
+## What stays out of scope
+
+See [`docs/deferred.md`](deferred.md) for the canonical list. Summarizer's
+posture on the items below hasn't changed; the full rationale lives in
+deferred.md alongside the "not yet built" backlog and the "decided
+against" log.
 
 - Real-time activity streaming (we poll, not subscribe)
 - Operator UI / control plane (everything is config + cron)
