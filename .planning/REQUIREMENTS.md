@@ -104,20 +104,63 @@ Deferred to future release. Tracked but not in current roadmap.
 
 Which phases cover which requirements. Updated during roadmap creation.
 
+Each v1 requirement maps to exactly one phase.
+
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CFG-01..08 | Phase 4 | Pending |
-| FETCH-01..09 | Phase 1 | Pending |
-| LLM-01..10 | Phase 2 | Pending |
-| LLM-03..07 (prompt rendering for both audiences) | Phase 3 | Pending |
-| OUT-01..04 | Phase 4 | Pending |
-| RUN-01..05 | Phase 4 | Pending |
+| CFG-01 | Phase 1 | Pending |
+| CFG-02 | Phase 1 | Pending |
+| CFG-03 | Phase 1 | Pending |
+| CFG-04 | Phase 1 | Pending |
+| CFG-05 | Phase 1 | Pending |
+| CFG-06 | Phase 1 | Pending |
+| CFG-07 | Phase 1 | Pending |
+| CFG-08 | Phase 1 | Pending |
+| FETCH-01 | Phase 1 | Pending |
+| FETCH-02 | Phase 1 | Pending |
+| FETCH-03 | Phase 1 | Pending |
+| FETCH-04 | Phase 1 | Pending |
+| FETCH-05 | Phase 1 | Pending |
+| FETCH-06 | Phase 1 | Pending |
+| FETCH-07 | Phase 1 | Pending |
+| FETCH-08 | Phase 1 | Pending |
+| FETCH-09 | Phase 1 | Pending |
+| RUN-02 | Phase 1 | Pending |
+| LLM-01 | Phase 2 | Pending |
+| LLM-02 | Phase 2 | Pending |
+| LLM-03 | Phase 2 | Pending |
+| LLM-06 | Phase 2 | Pending |
+| LLM-08 | Phase 2 | Pending |
+| LLM-09 | Phase 2 | Pending |
+| LLM-10 | Phase 2 | Pending |
+| OUT-02 | Phase 2 | Pending |
+| LLM-04 | Phase 3 | Pending |
+| LLM-05 | Phase 3 | Pending |
+| LLM-07 | Phase 3 | Pending |
+| OUT-01 | Phase 3 | Pending |
+| OUT-03 | Phase 4 | Pending |
+| OUT-04 | Phase 4 | Pending |
+| RUN-01 | Phase 4 | Pending |
+| RUN-03 | Phase 4 | Pending |
+| RUN-04 | Phase 4 | Pending |
+| RUN-05 | Phase 4 | Pending |
+
+**Per-phase totals:**
+
+| Phase | Requirements | Count |
+|-------|--------------|-------|
+| 1. GitLab Ingest | CFG-01..08, FETCH-01..09, RUN-02 | 18 |
+| 2. Bounded Single-Audience Report | LLM-01, LLM-02, LLM-03, LLM-06, LLM-08..10, OUT-02 | 8 |
+| 3. Dual-Audience Reports | LLM-04, LLM-05, LLM-07, OUT-01 | 4 |
+| 4. Unattended-Run Safety | OUT-03, OUT-04, RUN-01, RUN-03..05 | 6 |
 
 **Coverage:**
-- v1 requirements: 35 total
-- Mapped to phases: 35
+- v1 requirements: 36 total (CFG 8 + FETCH 9 + LLM 10 + OUT 4 + RUN 5)
+- Mapped to phases: 36 — each to exactly one phase, no duplicates
 - Unmapped: 0 ✓
+
+*Note: the pre-roadmap draft listed 35 and double-mapped LLM-03..07 to both Phase 2 and Phase 3; both corrected above.*
 
 ---
 *Requirements defined: 2026-10-20*
-*Last updated: 2026-10-20 after initial definition*
+*Last updated: 2026-10-20 after roadmap creation (traceability mapped, count corrected 35 → 36)*
