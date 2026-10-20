@@ -198,7 +198,14 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 	}, nil
 }
 
+// ensureBranch creates the per-period source branch if it's missing.
+// GET-first: GitLab 400s with "has already been taken" on a duplicate
+// branch name, and one run publishes many files into one period — so
+// the naive POST-every-time version died on the second report.
 func (g *GitLabPublisher) ensureBranch(branch string) error {
+	if g.branchExists(branch) {
+		return nil
+	}
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches",
 		g.Host, url.PathEscape(g.Project))
 	body, _ := json.Marshal(branchReq{
@@ -206,6 +213,26 @@ func (g *GitLabPublisher) ensureBranch(branch string) error {
 		StartPoint: g.DefaultBranch,
 	})
 	return g.api(urlStr, "POST", body, nil)
+}
+
+// branchExists treats only 200 as "yes"; every other status (404, 403,
+// transport) falls through to the create attempt, which surfaces the
+// real error rather than swallowing it here.
+func (g *GitLabPublisher) branchExists(branch string) bool {
+	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches/%s",
+		g.Host, url.PathEscape(g.Project), pathEscape(branch))
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("PRIVATE-TOKEN", g.Token)
+	resp, err := g.HTTP.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == http.StatusOK
 }
 
 // fileResponse is the subset of the Files API GET response we care about.

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 type fakeGitLab struct {
 	branches      sync.Map // branch name → bool (existence)
 	branchCreates atomic.Int64
+	branchGets    atomic.Int64
 	filePuts      atomic.Int64
 	fileReads     atomic.Int64
 	mergeRequests []mergeRequest
@@ -57,15 +59,36 @@ func (f *fakeGitLab) handler() http.Handler {
 		var b branchReq
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &b)
-		// Idempotent: if the branch exists, return ok.
+		// Real GitLab 400s on a duplicate branch name.
 		if _, ok := f.branches.Load(b.Branch); ok {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":{"branch":["has already been taken"]}}`))
 			return
 		}
 		f.branches.Store(b.Branch, true)
 		f.branchCreates.Add(1)
 		w.WriteHeader(http.StatusCreated)
 	})
+	mux.HandleFunc("/api/v4/projects/group%2Freports/repository/branches/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method", http.StatusMethodNotAllowed)
+			return
+		}
+		name, err := url.PathUnescape(strings.TrimPrefix(r.URL.EscapedPath(),
+			"/api/v4/projects/group%2Freports/repository/branches/"))
+		if err != nil {
+			http.Error(w, "bad encoding", http.StatusBadRequest)
+			return
+		}
+		if _, ok := f.branches.Load(name); !ok {
+			http.Error(w, "404 Branch Not Found", http.StatusNotFound)
+			return
+		}
+		f.branchGets.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"x"}`))
+	})
+
 	mux.HandleFunc("/api/v4/projects/group%2Freports/repository/files/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			// readExistingUID: a 200 with the stored content (for an
@@ -241,6 +264,36 @@ func TestGitLabPublisher_IdempotentSamePeriod(t *testing.T) {
 		t.Errorf("expected 1 file put, got %d", got)
 	}
 	_ = time.Now() // silence unused import linter
+}
+
+// TestGitLabPublisher_MultipleFilesOneBranch: one run publishes
+// several reports into the same period. They share one branch and one
+// MR. Real GitLab 400s ("has already been taken") when POST
+// /branches is called for a branch that exists — the fake used to
+// paper over that with a 200, which let a second-file publish fail
+// against live GitLab. The branch must be created exactly once.
+func TestGitLabPublisher_MultipleFilesOneBranch(t *testing.T) {
+	f := &fakeGitLab{}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	for _, name := range []string{"a--7d--customer.md", "a--7d--team.md", "combined--7d--customer.md"} {
+		if _, err := p.Publish(Request{
+			Name: name, Body: []byte("body " + name), Period: "2026-10-19", Kind: KindPerProject,
+		}); err != nil {
+			t.Fatalf("publish %s: %v", name, err)
+		}
+	}
+	if got := f.branchCreates.Load(); got != 1 {
+		t.Errorf("branch created %d times, want exactly 1", got)
+	}
+	if got := f.mrCreateCount.Load(); got != 1 {
+		t.Errorf("MR created %d times, want exactly 1", got)
+	}
+	if got := f.filePuts.Load(); got != 3 {
+		t.Errorf("file puts = %d, want 3", got)
+	}
 }
 
 func TestGitLabPublisher_RejectsMergedMR(t *testing.T) {
