@@ -16,11 +16,11 @@ package policy
 // alphanumerics, hyphens, dots, underscores. Topics are case-
 // sensitive — see TestClassify_TopicCaseSensitive.
 const (
-	// TopicSummarizer is the base opt-in. On a discovered project,
+	// TopicSummarize is the base opt-in. On a discovered project,
 	// it flips the default from team-only to full output (customer +
 	// team). On an explicit-listed project, it's a no-op (those
 	// default to full output already).
-	TopicSummarizer = "summarize"
+	TopicSummarize = "summarize"
 
 	// TopicSummarizeTeamOnly is the override. Wherever it appears,
 	// the project produces team output only. It's sticky across all
@@ -66,7 +66,7 @@ type ProjectPolicy struct {
 //
 //	explicitTeamOnly         := inList OR hasTopic(TopicSummarizeTeamOnly)
 //	discoveredWithoutOptIn   := source == SourceDiscovered AND
-//	                              NOT hasTopic(TopicSummarizer)
+//	                              NOT hasTopic(TopicSummarize)
 //	teamOnly                  := explicitTeamOnly OR discoveredWithoutOptIn
 //
 // CustomerOn is the negation: !teamOnly.
@@ -80,7 +80,7 @@ type ProjectPolicy struct {
 // Truth table lives in policy_test.go.
 func Classify(source ProjectSource, topics []string, inList bool) ProjectPolicy {
 	explicitTeamOnly := inList || hasTopic(topics, TopicSummarizeTeamOnly)
-	discoveredWithoutOptIn := source == SourceDiscovered && !hasTopic(topics, TopicSummarizer)
+	discoveredWithoutOptIn := source == SourceDiscovered && !hasTopic(topics, TopicSummarize)
 	teamOnly := explicitTeamOnly || discoveredWithoutOptIn
 	return ProjectPolicy{
 		Run:        true,

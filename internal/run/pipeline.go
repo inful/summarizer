@@ -34,6 +34,7 @@ type Options struct {
 	DiscoveredGroups     []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
 	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
 	PeriodMode           PeriodMode    // --period-mode daily|monday; controls whether daily runs produce a new directory each (daily) or anchor to the week's Monday (monday). Default: daily (matches v0.1.0).
+	DiscoverByTopic      bool          // --discover-by-topic: scan every project on the instance carrying a `summarize*` topic, across all groups the token can see. Composes with Projects and DiscoveredGroups.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -121,8 +122,8 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	res := Result{Projects: []ProjectResult{}, TokensByAudience: map[string]llm.Usage{}}
 	p.lastActiveEpics = make(map[string][]*gitlab.Epic)
 
-	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 {
-		return res, errors.New("at least one --project or --discover-group is required")
+	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 && !p.Opts.DiscoverByTopic {
+		return res, errors.New("at least one --project, --discover-group or --discover-by-topic is required")
 	}
 
 	finalList, discoveredSet, err := p.resolveProjects(ctx)
@@ -827,13 +828,56 @@ func resolveProjectsWithClient(ctx context.Context, gc *gitlab.Client, opts Opti
 	// Explicit projects always pass through.
 	finalList = append(finalList, opts.Projects...)
 
-	if len(opts.DiscoveredGroups) == 0 {
+	if len(opts.DiscoveredGroups) == 0 && !opts.DiscoverByTopic {
 		return finalList, discoveredSet, nil
 	}
 
 	since := time.Now().UTC().Add(-opts.Since)
 	excluded := 0
 	included := 0
+
+	// Probe + classify + manifest one candidate. Shared by the group
+	// scan and the server-wide topic scan; both produce the same
+	// ProjectSummary and need the same activity gate.
+	admit := func(proj gitlab.ProjectSummary) error {
+		// Skip projects already explicit-listed (dedupe wins to
+		// the explicit listing: FromDiscovery stays false).
+		if containsString(opts.Projects, proj.Path) {
+			return nil
+		}
+		active, err := gc.ProbeProjectActivity(ctx, proj.Path, since)
+		if err != nil {
+			// 4xx (other than 404 already softened) and 5xx fail
+			// the whole run via the wrapped error. We could
+			// soften further, but a probe-failure signals a real
+			// transport / auth issue that's worth surfacing.
+			return fmt.Errorf("probe %s: %w", proj.Path, err)
+		}
+		// Audience classification (D5): discovered projects
+		// need either the `summarize` opt-in topic to be
+		// customer-eligible, or they default to team-only (the
+		// default-safe behaviour). Config/CLI overrides apply
+		// here too. Annotate the manifest line so the operator
+		// can audit classifications at a glance.
+		inOverride := containsString(opts.InternalOnlyProjects, proj.Path)
+		aud := policy.Classify(policy.SourceDiscovered, proj.Topics, inOverride)
+		tnoTag := ""
+		if aud.TeamOnly {
+			tnoTag = " (team-only)"
+		}
+		if !active {
+			excluded++
+			fmt.Fprintf(os.Stderr, "  excluded (no MRs in window): %s%s last_activity_at=%s\n",
+				proj.Path, tnoTag, proj.LastActivityAt.Format(time.RFC3339))
+			return nil
+		}
+		included++
+		finalList = append(finalList, proj.Path)
+		discoveredSet[proj.Path] = true
+		fmt.Fprintf(os.Stderr, "  included:%s %s last_activity_at=%s\n",
+			tnoTag, proj.Path, proj.LastActivityAt.Format(time.RFC3339))
+		return nil
+	}
 
 	for _, group := range opts.DiscoveredGroups {
 		// v1: recursive=false. The recursive branch is reserved
@@ -845,46 +889,38 @@ func resolveProjectsWithClient(ctx context.Context, gc *gitlab.Client, opts Opti
 		fmt.Fprintf(os.Stderr, "summarizer: discovery from group=%s recursive=false; scanned=%d\n",
 			group, len(projects))
 		for _, proj := range projects {
-			// Skip projects already explicit-listed (dedupe wins to
-			// the explicit listing: FromDiscovery stays false).
-			if containsString(opts.Projects, proj.Path) {
-				continue
+			if err := admit(proj); err != nil {
+				return nil, nil, err
 			}
-			active, err := gc.ProbeProjectActivity(ctx, proj.Path, since)
-			if err != nil {
-				// 4xx (other than 404 already softened) and 5xx fail
-				// the whole run via the wrapped error. We could
-				// soften further, but a probe-failure signals a real
-				// transport / auth issue that's worth surfacing.
-				return nil, nil, fmt.Errorf("probe %s: %w", proj.Path, err)
-			}
-			// Audience classification (D5): discovered projects
-			// need either the `summarizer` opt-in topic to be
-			// customer-eligible, or they default to team-only (the
-			// default-safe behaviour). Config/CLI overrides apply
-			// here too. Annotate the manifest line so the operator
-			// can audit classifications at a glance.
-			inOverride := containsString(opts.InternalOnlyProjects, proj.Path)
-			aud := policy.Classify(policy.SourceDiscovered, proj.Topics, inOverride)
-			tnoTag := ""
-			if aud.TeamOnly {
-				tnoTag = " (team-only)"
-			}
-			if !active {
-				excluded++
-				fmt.Fprintf(os.Stderr, "  excluded (no MRs in window): %s%s last_activity_at=%s\n",
-					proj.Path, tnoTag, proj.LastActivityAt.Format(time.RFC3339))
-				continue
-			}
-			included++
-			finalList = append(finalList, proj.Path)
-			discoveredSet[proj.Path] = true
-			fmt.Fprintf(os.Stderr, "  included:%s %s last_activity_at=%s\n",
-				tnoTag, proj.Path, proj.LastActivityAt.Format(time.RFC3339))
 		}
 	}
+
+	// Server-wide scan: every project on the instance carrying any
+	// of the topic markers, across all groups the token can see.
+	if opts.DiscoverByTopic {
+		projects, err := gc.FetchProjectsByTopic(ctx, discoveryTopics())
+		if err != nil {
+			return nil, nil, err
+		}
+		fmt.Fprintf(os.Stderr, "summarizer: discovery from topics=%v; scanned=%d\n",
+			discoveryTopics(), len(projects))
+		for _, proj := range projects {
+			if err := admit(proj); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "summarizer: discovery summary included=%d excluded=%d\n", included, excluded)
 	return finalList, discoveredSet, nil
+}
+
+// discoveryTopics is the topic set the server-wide scan looks for.
+// Both markers, because either one is a valid "include me" signal —
+// `summarize-team-only` alone means "run me, team audience only",
+// which the policy classifier handles downstream.
+func discoveryTopics() []string {
+	return []string{policy.TopicSummarize, policy.TopicSummarizeTeamOnly}
 }
 
 // resolveProjectsForTest wraps resolveProjectsWithClient for use by

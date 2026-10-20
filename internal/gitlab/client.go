@@ -238,6 +238,54 @@ func (c *Client) FetchGroupProjects(ctx context.Context, groupPath string, recur
 	}
 }
 
+// FetchProjectsByTopic lists every project on the GitLab instance the
+// token can see that carries ANY of the given topics. GitLab's ?topic=
+// filter is AND-shaped (repeating the param narrows), so OR semantics
+// come from one call per topic, unioned by project ID.
+//
+// This is the server-wide discovery primitive: it crosses group
+// boundaries, so an operator running many groups doesn't have to
+// enumerate them. Scope is bounded by the PAT — a token that can't see
+// a project won't return it, and that's a permissions question, not a
+// code bug.
+//
+// Results are stable: order follows the order of `topics`, with
+// first-seen projects keeping their position across the union.
+func (c *Client) FetchProjectsByTopic(ctx context.Context, topics []string) ([]ProjectSummary, error) {
+	seen := make(map[int]bool)
+	out := make([]ProjectSummary, 0)
+	for _, topic := range topics {
+		q := url.Values{}
+		q.Set("topic", topic)
+		q.Set("per_page", "100")
+		page := 1
+		for {
+			q.Set("page", strconv.Itoa(page))
+			var batch []ProjectSummary
+			var next bool
+			err := c.doJSON(ctx, "/projects", q, func(resp *http.Response, body []byte) error {
+				next = resp.Header.Get("X-Next-Page") != ""
+				return json.Unmarshal(body, &batch)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("discover topic %s: %w", topic, err)
+			}
+			for _, p := range batch {
+				if seen[p.ID] {
+					continue
+				}
+				seen[p.ID] = true
+				out = append(out, p)
+			}
+			if !next || len(batch) == 0 {
+				break
+			}
+			page++
+		}
+	}
+	return out, nil
+}
+
 // ProbeProjectActivity asks a single cheap question: did this project
 // have any MR with updated_after ≥ since? Returns (true, nil) when
 // at least one MR matches, (false, nil) when none. 404 (project moved,

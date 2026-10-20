@@ -213,6 +213,15 @@ summarizer run --project group/a,group/b
 summarizer run --discover-group group/team-a --since 7d
 summarizer run --discover-group group/team-a --project group/team-a/flagship --since 7d
 
+# Server-wide: --discover-by-topic ignores group boundaries entirely
+# and picks up EVERY project on the instance carrying a `summarize`
+# or `summarize-team-only` topic, across all groups the token can
+# see. Use this when the operator can't enumerate their groups, or
+# when groups come and go. Same activity gate + audience policy as
+# --discover-group; composes with it and with --project.
+summarizer run --discover-by-topic --since 7d
+summarizer run --discover-by-topic --discover-group group/team-a --since 7d
+
 # Audience policy: which projects produce customer-facing output?
 # Three sources union together: --internal-only-project flag,
 # summarizer.yaml's internal_only_projects block, and the GitLab-side

@@ -121,6 +121,7 @@ Env:
 		discoverGroups = stringSliceFlag{}
 		internalOnly   = stringSliceFlag{}
 		periodMode     = fs.String("period-mode", "", "Period bucket shape: 'daily' (default; each run gets its own <prefix>/<YYYY-MM-DD>/ directory) or 'monday' (bucket is the ISO week's Monday, so daily cron runs within Mon-Sun overwrite the same directory, branch and MR)")
+		discoverTopic  = fs.Bool("discover-by-topic", false, "Scan every project on the GitLab instance carrying a `summarize` or `summarize-team-only` topic, across all groups the token can see. Same activity gate and audience policy as --discover-group; composes with it.")
 		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
 		openaiBaseURL  = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
 		anthropicKey   = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
@@ -133,8 +134,8 @@ Env:
 		return exitUsage
 	}
 
-	if len(projects) == 0 {
-		fmt.Fprintln(os.Stderr, "error: at least one --project is required")
+	if len(projects) == 0 && len(discoverGroups) == 0 && !*discoverTopic {
+		fmt.Fprintln(os.Stderr, "error: at least one --project, --discover-group or --discover-by-topic is required")
 		return exitUsage
 	}
 
@@ -303,6 +304,7 @@ Env:
 		IncludeDiffs:         *includeDiffs,
 		InternalOnlyProjects: unionSlices(internalOnly, cfg.InternalOnlyProjects),
 		PeriodMode:           periodModeParsed,
+		DiscoverByTopic:      *discoverTopic,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
