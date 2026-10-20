@@ -97,45 +97,9 @@ summarizer/
 └── .planning/
 ```
 
-### Option B: TypeScript/Bun layout
-
-```
-summarizer/
-├── src/
-│   ├── cli/
-│   │   └── run.ts               # commander entry
-│   ├── config/
-│   │   └── index.ts             # zod schema + merge
-│   ├── gitlab/
-│   │   ├── client.ts
-│   │   └── types.ts
-│   ├── events/
-│   │   ├── event.ts             # NormalizedEvent type
-│   │   └── normalize.ts
-│   ├── prompt/
-│   │   ├── builder.ts
-│   │   └── templates/
-│   │       ├── customer.md
-│   │       └── team.md
-│   ├── llm/
-│   │   ├── provider.ts          # interface
-│   │   ├── openai.ts
-│   │   └── anthropic.ts
-│   ├── writer/
-│   │   ├── writer.ts
-│   │   └── file.ts
-│   └── run/
-│       └── pipeline.ts
-├── examples/
-│   └── config.json
-├── package.json
-├── tsconfig.json
-└── .planning/
-```
-
 ### Structure Rationale
 
-- **`cmd/` and `internal/`** (Go) / **`src/`** (TS): enforces "this is one binary". Nothing in `internal/` is reusable; that keeps the surface honest.
+- **`cmd/` and `internal/`**: enforces "this is one binary". Nothing in `internal/` is reusable; that keeps the surface honest.
 - **One package per stage**: each stage compiles in isolation; tests don't need the world.
 - **`prompts/` separate from `internal/prompt/`**: prompt text is content, edited by humans. Keep code (template vars, render logic) away from prose (audience framing).
 - **`internal/run/pipeline.go` is the only place that imports every other package.** All cross-package coupling lives in ~30 lines.
@@ -173,7 +137,7 @@ type Pipeline struct {
 
 ### Pattern 2: Embed Prompt Templates
 
-**What:** Prompt text lives in `.tmpl` (Go) / `.md` (TS) files, loaded via `embed.FS` (Go) or `import.meta.url` (TS). Rendered at call time with the normalized event set.
+**What:** Prompt text lives in `.md` files under `internal/prompt/templates/`, loaded via `//go:embed` (`embed.FS`). Rendered at call time with the normalized event set.
 
 **When:** Always. Two audiences = two prompt files. Editing prose in code is the single most common prompt-engineering anti-pattern.
 
@@ -341,7 +305,7 @@ Multi-project runs (deferred) would need a queue and worker pool. Not for MVP.
 
 | Service | Pattern | Notes |
 |---------|---------|-------|
-| **GitLab REST v4** | Plain `net/http` (Go) or `fetch` (TS) with PAT in `PRIVATE-TOKEN` header. Pagination via `Link: rel="next"` or `?page=` + `X-Total-Pages`. | Self-hosted: `host` is config. PAT comes from env var `GITLAB_TOKEN`; the tool reads but never persists. |
+| **GitLab REST v4** | Plain `net/http` (stdlib) with PAT in `PRIVATE-TOKEN` header. Pagination via `Link: rel="next"` or `?page=` + `X-Total-Pages`. | Self-hosted: `host` is config. PAT comes from env var `GITLAB_TOKEN`; the tool reads but never persists. |
 | **OpenAI / Anthropic** | Provider interface. Default selected in config. API key from `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. | Both expose a simple chat-completion style call. Token budget enforced client-side (estimate before sending). |
 | **Filesystem** | `FileWriter` is the only writer in MVP. Path = `<output_dir>/<YYYY-Wnn>-<audience>.md`. | Configurable; defaults to `./reports`. |
 

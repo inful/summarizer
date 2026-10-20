@@ -58,8 +58,8 @@ One command turns a week of GitLab activity into two readable reports, written f
 ## Constraints
 
 - **Compatibility**: must run on operator's macOS machine (per working dir + existing toolchain).
-- **Dependencies**: GitLab REST API v4 + at least one LLM provider API (OpenAI or Anthropic).
-- **Tech stack**: not yet chosen — pick at plan phase. Domain is small enough that any reasonable choice works (Go, Python, TypeScript/Bun, Rust).
+- **Tech stack**: **Go (1.23+)** — operator-specified. Stdlib for HTTP, flags, FS, env, tests. Single third-party dep: `gopkg.in/yaml.v3`. Compiles to a single static binary via `CGO_ENABLED=0 go build`.
+- **Dependencies**: GitLab REST API v4 + at least one LLM provider API (OpenAI or Anthropic). Both are plain HTTP; no SDKs.
 - **Auth**: GitLab token from env var `GITLAB_TOKEN`. LLM API key from env (provider-specific). No tokens stored in config files.
 - **Output**: Markdown only for MVP. No rich HTML, no PDF, no Slack formatting.
 
@@ -77,6 +77,7 @@ One command turns a week of GitLab activity into two readable reports, written f
 | Sequential execution (over parallel) | Small project — parallel adds merge friction without wall-clock payoff | — Pending |
 | Coarse granularity (3–5 phases) | Small MVP, vertical slices preferred | — Pending |
 | YOLO mode (auto-approve gates) | Goal is well-defined; user wants to keep moving | — Pending |
+| **Go (1.23+)** as the language | Operator-specified after research drafted Bun + TypeScript. Stdlib covers HTTP, flags, FS, env, tests; one third-party dep (`gopkg.in/yaml.v3`); single static binary via `go build` | — Pending |
 
 ## Evolution
 

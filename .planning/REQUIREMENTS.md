@@ -56,7 +56,7 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **RUN-02**: Tool supports `--dry-run` mode: fetches GitLab data, prints event count + first/last timestamps + suggested file paths, writes no files, makes no LLM call
 - [ ] **RUN-03**: Tool supports `--help` and `--version` flags
 - [ ] **RUN-04**: Tool reads no other state from disk (no DB, no log file, no lockfile); each invocation is hermetic
-- [ ] **RUN-05**: Compiles to a single static binary via Bun; no runtime required on the host beyond the binary itself
+- [ ] **RUN-05**: Compiles to a single static binary via `CGO_ENABLED=0 go build -ldflags="-s -w" -trimpath`; no runtime required on the host beyond the binary itself
 
 ## v2 Requirements
 

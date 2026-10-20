@@ -2,7 +2,7 @@
 
 ## Overview
 
-Four phases, each a usable slice of the tool. Phase 1 makes the GitLab half trustworthy (config, auth, pagination, rate limits, a `--dry-run` that shows exactly what would be summarized). Phase 2 takes one audience all the way to a file, with the two critical LLM hazards — cost blowup and indirect prompt injection — designed in rather than retrofitted. Phase 3 adds the differentiator: both audiences rendered from one fetch. Phase 4 makes it safe to schedule — refuse-first writes, run summary, distinct exit codes, single binary. Stack is fixed: Bun 1.4 + TypeScript + Vercel AI SDK v7 + `yaml` + `zod` + native `fetch`.
+Four phases, each a usable slice of the tool. Phase 1 makes the GitLab half trustworthy (config, auth, pagination, rate limits, a `--dry-run` that shows exactly what would be summarized). Phase 2 takes one audience all the way to a file, with the two critical LLM hazards — cost blowup and indirect prompt injection — designed in rather than retrofitted. Phase 3 adds the differentiator: both audiences rendered from one fetch. Phase 4 makes it safe to schedule — refuse-first writes, run summary, distinct exit codes, single binary. Stack is fixed: Go 1.23+ with stdlib (`net/http`, `flag`, `embed`, `testing`) + `gopkg.in/yaml.v3`; single static binary via `CGO_ENABLED=0 go build`.
 
 **Phase Numbering:**
 - Integer phases (1, 2, 3, 4): Planned milestone work
