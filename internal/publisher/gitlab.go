@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/inful/mdfm"
 )
 
 // GitLabPublisher commits each report to a per-period source branch on
@@ -144,13 +146,23 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 	branch := g.PeriodBranch(req.Period)
 	path := g.targetPath(req.Period, req.Name)
 
+	// Read-before-write: preserve the existing docbuilder UID (when the
+	// file is already on this branch from an earlier run) so the
+	// cross-project link identity (the docbuilder invariant) survives
+	// re-runs. When the file is absent — fresh period or first publish —
+	// existingUID is "" and NewFrontmatter will mint via mdid.
+	existingUID, err := g.readExistingUID(path, branch)
+	if err != nil {
+		return Result{}, fmt.Errorf("read existing %s@%s: %w", path, branch, err)
+	}
+
 	// Wrap the body with docbuilder-format frontmatter. The fingerprint
-	// in the frontmatter is a SHA-256 of the raw body, so even if the
-	// title/date change between runs, a content-equivalent re-run is
-	// detectable by docbuilder. Public is set per Request — customer
+	// in the frontmatter is the SHA-256 of the raw body via mdfp, so even
+	// if the title/date change between runs, a content-equivalent re-run
+	// is detectable by docbuilder. Public is set per Request — customer
 	// reports get public: true so docbuilder exposes them externally;
 	// team reports omit the key (internal-only).
-	fm := NewFrontmatter(req.Project, req.Title, req.Period, req.Kind, time.Now().UTC(), req.Body)
+	fm := NewFrontmatter(req.Project, req.Title, req.Period, req.Kind, time.Now().UTC(), req.Body, existingUID)
 	fm.Public = req.Public
 	finalBody := fm.Render(req.Body)
 	encoded := base64.StdEncoding.EncodeToString(finalBody)
@@ -194,6 +206,93 @@ func (g *GitLabPublisher) ensureBranch(branch string) error {
 		StartPoint: g.DefaultBranch,
 	})
 	return g.api(urlStr, "POST", body, nil)
+}
+
+// fileResponse is the subset of the Files API GET response we care about.
+// Documentation: GET /projects/:id/repository/files/:file_path.
+// GitLab 404s when the file doesn't exist on that ref — that's our
+// "first publish for this period" signal.
+type fileResponse struct {
+	Encoding string `json:"encoding"` // "text" or "base64"
+	Content  string `json:"content"`
+}
+
+// readExistingUID GETs the file at (path, branch) and parses out the
+// docbuilder `uid` frontmatter key. Three returns:
+//
+//   - ("", nil) when the file is absent (first publish for this period).
+//   - (uid, nil) when the file exists and carries a uid.
+//   - ("", err) on transport / parse failure — the caller surfaces it.
+//
+// Cross-run stability of the UID comes from this read; the mint itself
+// is non-deterministic (UUID v7). See Frontmatter docs.
+func (g *GitLabPublisher) readExistingUID(path, branch string) (string, error) {
+	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s?ref=%s",
+		g.Host, url.PathEscape(g.Project), pathEscape(path), url.QueryEscape(branch))
+
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("PRIVATE-TOKEN", g.Token)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := g.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		// First publish for this file → caller will mint a fresh uid.
+		return "", nil
+	case resp.StatusCode >= 400:
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("%s %s: %d %s",
+			http.MethodGet, urlStr, resp.StatusCode, truncate(string(body), 300))
+	}
+
+	var fr fileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
+		return "", fmt.Errorf("decode %s: %w", urlStr, err)
+	}
+	// GitLab returns text files with encoding="text" verbatim and
+	// binary-ish files with encoding="base64". Frontmatter is text, so
+	// we hit "text" in practice — handle base64 too for safety.
+	content := fr.Content
+	if strings.EqualFold(fr.Encoding, "base64") {
+		decoded, err := base64.StdEncoding.DecodeString(content)
+		if err != nil {
+			return "", fmt.Errorf("decode base64 content: %w", err)
+		}
+		content = string(decoded)
+	}
+
+	doc, err := mdfm.ParseString(content)
+	if err != nil {
+		// Malformed frontmatter (e.g. file body contains only a partial
+		// copy or the YAML isn't a mapping). Surface the parse error so
+		// the operator notices on stderr; the upstream caller treats
+		// empty-uid as "mint fresh".
+		return "", fmt.Errorf("parse existing %s: %w", path, err)
+	}
+	if !doc.HasFrontmatter() {
+		return "", nil
+	}
+	uid, found, err := doc.GetString("uid")
+	if err != nil {
+		return "", fmt.Errorf("extract uid from %s: %w", path, err)
+	}
+	if !found {
+		// An existing summarizer-written file should always carry a uid
+		// (NewFrontmatter renders one on every Publish). Absence means
+		// either a manual edit, a corrupted clone, or a file from a
+		// tool other than summarizer — all rare and recoverable. Treat
+		// as "no usable uid" so the next publish mints fresh.
+		return "", nil
+	}
+	return uid, nil
 }
 
 // mergeRequests lists MRs; we use a wide state filter so we can detect

@@ -1,33 +1,41 @@
 package publisher
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
 
+// uuidV7Re matches a canonical UUID v7 string — same pattern as inful/mdid's
+// own tests. When NewFrontmatter is called with an empty uid, the result
+// must match; when called with an explicit uid, that value passes through.
+var uuidV7Re = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 func TestNewFrontmatter_DocbuilderShape(t *testing.T) {
 	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	const explicitUID = "019200a0-dead-beef-cafe-0123456789ab"
 	fm := NewFrontmatter(
-		"group/proj",     // project
-		"customer",       // audience
-		"2026-10-19",     // period
+		"group/proj", // project
+		"customer",   // audience
+		"2026-10-19", // period
 		KindPerProject,
 		now,
 		[]byte("# weekly update"),
+		explicitUID, // explicit uid to make shape test byte-stable
 	)
 	body := fm.Render([]byte("hello body"))
 
 	want := []string{
 		"---\n",
-		"uid: ",
+		"uid: " + explicitUID + "\n",
 		"title: ",
 		"date: 2026-10-19T09:00:00Z",
 		"lastmod: 2026-10-19T09:00:00Z",
 		"fingerprint: ",
 		"categories:\n  - engineering-update\n",
 		"tags:\n  - summarizer\n  - customer\n  - 2026-10-19\n  - per-project\n  - group/proj\n",
-		"aliases:\n  - /_uid/",
+		"aliases:\n  - /_uid/" + explicitUID + "/\n",
 		"\nhello body",
 	}
 	for _, w := range want {
@@ -39,7 +47,7 @@ func TestNewFrontmatter_DocbuilderShape(t *testing.T) {
 
 func TestNewFrontmatter_RollupExtraTag(t *testing.T) {
 	now := time.Now()
-	fm := NewFrontmatter("group/proj", "team", "2026-W42", KindRollup, now, []byte("x"))
+	fm := NewFrontmatter("group/proj", "team", "2026-W42", KindRollup, now, []byte("x"), "")
 	body := string(fm.Render([]byte("body")))
 	if !strings.Contains(body, "rollup\n") {
 		t.Errorf("rollup kind should emit 'rollup' tag, got:\n%s", body)
@@ -49,16 +57,61 @@ func TestNewFrontmatter_RollupExtraTag(t *testing.T) {
 	}
 }
 
-func TestNewFrontmatter_UIDIsDeterministic(t *testing.T) {
+// TestNewFrontmatter_ExplicitUIDPropagates: when the caller passes a UID,
+// NewFrontmatter uses it verbatim. This is the read-before-write
+// contract: the GitLab publisher reads the existing file's uid and
+// passes it back in here, so re-runs preserve the docbuilder identity.
+func TestNewFrontmatter_ExplicitUIDPropagates(t *testing.T) {
+	const uid = "019200a0-dead-beef-cafe-0123456789ab"
 	now := time.Now()
-	fm1 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"))
-	fm2 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"))
-	if fm1.UID != fm2.UID {
-		t.Errorf("UID should be deterministic for same inputs: %q vs %q", fm1.UID, fm2.UID)
+	fm1 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"), uid)
+	fm2 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"), uid)
+	if fm1.UID != uid {
+		t.Errorf("explicit UID did not propagate: got %q want %q", fm1.UID, uid)
 	}
-	fm3 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("different body"))
-	if fm1.Fingerprint == fm3.Fingerprint {
-		t.Errorf("fingerprint should change with body content: %q", fm1.Fingerprint)
+	if fm2.UID != uid {
+		t.Errorf("explicit UID did not propagate: got %q want %q", fm2.UID, uid)
+	}
+	if !strings.Contains(string(fm1.Render([]byte("hi"))), "uid: "+uid) {
+		t.Errorf("rendered frontmatter missing explicit UID %q", uid)
+	}
+}
+
+// TestNewFrontmatter_DefaultMintIsV7UUID: when called with an empty uid,
+// NewFrontmatter delegates to inful/mdid (UUID v7). Two calls must
+// produce two different UIDs (UUID v7 has random bits by design) —
+// cross-run stability comes from the read-before-write in the publisher,
+// not determinism of the mint.
+func TestNewFrontmatter_DefaultMintIsV7UUID(t *testing.T) {
+	now := time.Now()
+	fm1 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"), "")
+	fm2 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"), "")
+	if !uuidV7Re.MatchString(fm1.UID) {
+		t.Errorf("default-mint UID should be UUID v7: got %q", fm1.UID)
+	}
+	if !uuidV7Re.MatchString(fm2.UID) {
+		t.Errorf("default-mint UID should be UUID v7: got %q", fm2.UID)
+	}
+	if fm1.UID == fm2.UID {
+		t.Errorf("two default-mint calls should produce different UIDs (v7 has random bits), got %q twice", fm1.UID)
+	}
+}
+
+// TestNewFrontmatter_FingerprintIsBodyAddressed: fingerprint should
+// change when the body changes. The fingerprint format is whatever mdfp
+// produces (currently SHA-256 hex — 64 chars); we don't pin the hash
+// family here so a future mdfp swap doesn't break tests, only the
+// format-strings in frontmatter-schema.md need updating.
+func TestNewFrontmatter_FingerprintIsBodyAddressed(t *testing.T) {
+	now := time.Now()
+	fm1 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body1"), "")
+	fm2 := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body2"), "")
+	if fm1.Fingerprint == fm2.Fingerprint {
+		t.Errorf("fingerprint should differ across bodies, got %q twice (body1=%q, body2=%q)",
+			fm1.Fingerprint, "body1", "body2")
+	}
+	if fm1.Fingerprint == "" || fm2.Fingerprint == "" {
+		t.Errorf("fingerprint should be non-empty: fm1=%q fm2=%q", fm1.Fingerprint, fm2.Fingerprint)
 	}
 }
 
@@ -67,7 +120,7 @@ func TestNewFrontmatter_UIDIsDeterministic(t *testing.T) {
 // default (internal) applies.
 func TestFrontmatter_PublicFlag(t *testing.T) {
 	now := time.Now()
-	fm := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"))
+	fm := NewFrontmatter("group/proj", "customer", "2026-10-19", KindPerProject, now, []byte("body"), "")
 	body := string(fm.Render([]byte("hi")))
 
 	// Default: key absent.

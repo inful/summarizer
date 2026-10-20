@@ -10,7 +10,7 @@ reading Go source.
 
 ```
 ---
-uid: ab12cd34ef567890
+uid: 0192b6a0-72cd-7abc-8def-0123456789ab
 title: "Weekly customer report — group/proj, 2026-10-19"
 date: 2026-10-19T09:00:00Z
 lastmod: 2026-10-19T09:00:00Z
@@ -25,7 +25,7 @@ tags:
   - per-project
   - group/proj
 aliases:
-  - /_uid/ab12cd34ef567890/
+  - /_uid/0192b6a0-72cd-7abc-8def-0123456789ab/
 ---
 
 (rendered Markdown body)
@@ -35,11 +35,11 @@ aliases:
 
 | Key | Type | Source | Purpose |
 |---|---|---|---|
-| `uid` | 16-char hex (8 bytes) | `SHA-256(project\|audience\|period)[:8]` | Stable identity for the report. Same `(project, audience, period)` ⇒ same UID across runs. docbuilder uses this as a content-independent slug. |
+| `uid` | UUID v7 (36 chars, 8-4-4-4-12 hex with hyphens) | mint via [`inful/mdid`](https://github.com/inful/mdid) on first publish; reused on every re-run thereafter | Stable identity for the report. Re-runs for the same period re-use the existing file's UID via read-before-write in the GitLab publisher, so docbuilder's cross-project link identity (`/_uid/<uid>/`) survives moves between projects and re-runs on the same day. Two `summarizer run` calls in the same day do **not** mint two UIDs. |
 | `title` | quoted string | auto-derived | Human-readable title for the index. |
 | `date` | RFC3339 timestamp | `time.Now()` at run time | When the period end-date lands (UTC). |
 | `lastmod` | RFC3339 timestamp | `time.Now()` at run time | When this version of the file was rendered. Bumped each re-run. |
-| `fingerprint` | 64-char SHA-256 hex | `SHA-256(body)` | Content address. Re-run with byte-identical body ⇒ same fingerprint (docbuilder dedupe key); changed body ⇒ new fingerprint. |
+| `fingerprint` | SHA-256 hex (64 chars) | computed via [`inful/mdfp`](https://github.com/inful/mdfp)'s `CalculateFingerprintFromParts` over `(frontmatter="", body)` | Content address. Re-run with byte-identical body ⇒ same fingerprint (docbuilder dedupe key); changed body ⇒ new fingerprint. Going through mdfp keeps summarizer hashed the same way as every other markdown file in the ecosystem (mdfm-aware canonical form). |
 | `public` | bool (emitted only when true) | pipeline | `true` for customer-audience reports; **absent** for team-audience reports (docbuilder's default is internal). |
 | `categories` | list (always one) | fixed `["engineering-update"]` | Top-level document kind. |
 | `tags` | list, auto-derived | see below | Filters / searchable labels. |
@@ -68,23 +68,35 @@ project; subscribers filter by `rollup` instead.
 default); rollups use the same slug as their constituent per-project
 runs.
 
-## UID determinism
+## UID stability — across re-runs and across project moves
 
-The UID is a content-stable hash of `project|audience|period`. Two
-invocations of summarizer with the same three inputs (regardless of the
-GitLab activity for that project on the day) produce the same UID. This
-is intentional: docbuilder dedupes on UID so a re-run overwrites the
-existing document instead of creating a new one. If you need a new
-document per run, change the period (e.g. move from `YYYY-MM-DD` to
-`YYYY-MM-DD-HH`).
+`mdid.GenerateUID()` produces a fresh UUID v7 on every call (it's
+time-stamped + random — by design, UUID v7 is NOT deterministic).
+Summarizer's UID stability across runs and moves therefore comes from
+**read-before-write** in the GitLab publisher, not from the mint itself:
+
+1. First publish for a period: `mdid.GenerateUID()` mints a fresh UUID v7.
+2. Re-run for the same period: the publisher GETs the existing file from
+   the branch via the GitLab Files API, parses its frontmatter with
+   [`inful/mdfm`](https://github.com/inful/mdfm), extracts the `uid`
+   field, and reuses it verbatim.
+3. Move the file between projects in docbuilder: the UID stored in the
+   file's frontmatter moves with it. The `aliases: /_uid/<uid>/` line
+   keeps the cross-reference path stable.
+
+The **only** way to get a new UID for a `(project, audience, period)`
+triple on the GitLab publisher is to delete the existing file from the
+branch first. On the local disk publisher, the refuse-first policy
+already preserves UIDs: a second `summarizer run` without `--force`
+sees the existing file, refuses, and leaves it untouched.
 
 ## Fingerprint vs UID — why both
 
 | Property | UID | Fingerprint |
 |---|---|---|
-| Identity (docbuilder slug) | ✓ | — |
+| Identity (docbuilder cross-project slug) | ✓ | — |
 | Content address | — | ✓ |
-| Stable across re-runs | ✓ | depends on body |
+| Stable across re-runs | ✓ (via read-before-write) | depends on body |
 | Captures "this run actually wrote new content" | — | ✓ |
 
 A re-run over the same period with the same activity generates the same

@@ -1,18 +1,26 @@
 package publisher
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/inful/mdfp"
+	"github.com/inful/mdid"
 )
 
 // Frontmatter represents the docbuilder-format YAML block that wraps each
 // rendered Markdown report. Field names and shape match the docbuilder
-// parser in inful/ragabast (uid, title, date, lastmod, fingerprint,
+// parser in inful/docbuilder (uid, title, date, lastmod, fingerprint,
 // tags, categories, aliases) so the rendered reports ingest cleanly into
 // any docbuilder-compatible knowledge base.
+//
+// UID format: UUID v7 minted by github.com/inful/mdid. docbuilder's UID
+// is the cross-project identifier that lets a document be moved
+// between repos / projects without breaking links. The UID lives in
+// the file's own frontmatter (mdid's "won't overwrite" property), so
+// cross-run stability comes from read-before-write in the GitLab
+// publisher, not from determinism of the mint itself.
 type Frontmatter struct {
 	UID         string
 	Title       string
@@ -77,19 +85,30 @@ func (f Frontmatter) Render(body []byte) []byte {
 //   - audience: "customer" or "team"
 //   - period:   human-readable period label like "2026-10-19" or "2026-W42"
 //   - kind:     per-project or rollup
+//   - uid:      pre-existing docbuilder UID to reuse, or "" to mint fresh.
 //
-// UID is a content-derived stable hash (project + audience + period).
-// fingerprint is a body-content hash for docbuilder's content-addressing.
-// The two diverge on purpose: a re-run of the same period on the same
-// project hits the same UID (docbuilder dedupes) while fingerprint catches
-// edits between runs.
-func NewFrontmatter(project, audience, period string, kind FileKind, now time.Time, body []byte) Frontmatter {
-	uidSeed := fmt.Sprintf("%s|%s|%s", project, audience, period)
-	uidSum := sha256.Sum256([]byte(uidSeed))
-	uid := hex.EncodeToString(uidSum[:8])
+// When uid is empty, a fresh UUID v7 is minted via inful/mdid. When uid is
+// non-empty, it's used verbatim. The publisher reads the existing file
+// (when present) and passes the existing uid here so re-runs preserve
+// cross-project identity (docbuilder invariant: moving a document between
+// projects must not break links).
+//
+// Fingerprint is a body-content hash via inful/mdfp. Same SHA-256 hex
+// shape we'd compute by hand, but through the canonical library so the
+// normalisation (BOM stripping, trailing-whitespace handling,
+// fingerprint-strip-from-frontmatter logic if we ever switch to wrapping
+// before hashing) stays aligned with everything else in the ecosystem.
+func NewFrontmatter(project, audience, period string, kind FileKind, now time.Time, body []byte, uid string) Frontmatter {
+	if uid == "" {
+		uid = mdid.GenerateUID()
+	}
 
-	bodySum := sha256.Sum256(body)
-	fingerprint := hex.EncodeToString(bodySum[:])
+	// mdfp.CalculateFingerprintFromParts("", body) hashes the body only —
+	// the same SHA-256-of-bytes we'd compute inline, but routed through
+	// the canonical library. When we later add a frontmatter-embedding
+	// variant (compute fingerprint of the full wrapped file), swapping to
+	// mdfp's three-arg form costs one line.
+	fingerprint := mdfp.CalculateFingerprintFromParts("", string(body))
 
 	tags := []string{"summarizer", string(audience), period}
 	if kind == KindRollup {
