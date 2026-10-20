@@ -113,6 +113,26 @@ The same cron line that runs the local-disk variant runs the publishing variant:
 
 When `publish.enabled: true`, the local disk write is skipped — every report file lives only in the GitLab target until a human merges the MR. Summarizer succeeds (exit 0) when the commits land; it does not wait for MR merge.
 
+## `--safety-enabled` (prompt-injection guard)
+
+Opt-in check that runs the rendered prompt through your `inful/decide` client before each LLM call. Noul probability ≥ `injection_threshold` ⇒ injection ⇒ hard-fail the run.
+
+```bash
+summarizer run --project group/proj --safety-enabled
+# or with config:
+#   safety:
+#     enabled: true
+#     decision_url: "https://api.example.com"
+#     decision_token_env: "SAFETY_DECISION_TOKEN"
+#     injection_threshold: 0.7
+```
+
+Why a separate decision API rather than asking the LLM "is this safe?":
+- Decide is a fast "system 1" classifier tuned for routing decisions. Doubling the LLM cost per generation to ask the LLM "is this safe?" is wasteful and self-defeating (a compromised LLM answers yes).
+- The structural defense stays the `<data>` markers around untrusted fields. The guard is **one** of several layers, not a replacement.
+
+Cost: 1 extra `decide.SystemOne` call per LLM generation (so ~4N+2 per multi-project run for N projects). Cheap; the doubled latency is the real consideration.
+
 ## `--include-diffs` (team prompt only)
 
 ```bash

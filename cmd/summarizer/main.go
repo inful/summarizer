@@ -34,6 +34,7 @@ import (
 	"github.com/inful/summarizer/internal/llm"
 	"github.com/inful/summarizer/internal/run"
 	"github.com/inful/summarizer/internal/publisher"
+	"github.com/inful/summarizer/internal/safety"
 )
 
 const version = "0.1.0"
@@ -112,6 +113,9 @@ Env:
 		force          = fs.Bool("force", false, "overwrite existing output files")
 		dryRun         = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
 		includeDiffs   = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
+		safetyURL       = fs.String("safety-url", "", "decision API base URL for prompt-injection guard (default from config safety.decision_url)")
+		safetyToken     = fs.String("safety-token", "", "decision API token (default from $SAFETY_DECISION_TOKEN env or config)")
+		safetyEnabled   = fs.Bool("safety-enabled", false, "gate every LLM call through the prompt-injection detector; hard-fails the run on verdict (default off)")
 		gitlabHost     = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
 		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
 		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
@@ -249,7 +253,35 @@ Env:
 		pub = publisher.NewLocal(cfg.OutputDir)
 	}
 
-	pipe := run.New(cfg, gc, llmProvider, pub, run.Options{
+	// Safety guard. Disabled by default. When enabled, every LLM call is
+// preceded by a prompt-injection check via the decide API.
+	var guard safety.Guard = safety.NoopGuard{}
+	safetyOn := *safetyEnabled || cfg.Safety.Enabled
+	if safetyOn {
+		decisionURL := *safetyURL
+		if decisionURL == "" {
+			decisionURL = cfg.Safety.DecisionURL
+		}
+		if decisionURL == "" {
+			fmt.Fprintln(os.Stderr, "error: --safety-enabled but no decision URL (set --safety-url or config safety.decision_url)")
+			return exitConfig
+		}
+		tokenEnv := cfg.Safety.DecisionTokenEnv
+		if tokenEnv == "" {
+			tokenEnv = "SAFETY_DECISION_TOKEN"
+		}
+		token := *safetyToken
+		if token == "" {
+			token = os.Getenv(tokenEnv)
+		}
+		threshold := cfg.Safety.InjectionThreshold
+		if threshold <= 0 {
+			threshold = 0.7
+		}
+		guard = safety.NewDecide(decisionURL, token, threshold)
+	}
+
+	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
 		Projects:     projects,
 		Since:        cfg.Lookback(),
 		Provider:     cfg.Provider,

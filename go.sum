@@ -1,3 +1,6 @@
+github.com/inful/decide v0.0.0-20261008064855-f78fd7ad59b9 h1:0rj/5hZyEM42NCBEknr/CYxP20aSmchxCh3lLx/Q1HM=
+github.com/inful/decide v0.0.0-20261008064855-f78fd7ad59b9/go.mod h1:5mu+1jXGKzP6MBbsolWA8tF62xujZQw/6spMIV+GA/s=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
 gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=

@@ -69,3 +69,21 @@ projects:
 #   prefix: "reports"                    # repo path; "" = repo root
 #   default_branch: "main"
 #   source_branch_prefix: "summarizer"
+
+# Optional: gate every LLM call behind a prompt-injection detector.
+# When enabled, the rendered prompt is sent to a decision API (your own
+# `inful/decide`, a Go client for /v1/systemone) before each LLM call.
+# A noul probability >= injection_threshold means injection = hard-
+# fail the run with exit non-zero. Default OFF.
+#
+# The check protects against the legitimate concern that a GitLab MR
+# title/description designed to manipulate the model can sneak past
+# the <data> markers when combined with clever framing. Decision models
+# are tuned for routing, not generation, so they're a cheap second pair
+# of eyes per generation.
+#
+# safety:
+#   enabled: true
+#   decision_url: "https://api.example.com"
+#   decision_token_env: "SAFETY_DECISION_TOKEN"  # default
+#   injection_threshold: 0.7                       # default

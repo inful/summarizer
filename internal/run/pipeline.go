@@ -18,6 +18,7 @@ import (
 	"github.com/inful/summarizer/internal/llm"
 	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/publisher"
+	"github.com/inful/summarizer/internal/safety"
 )
 
 // Options are run-time parameters resolved at the CLI boundary.
@@ -58,14 +59,24 @@ type Pipeline struct {
 	GitLab    *gitlab.Client
 	LLM       llm.Provider
 	Publisher publisher.Publisher
+	Guard     safety.Guard // nil-safe; NoopGuard is substituted when safety is disabled
 	Opts      Options
 }
 
+// ErrInjection is returned (wrapped) when the safety guard classifies
+// the rendered prompt as a prompt-injection attempt and the pipeline
+// policy is hard-fail.
+var ErrInjection = errors.New("safety guard classified prompt as injection")
+
 // New wires the orchestrator. Caller passes in already-constructed
 // clients. publisher is chosen by main based on config (local disk
-// by default, GitLab MR when PublishConfig.Enabled is true).
-func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Publisher, opts Options) *Pipeline {
-	return &Pipeline{Cfg: cfg, GitLab: gc, LLM: p, Publisher: pub, Opts: opts}
+// by default, GitLab MR when PublishConfig.Enabled is true). Pass
+// safety.NoopGuard{} to disable the check.
+func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Publisher, g safety.Guard, opts Options) *Pipeline {
+	if g == nil {
+		g = safety.NoopGuard{}
+	}
+	return &Pipeline{Cfg: cfg, GitLab: gc, LLM: p, Publisher: pub, Guard: g, Opts: opts}
 }
 
 // Run executes the pipeline. Returns a Result on success; on failure
@@ -159,6 +170,9 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		if err != nil {
 			return res, fmt.Errorf("render %s: %w", aud, err)
 		}
+		if err := p.checkPrompt(ctx, project, aud, system+"\n\n"+user); err != nil {
+			return res, err
+		}
 		resp, err := p.LLM.Complete(ctx, llm.Request{
 			System:    system,
 			User:      user,
@@ -223,6 +237,9 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 		if err != nil {
 			return files, fmt.Errorf("render rollup %s: %w", aud, err)
 		}
+		if err := p.checkPrompt(ctx, "rollup", aud, system+"\n\n"+user); err != nil {
+			return files, err
+		}
 		resp, err := p.LLM.Complete(ctx, llm.Request{
 			System:    system,
 			User:      user,
@@ -259,6 +276,26 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 // than spawning a new branch per re-invocation.
 func periodSlug(window time.Duration) string {
 	return time.Now().UTC().Format("2006-01-02")
+}
+
+// checkPrompt runs the rendered prompt through the safety guard. On a
+// "safe" verdict, returns nil and the LLM call proceeds. On "injection"
+// or any guard error, returns a wrapped ErrInjection so main can emit a
+// clean stderr line and exit non-zero — the same hard-fail contract
+// other pipeline errors use.
+func (p *Pipeline) checkPrompt(ctx context.Context, project string, aud prompt.Audience, prompt string) error {
+	verdict, score, err := p.Guard.Check(ctx, prompt)
+	if err != nil {
+		return fmt.Errorf("safety check (%s/%s): %w", project, aud, err)
+	}
+	if verdict == safety.VerdictInjection {
+		fmt.Fprintf(os.Stderr, "summarizer: safety guard rejected prompt for %s/%s (score=%.3f >= threshold)\n", project, aud, score)
+		return fmt.Errorf("%w (score=%.3f): %s/%s", ErrInjection, score, project, aud)
+	}
+	if verdict == safety.VerdictSafe && score > 0 {
+		fmt.Fprintf(os.Stderr, "summarizer: safety guard cleared %s/%s (score=%.3f)\n", project, aud, score)
+	}
+	return nil
 }
 
 // filename: <sanitized project>--<since-days>d--<audience>.md. The "since"

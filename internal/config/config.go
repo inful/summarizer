@@ -65,6 +65,10 @@ type Config struct {
 	// file is committed to a per-period branch with a reviewable MR
 	// against the configured default branch.
 	Publish PublishConfig `yaml:"publish"`
+
+	// Safety gates LLM calls behind a prompt-injection detector.
+	// Off by default; opt in with safety.enabled=true.
+	Safety SafetyConfig `yaml:"safety"`
 }
 
 // PublishConfig is the GitLab-MR publisher configuration. All-zero value
@@ -78,6 +82,17 @@ type PublishConfig struct {
 	Prefix             string `yaml:"prefix"`               // repo path prefix for reports (e.g. "reports"); "" = repo root
 	DefaultBranch      string `yaml:"default_branch"`       // MR target; default "main"
 	SourceBranchPrefix string `yaml:"source_branch_prefix"` // e.g. "summarizer"; branch = "<prefix>/<period>"
+}
+
+// SafetyConfig gates LLM calls behind a prompt-injection detector. Opt-in
+// (Enabled=false means no check). When enabled, every rendered prompt is
+// sent to a decision API (inful/decide) before the LLM call; noul above
+// the threshold = injection = hard-fail the run.
+type SafetyConfig struct {
+	Enabled           bool    `yaml:"enabled"`             // when true, every LLM call is gated
+	DecisionURL       string  `yaml:"decision_url"`        // base URL of the /v1/systemone API
+	DecisionTokenEnv  string  `yaml:"decision_token_env"` // env var holding the API token; default "SAFETY_DECISION_TOKEN"
+	InjectionThreshold float64 `yaml:"injection_threshold"` // noul above this = injection; default 0.7
 }
 
 // Defaults fills in zero values with sensible built-ins.
