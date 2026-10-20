@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://lefthook.dev/schema.json
+#
+# Imports the shared lefthook configuration from github.com/inful/lefthooks.
+# Pin `ref` to a tag for reproducible builds.
+#
+# Hook behavior is defined in https://github.com/inful/lefthooks and
+# self-gates per-consumer via glob/skip conditions — no per-repo overrides
+# needed for the standard Go / Markdown / sqlc checks.
+
+min_version: 2.1.0
+
+remotes:
+  - git_url: https://github.com:inful/lefthooks.git
+    ref: v0.5.0
+    configs:
+      - lefthook.yml

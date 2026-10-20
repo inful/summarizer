@@ -1,0 +1,85 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: ci
+
+# Same gates the local lefthook pre-commit runs (golangci-lint + go test
+# -race) on every push to main and every PR. Safety net for contributors
+# who forgot to install lefthook.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Concurrency discipline: serialize per branch and cancel in-flight runs
+# when a new push arrives, so two pushes don't race on caches or annotations.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Bind tightly to whatever go.mod says, so vet/lint run against
+          # the same stdlib we develop against. go.mod's Go directive
+          # should track the latest stable Go patch.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run go mod tidy
+        run: go mod tidy
+        # Verifies go.sum is consistent with go.mod and surfaces any
+        # accidentally-uncommitted go.sum change.
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run golangci-lint
+        # v7 is required for golangci-lint v2.x configs (v6 only supports
+        # v1.x formats). Pinned to a version built with Go ≥ 1.26 so the
+        # bundled linter can load a .golangci.yml targeting 1.26.
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.13.2
+
+      - name: Run go test (race)
+        run: go test -race -count=1 -timeout 120s ./...
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/summarizer ./cmd/summarizer
+
+  vuln:
+    name: govulncheck
+    # Official Go vulnerability scanner. Fails the build if any direct
+    # dependency has a known CVE affecting a symbol we actually call.
+    # Runs independently from the test job so a CVE doesn't mask a test
+    # failure (or vice versa).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
