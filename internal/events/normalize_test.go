@@ -26,8 +26,8 @@ func TestMR_ActionAndRefs(t *testing.T) {
 	if e.Kind != KindMR || e.Action != "merged" || e.Ref != "#42" || e.Author != "alice" {
 		t.Fatalf("unexpected MR event: %+v", e)
 	}
-	if e.URL != "/group/proj/-/merge_requests/42" {
-		t.Fatalf("URL should drop scheme+host, got %q", e.URL)
+	if e.URL != "https://gitlab.example.com/group/proj/-/merge_requests/42" {
+		t.Fatalf("URL should be the full web_url (incl. host), got %q", e.URL)
 	}
 	if e.Comments != 3 || len(e.Labels) != 2 {
 		t.Fatalf("comments/labels lost: %+v", e)

@@ -10,8 +10,8 @@ import (
 // amplifies the prompt-injection blast radius. Tuned to fit ~200 events
 // into a 128k-context model with room for both audience prompts.
 const (
-	TitleCap         = 200  // MR/issue/commit subject
-	DescriptionCap   = 600  // body text — only emitted for the team prompt, in <data> markers
+	TitleCap       = 200 // MR/issue/commit subject
+	DescriptionCap = 600 // body text — only emitted for the team prompt, in <data> markers
 )
 
 func MR(g gitlab.MergeRequest) NormalizedEvent {
@@ -33,7 +33,7 @@ func MR(g gitlab.MergeRequest) NormalizedEvent {
 		Ref:      "#" + itoa(g.IID),
 		Title:    truncate(g.Title, TitleCap),
 		Author:   g.Author.Username,
-		URL:      gitlabPath(g.WebURL),
+		URL:      g.WebURL,
 		Labels:   g.Labels,
 		Comments: g.UserNotesCount,
 		Created:  g.CreatedAt,
@@ -58,7 +58,7 @@ func Issue(g gitlab.Issue) NormalizedEvent {
 		Ref:      "#" + itoa(g.IID),
 		Title:    truncate(g.Title, TitleCap),
 		Author:   g.Author.Username,
-		URL:      gitlabPath(g.WebURL),
+		URL:      g.WebURL,
 		Labels:   g.Labels,
 		Comments: g.UserNotesCount,
 		Created:  g.CreatedAt,
@@ -74,7 +74,7 @@ func Commit(g gitlab.Commit) NormalizedEvent {
 		Ref:     g.ShortID,
 		Title:   truncate(g.Title, TitleCap),
 		Author:  commitAuthor(g),
-		URL:     gitlabPath(g.WebURL),
+		URL:     g.WebURL,
 		Created: g.CreatedAt,
 		Updated: g.CreatedAt,
 	}
@@ -90,15 +90,6 @@ func commitAuthor(g gitlab.Commit) string {
 		}
 	}
 	return g.AuthorName
-}
-
-func gitlabPath(webURL string) string {
-	webURL = strings.TrimPrefix(webURL, "https://")
-	webURL = strings.TrimPrefix(webURL, "http://")
-	if i := strings.IndexByte(webURL, '/'); i >= 0 {
-		return webURL[i:]
-	}
-	return webURL
 }
 
 func truncate(s string, n int) string {
