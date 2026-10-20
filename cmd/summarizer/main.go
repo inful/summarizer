@@ -121,7 +121,7 @@ Env:
 		discoverGroups = stringSliceFlag{}
 		internalOnly   = stringSliceFlag{}
 		periodMode     = fs.String("period-mode", "", "Period bucket shape: 'daily' (default; each run gets its own <prefix>/<YYYY-MM-DD>/ directory) or 'monday' (bucket is the ISO week's Monday, so daily cron runs within Mon-Sun overwrite the same directory, branch and MR)")
-		discoverTopic  = fs.Bool("discover-by-topic", false, "Scan every project on the GitLab instance carrying a `summarize` or `summarize-team-only` topic, across all groups the token can see. Same activity gate and audience policy as --discover-group; composes with it.")
+		discoverTopic  = fs.Bool("discover-by-topic", false, "Scan every project on the GitLab instance carrying a summarize or summarize-team-only topic, across all groups the token can see. Same activity gate and audience policy as --discover-group; composes with it.")
 		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
 		openaiBaseURL  = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
 		anthropicKey   = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
@@ -129,7 +129,7 @@ Env:
 	)
 	fs.Var(&projects, "project", "GitLab project path (repeatable, or comma-separated). Examples: --project group/a --project group/b, or --project group/a,group/b. Composes with --discover-group; an explicit listing takes precedence on duplicate paths.")
 	fs.Var(&discoverGroups, "discover-group", "GitLab group path to scan for active projects (repeatable, or comma-separated). Each project's MRs in the window are probed; active ones join the run alongside any --project listings. Recursion into subgroups is not implemented in v1 — pass the leaf group you want covered.")
-	fs.Var(&internalOnly, "internal-only-project", "Project path whose customer-facing output is suppressed (repeatable, or comma-separated). Same effect as setting the `summarize-team-only` GitLab topic on the project. The three sources (this flag, the YAML `internal_only_projects:` block, the GitLab topic) union together.")
+	fs.Var(&internalOnly, "internal-only-project", "Project path whose customer-facing output is suppressed (repeatable, or comma-separated). Same effect as setting the summarize-team-only GitLab topic on the project. The three sources (this flag, the YAML internal_only_projects: block, the GitLab topic) union together.")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
