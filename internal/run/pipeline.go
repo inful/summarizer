@@ -33,6 +33,7 @@ type Options struct {
 	IncludeDiffs         bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
 	DiscoveredGroups     []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
 	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
+	PeriodMode           PeriodMode    // --period-mode daily|monday; controls whether daily runs produce a new directory each (daily) or anchor to the week's Monday (monday). Default: daily (matches v0.1.0).
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -315,11 +316,11 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		}
 
 		name := filename(window, project, aud)
-		period := periodSlug(p.Opts.Since)
+		period := periodSlug(p.Opts.PeriodMode)
 		res2, err := p.Publisher.Publish(publisher.Request{
 			Name:    name,
 			Body:    []byte(text),
-			Force:   p.Opts.Force,
+			Force:   p.Opts.forceOverwrite(),
 			Kind:    publisher.KindPerProject,
 			Period:  period,
 			Title:   string(aud),
@@ -391,11 +392,11 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 		}
 
 		name := rollupFilename(p.Opts.Since, aud)
-		period := periodSlug(p.Opts.Since)
+		period := periodSlug(p.Opts.PeriodMode)
 		res2, err := p.Publisher.Publish(publisher.Request{
 			Name:    name,
 			Body:    []byte(resp.Text),
-			Force:   p.Opts.Force,
+			Force:   p.Opts.forceOverwrite(),
 			Kind:    publisher.KindRollup,
 			Period:  period,
 			Title:   "rollup " + string(aud),
@@ -497,11 +498,11 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 		}
 
 		name := epicRollupFilename(p.Opts.Since, aud)
-		period := periodSlug(p.Opts.Since)
+		period := periodSlug(p.Opts.PeriodMode)
 		res2, err := p.Publisher.Publish(publisher.Request{
 			Name:    name,
 			Body:    []byte(resp.Text),
-			Force:   p.Opts.Force,
+			Force:   p.Opts.forceOverwrite(),
 			Kind:    publisher.KindRollup,
 			Period:  period,
 			Title:   "epics rollup " + string(aud),
@@ -544,11 +545,91 @@ func countEpicEvents(pr ProjectResult, e *gitlab.Epic) int {
 }
 
 // periodSlug returns the YYYY-MM-DD slug for the period end-date. The
-// GitLab publisher uses this as the source-branch suffix so a re-run on
-// the same day lands on the same branch (and updates the same MR) rather
-// than spawning a new branch per re-invocation.
-func periodSlug(window time.Duration) string {
-	return time.Now().UTC().Format("2006-01-02")
+// GitLab publisher uses this as the source-branch suffix so a re-run
+// on the same bucket lands on the same branch (and updates the same
+// MR) rather than spawning a new branch per re-invocation.
+//
+// The bucket shape is configurable via opts.PeriodMode:
+//   - PeriodModeDaily: each calendar day is its own bucket (default;
+//     matches the historical v0.1.0 behaviour where each cron tick
+//     was a new directory).
+//   - PeriodModeMonday: the bucket is anchored to the most-recent
+//     Monday at-or-before now. Daily runs within the same Mon→Sun
+//     ISO week overwrite the same path. The GoLive cron uses this
+//     so an early-period operator sees one rollup file per week
+//     that gets refined every day.
+func periodSlug(mode PeriodMode) string {
+	return periodSlugFor(time.Now().UTC(), resolvePeriodMode(mode))
+}
+
+// periodSlugFor is the same logic but parametrized so the date-math
+// is unit-testable without freezing time.
+func periodSlugFor(now time.Time, mode PeriodMode) string {
+	t := now
+	if mode == PeriodModeMonday {
+		t = mondayAnchor(t)
+	}
+	return t.Format("2006-01-02")
+}
+
+// mondayAnchor returns the most-recent Monday at-or-before t. Calendar
+// math: Weekday() is Sunday=0..Saturday=6, so we want the offset
+// to be (Weekday() + 6) mod 7 (Monday=0). Subtract that many days.
+func mondayAnchor(t time.Time) time.Time {
+	weekday := int(t.Weekday())
+	daysSinceMonday := (weekday + 6) % 7
+	return time.Date(t.Year(), t.Month(), t.Day()-daysSinceMonday, 0, 0, 0, 0, t.Location())
+}
+
+// PeriodMode controls the period-slug bucket shape. See periodSlug
+// for the trade-offs.
+type PeriodMode string
+
+const (
+	// PeriodModeDaily: each calendar day is its own bucket. Default
+	// for backwards compatibility; daily runs produce a new
+	// directory each.
+	PeriodModeDaily PeriodMode = "daily"
+
+	// PeriodModeMonday: the bucket is anchored to the most-recent
+	// Monday. Daily runs within the same Mon→Sun ISO week overwrite
+	// the same path; the GitLab publisher accumulates commits on
+	// one branch; the cross-project MR doesn't churn.
+	PeriodModeMonday PeriodMode = "monday"
+)
+
+// resolvePeriodMode picks the mode the run uses. Empty / daily = the
+// historical default; an explicit PeriodModeMonday forces the
+// weekly bucket. main.go parses the CLI flag and puts it in
+// opts.PeriodMode; this helper is a small decision-tree with a
+// default to keep periodSlug's call sites flat.
+func resolvePeriodMode(mode PeriodMode) PeriodMode {
+	if mode == "" {
+		return PeriodModeDaily
+	}
+	return mode
+}
+
+// forceOverwrite: in monday mode every day of the week targets the
+// same path, so a refuse-first local disk would fail the cron from
+// day 2 onward. Implied Force; the GitLab publisher already
+// accumulates onto the same branch.
+func (o Options) forceOverwrite() bool {
+	return o.Force || resolvePeriodMode(o.PeriodMode) == PeriodModeMonday
+}
+
+// ParsePeriodMode parses a CLI flag value. Case-sensitive: only
+// "daily" and "monday" are accepted (exact match). Empty string
+// is treated as "daily" for caller convenience.
+func ParsePeriodMode(s string) (PeriodMode, error) {
+	switch PeriodMode(s) {
+	case PeriodModeDaily, "":
+		return PeriodModeDaily, nil
+	case PeriodModeMonday:
+		return PeriodModeMonday, nil
+	default:
+		return "", fmt.Errorf("period mode %q: want \"daily\" or \"monday\"", s)
+	}
 }
 
 // checkPrompt runs the rendered prompt through the safety guard.

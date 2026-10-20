@@ -120,6 +120,7 @@ Env:
 		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
 		discoverGroups = stringSliceFlag{}
 		internalOnly   = stringSliceFlag{}
+		periodMode     = fs.String("period-mode", "", "Period bucket shape: 'daily' (default; each run gets its own <prefix>/<YYYY-MM-DD>/ directory) or 'monday' (bucket is the ISO week's Monday, so daily cron runs within Mon-Sun overwrite the same directory, branch and MR)")
 		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
 		openaiBaseURL  = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
 		anthropicKey   = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
@@ -285,6 +286,12 @@ Env:
 		guard = safety.NewDecide(decisionURL, token, threshold)
 	}
 
+	periodModeParsed, err := run.ParsePeriodMode(*periodMode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: --period-mode: %v\n", err)
+		return exitUsage
+	}
+
 	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
 		Projects:             projects,
 		DiscoveredGroups:     discoverGroups,
@@ -295,6 +302,7 @@ Env:
 		DryRun:               *dryRun,
 		IncludeDiffs:         *includeDiffs,
 		InternalOnlyProjects: unionSlices(internalOnly, cfg.InternalOnlyProjects),
+		PeriodMode:           periodModeParsed,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

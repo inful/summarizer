@@ -228,6 +228,13 @@ summarizer run --discover-group group/team-a \
 # summarizer also writes a combined rollup
 # (combined--<since>d--customer.md and --team.md) by feeding the
 # per-project reports to one extra LLM call per audience.
+
+# Period bucketing: --period-mode monday anchors the output directory
+# to the ISO week's Monday, so a daily cron overwrites the same
+# <prefix>/<YYYY-MM-DD>/ directory, branch and MR all week long
+# instead of opening seven. --period-mode daily (default) keeps one
+# bucket per calendar day.
+summarizer run --discover-group group/team-a --since 7d --period-mode monday
 ```
 
 Output files are written under `--output-dir` (or `output_dir` from config):
