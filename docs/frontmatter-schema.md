@@ -114,3 +114,24 @@ writes raw Markdown only — no frontmatter, no `---` fences. Frontmatter
 emission is exclusively the GitLab publisher's job, because the only
 load-bearing reason to have it is to make docbuilder happy when it
 ingests the file.
+
+## Output file inventory per run
+
+A complete non-dry-run produces up to 4 distinct file shapes per
+period, all under `<prefix>/<period>/`:
+
+| File shape | Audience | When it lands |
+|---|---|---|
+| `<project-sanitized>--<days>d--<aud>.md` | customer + team | one pair per project (always) |
+| `combined--<days>d--<aud>.md` | customer + team | when ≥2 projects run |
+| `combined--epics--<days>d--<aud>.md` | customer + team | when ≥1 active epic exists anywhere in the run |
+
+The two `combined--*` shapes coexist: the first is a cross-project
+narrative rollup; the second is a cross-project epic rollup. The
+`epics` segment is intentionally distinct from `combined` so a
+docbuilder operator browsing the period directory can tell them
+apart without rendering.
+
+When `--project` and `--discover-group` are both supplied, every
+file above covers the union of explicit + discovered projects.
+

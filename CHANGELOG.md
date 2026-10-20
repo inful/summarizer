@@ -7,6 +7,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Cross-project epic rollup file** (`combined--epics--<period>--<audience>.md`). Fires whenever ≥1 active epic exists anywhere in the run, independent of project count. Each project's active epics land in dedicated `# Project: …` sections with title, state, web URL, and event count; the LLM synthesizes cross-project themes for both customer and team audiences. One extra LLM call per audience per run.
 - **Epic-level rollup in per-project reports.** When a project's GitLab group has epics (Premium/Ultimate feature), the customer and team prompts surface them as `## Epics active this period` with one H3 per epic, linked issues nested underneath, and an `## Other activity` section for events without an epic link.
   - Activity gate: an epic only counts toward the `maxActiveEpics=20` cap when at least one of its linked issues has `updated_at` within the window. Dormant epics (no issue activity this period) are silently dropped — they don't surface in the report and don't burn the cap.
   - Auto-detected project → group mapping via `GET /projects/:id`. Summarizer reads `namespace.kind` and `namespace.full_path` from the project metadata; user-namespace projects (kind=`user`) bypass the `/epics` fetch with no extra config.

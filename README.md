@@ -100,12 +100,14 @@ What you get:
 ```
 reports/
   2026-10-13/
-    group-proj--7d--customer.md    # public: true → customer index
-    group-proj--7d--team.md        # no public key    → internal index
-    other-proj--7d--customer.md   # public: true
+    group-proj--7d--customer.md        # public: true → customer index
+    group-proj--7d--team.md            # no public key    → internal index
+    other-proj--7d--customer.md       # public: true
     other-proj--7d--team.md
-    combined--7d--customer.md      # cross-project rollup (when --project appears >1 time)
+    combined--7d--customer.md          # cross-project rollup (when ≥2 projects)
     combined--7d--team.md
+    combined--epics--7d--customer.md   # cross-project epic rollup (when ≥1 active epic)
+    combined--epics--7d--team.md
   2026-10-20/
     ...
 ```

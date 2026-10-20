@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,15 +52,19 @@ type ProjectResult struct {
 	TeamText         string // rendered markdown for the team audience
 	FilesWritten     []string
 	TokensByAudience map[string]llm.Usage
-	FromDiscovery    bool // true when this project was found via --discover-group, false when explicit --project
+	FromDiscovery    bool           // true when this project was found via --discover-group, false when explicit --project
+	ActiveEpics      []*gitlab.Epic // active epics for this project (had issue activity in window); used by runEpicRollup
 }
 
 // Result describes what the run produced. Used by main to write the stderr
 // run summary. Projects is the per-project list; RollupFiles holds the
 // combined-customer.md and combined-team.md paths when len(Projects) > 1.
+// EpicRollupFiles holds combined-epics--{audience}.md when ≥1 active epic
+// was found across any project.
 type Result struct {
 	Projects         []ProjectResult
 	RollupFiles      []string
+	EpicRollupFiles  []string
 	TokensByAudience map[string]llm.Usage // rollup token usage, when applicable
 }
 
@@ -71,6 +76,12 @@ type Pipeline struct {
 	Publisher publisher.Publisher
 	Guard     safety.Guard // nil-safe; NoopGuard is substituted when safety is disabled
 	Opts      Options
+
+	// lastActiveEpics is populated during runOneProject so the
+	// subsequent runEpicRollup step can publish the cross-project
+	// epic rollup without re-fetching. Cleared at the start of
+	// every Run.
+	lastActiveEpics map[string][]*gitlab.Epic
 }
 
 // ErrInjection is returned (wrapped) when the safety guard classifies
@@ -102,6 +113,7 @@ func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Pu
 // together.
 func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	res := Result{Projects: []ProjectResult{}, TokensByAudience: map[string]llm.Usage{}}
+	p.lastActiveEpics = make(map[string][]*gitlab.Epic)
 
 	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 {
 		return res, errors.New("at least one --project or --discover-group is required")
@@ -129,6 +141,11 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 		// Tag whether this project came from discovery. Consumed by
 		// the operator-visible summary so a wide-net run is auditable.
 		pr.FromDiscovery = discoveredSet[project]
+		// Active epics were already fetched inside runOneProject
+		// (via fetchProjectEpics); carry them forward on the
+		// ProjectResult so runEpicRollup can publish the cross-
+		// project epic rollup without re-fetching.
+		pr.ActiveEpics = p.lastActiveEpics[project]
 		res.Projects = append(res.Projects, pr)
 		if err != nil {
 			return res, fmt.Errorf("project %s: %w", project, err)
@@ -141,6 +158,20 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 			return res, fmt.Errorf("rollup: %w", err)
 		}
 		res.RollupFiles = rollupFiles
+	}
+
+	// Cross-project epic rollup — fires whenever ≥1 project has
+	// active epics. Independent of project count (a single project
+	// with rich epic activity still benefits from a dedicated page).
+	// Skipped on --dry-run to keep the no-write contract.
+	if !p.Opts.DryRun {
+		if len(p.lastActiveEpics) > 0 {
+			epicRollupFiles, err := p.runEpicRollup(ctx, res.Projects)
+			if err != nil {
+				return res, fmt.Errorf("epics rollup: %w", err)
+			}
+			res.EpicRollupFiles = epicRollupFiles
+		}
 	}
 
 	return res, nil
@@ -209,6 +240,13 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	events.AttachEpics(all, epics)
 	res.EventsFetched = len(all)
 	res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
+
+	// Record active epics for runEpicRollup (read by Run, not by the
+	// per-project LLM call below). Allocated lazily so projects with
+	// no epics don't add map entries.
+	if len(epics) > 0 {
+		p.lastActiveEpics[project] = epics
+	}
 
 	if p.Opts.DryRun {
 		fmt.Fprintf(os.Stderr, "summarizer dry-run: %s: %d events (%d mrs, %d issues, %d commits) in window [%s, %s]\n",
@@ -321,6 +359,118 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 		files = append(files, res2.Ref)
 	}
 	return files, nil
+}
+
+// runEpicRollup publishes one cross-project epic rollup file per
+// audience, paralleling runRollup. Distinct from runRollup in two
+// ways:
+//   - Trigger: ≥1 active epic anywhere in the run, NOT "≥2
+//     projects". A single project with rich epic activity still
+//     benefits from a dedicated page that focuses on objective
+//     progress.
+//   - Surface: the file name carries `epics` (combined--epics--...
+//     vs combined--... so a docbuilder operator browsing the
+//     period directory can tell the two apart without rendering).
+//
+// Skipped when no project has active epics (gated in Run, not
+// here). The rollup is one LLM call per audience; the prompt is
+// trim — only epic-level metadata (title, state, web URL, event
+// count), NOT per-event detail, so the model's job is cross-
+// project theme synthesis, not narration.
+func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
+	var files []string
+	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
+		entries := make([]prompt.EpicRollupEntry, 0, len(projects))
+		for _, pr := range projects {
+			if len(pr.ActiveEpics) == 0 {
+				continue
+			}
+			summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
+			for _, e := range pr.ActiveEpics {
+				// EventCount is the activity-breadth signal for the
+				// rollup. We approximate it from the rendered body
+				// of the per-project report — a simpler tally would
+				// be "any epic with at least one issue updated in
+				// the window" but the event-count gives the model
+				// more useful info for prioritizing.
+				count := countEpicEvents(pr, e)
+				summaries = append(summaries, prompt.EpicSummary{Epic: e, EventCount: count})
+			}
+			entries = append(entries, prompt.EpicRollupEntry{
+				Project: pr.Project,
+				Epics:   summaries,
+			})
+		}
+		// Pick a representative project name for the report header
+		// (the rollup spans N projects; we surface a single project
+		// path in the doc-builder frontmatter — first by sorted
+		// order for determinism).
+		repProject := ""
+		if len(projects) > 0 {
+			repProject = projects[0].Project
+		}
+		system, user, err := prompt.RenderEpicRollup(aud, repProject, p.Opts.Since, entries)
+		if err != nil {
+			return files, fmt.Errorf("render epics rollup %s: %w", aud, err)
+		}
+		if err := p.checkPrompt(ctx, "epics-rollup", aud, system+"\n\n"+user); err != nil {
+			return files, err
+		}
+		resp, err := p.LLM.Complete(ctx, llm.Request{
+			System:    system,
+			User:      user,
+			Model:     p.Opts.Model,
+			MaxTokens: 2048,
+		})
+		if err != nil {
+			return files, fmt.Errorf("llm epics rollup %s: %w", aud, err)
+		}
+
+		name := epicRollupFilename(p.Opts.Since, aud)
+		period := periodSlug(p.Opts.Since)
+		res2, err := p.Publisher.Publish(publisher.Request{
+			Name:    name,
+			Body:    []byte(resp.Text),
+			Force:   p.Opts.Force,
+			Kind:    publisher.KindRollup,
+			Period:  period,
+			Title:   "epics rollup " + string(aud),
+			Project: "",
+			Public:  aud == prompt.AudienceCustomer,
+		})
+		if err != nil {
+			return files, fmt.Errorf("write epics rollup %s: %w", aud, err)
+		}
+		files = append(files, res2.Ref)
+	}
+	return files, nil
+}
+
+// countEpicEvents tallies how many lines in the per-project report's
+// issue-section mention this epic. It's an approximation — the
+// rendered body doesn't carry Epic references per-line — but it
+// gives the cross-project rollup a sense of activity breadth
+// without re-fetching any data. For the customer audience this
+// number is the model's only signal beyond the epic's own title;
+// for the team audience it's a coarse health check.
+//
+// Implementation walks the body once per epic. Project reports
+// are short (cap-events at 200, default), so this is cheap.
+func countEpicEvents(pr ProjectResult, e *gitlab.Epic) int {
+	body := pr.CustomerText + pr.TeamText
+	count := 0
+	// We count occurrences of the epic's title as a rough proxy
+	// for "events tagged with this epic". Real counting would
+	// require carrying per-event Epic refs into ProjectResult;
+	// that data is available in runOneProject's all slice but
+	// would inflate the struct. This heuristic is good enough
+	// for the cross-project rollup's breadth signal.
+	needle := e.Title
+	if needle == "" {
+		return 0
+	}
+	count += strings.Count(body, needle)
+	return count
 }
 
 // periodSlug returns the YYYY-MM-DD slug for the period end-date. The
@@ -592,6 +742,19 @@ func rollupFilename(window time.Duration, aud prompt.Audience) string {
 		days = 1
 	}
 	return fmt.Sprintf("combined--%dd--%s.md", days, aud)
+}
+
+// epicRollupFilename produces the cross-project epic rollup file
+// name. Distinct prefix (`epics`) so a docbuilder operator browsing
+// the period directory can tell it from the per-project rollup at
+// a glance. Two of these per run (customer + team) when ≥1 active
+// epic exists anywhere in the run.
+func epicRollupFilename(window time.Duration, aud prompt.Audience) string {
+	days := int(window / (24 * time.Hour))
+	if days < 1 {
+		days = 1
+	}
+	return fmt.Sprintf("combined--epics--%dd--%s.md", days, aud)
 }
 
 func sanitize(s string) string {
