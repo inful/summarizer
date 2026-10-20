@@ -53,6 +53,13 @@ type NormalizedEvent struct {
 	// prompt instructions tell the model to "infer what the MR does from
 	// the diff" rather than reproduce code into the report.
 	DiffChunks []gitlab.DiffChunk `json:"diff_chunks,omitempty"`
+
+	// Epic links this event to an enclosing epic, populated by the
+	// correlation step when the event's source (issue IID or MR-described
+	// issue link) matches an issue on a known epic. Nil for events with
+	// no epic context. Used by the prompt renderer to group events under
+	// epic headers in the section that surfaces active epics.
+	Epic *gitlab.Epic `json:"-"` //nolint:unused // populated by AttachEpics, read by prompt
 }
 
 type TeamOnlyFields struct {

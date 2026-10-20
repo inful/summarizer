@@ -122,6 +122,69 @@ type User struct {
 	Name     string `json:"name"`
 }
 
+// Epic is the subset of GitLab's /groups/:id/epics response shape we use.
+// Epics are a GitLab Premium/Ultimate feature; on Free-tier deployments
+// the FetchEpics call returns (nil, nil) and the pipeline skips the
+// epic section. See docs/deferred.md for the broader epic-rollup story.
+type Epic struct {
+	IID          int        `json:"iid"`
+	Title        string     `json:"title"`
+	Description  string     `json:"description"`
+	State        string     `json:"state"` // "opened" | "closed"
+	Confidential bool       `json:"confidential"`
+	WebURL       string     `json:"web_url"`
+	StartDate    *Date      `json:"start_date"` // nullable; date-only "YYYY-MM-DD"
+	DueDate      *Date      `json:"due_date"`   // nullable; date-only "YYYY-MM-DD"
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	ClosedAt     *time.Time `json:"closed_at"` // nullable; RFC3339 datetime
+
+	// GroupID is captured from the surrounding namespace context for
+	// use by FetchEpicIssues (which is a group-scoped endpoint). The
+	// /epics list endpoint doesn't return it explicitly; the caller
+	// sets it after FetchEpics returns.
+	GroupID int `json:"-"`
+
+	// Issues is populated by FetchEpicIssues after the bare /epics list
+	// fetch — the list endpoint only returns a count, not the linked
+	// issues themselves. Map keeps this JSON-cleanable to a stub.
+	Issues []Issue `json:"-"`
+}
+
+// Date wraps time.Time to decode GitLab's date-only fields (e.g.
+// epic start_date / due_date) which arrive as "YYYY-MM-DD" rather
+// than RFC3339. The wrapped value is at midnight UTC of that date.
+type Date struct{ time.Time }
+
+// UnmarshalJSON accepts the three shapes GitLab emits for date fields:
+// null (absent), a JSON string in YYYY-MM-DD, or an RFC3339 datetime.
+// The pointer-nil semantics come from the surrounding struct.
+func (d *Date) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		return nil
+	}
+	// Strip quotes and try formats.
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	for _, layout := range []string{"2006-01-02", time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			d.Time = t
+			return nil
+		}
+	}
+	return fmt.Errorf("date: cannot parse %q as YYYY-MM-DD or RFC3339", s)
+}
+
+// Namespace is the parent of a GitLab project. Projects live under
+// either a Group (kind="group") or a User (kind="user"). Epics only
+// exist for group-scoped projects.
+type Namespace struct {
+	Kind     string `json:"kind"` // "group" | "user"
+	FullPath string `json:"full_path"`
+}
+
 // FetchMRs returns MRs updated within [since, now]. updated_after is the
 // correct filter for "activity in window": it catches both newly opened and
 // newly commented-on MRs without scanning the full project history.
@@ -131,6 +194,155 @@ func (c *Client) FetchMRs(ctx context.Context, projectPath string, since time.Ti
 	q.Set("scope", "all")
 	q.Set("per_page", "100")
 	return getAll[MergeRequest](ctx, c, fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)), q)
+}
+
+// FetchEpics returns epics for a group. Epics are a Premium/Ultimate
+// feature; on Free-tier deployments (or when the group simply doesn't
+// have any) this returns (nil, nil) so the caller can skip the epic
+// section without surfacing an error. 401 (auth) DOES hard-error: a
+// valid token is still load-bearing.
+//
+// Note: this endpoint handles 403/404 specially (soft-degrade), so it
+// does NOT use the shared getPage helper. The free-tier 403 is a
+// feature, not a bug, and the shared switch can't distinguish them.
+func (c *Client) FetchEpics(ctx context.Context, groupPath string) ([]Epic, error) {
+	path := fmt.Sprintf("/groups/%s/epics", url.PathEscape(groupPath))
+	var out []Epic
+	for page := 1; ; page++ {
+		batch, next, err := c.pageEpics(ctx, path, page)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, batch...)
+		if !next {
+			return out, nil
+		}
+	}
+}
+
+// pageEpics issues one page of /epics. Distinct from getPage because
+// it carries the soft-degrade contract for 403/404.
+// nolint:unused // (returns are used via the wrapped call path; signature is identical to getPage)
+func (c *Client) pageEpics(ctx context.Context, path string, page int) ([]Epic, bool, error) {
+	q := url.Values{}
+	q.Set("per_page", "100")
+	q.Set("page", strconv.Itoa(page))
+	u := c.baseURL + path + "?" + q.Encode()
+	var batch []Epic
+	var next bool
+	var attempt int
+	for {
+		attempt++
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, false, err
+		}
+		req.Header.Set("PRIVATE-TOKEN", c.token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, false, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
+			if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
+				return nil, false, err
+			}
+			continue
+		case resp.StatusCode >= 500 && attempt <= maxRetries:
+			if err := sleep(ctx, backoff(attempt)); err != nil {
+				return nil, false, err
+			}
+			continue
+		case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
+			// Soft-degrade: Free-tier or wrong group path. Caller treats
+			// (nil, nil) as "no epic data; skip the section".
+			return nil, false, nil
+		case resp.StatusCode >= 400:
+			return nil, false, fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
+		}
+		next = resp.Header.Get("X-Next-Page") != ""
+		if err := json.Unmarshal(body, &batch); err != nil {
+			return nil, false, err
+		}
+		return batch, next, nil
+	}
+}
+
+// FetchEpicIssues returns the issues linked to a single epic. The bare
+// /epics list endpoint only returns a count, so we hit this per epic
+// to know which issues each contains. Same graceful-degrade contract
+// as FetchEpics: 403/404 → (nil, nil); 401 → real error.
+func (c *Client) FetchEpicIssues(ctx context.Context, groupPath string, epicIID int) ([]Issue, error) {
+	path := fmt.Sprintf("/groups/%s/epics/%d/issues", url.PathEscape(groupPath), epicIID)
+	q := url.Values{}
+	q.Set("per_page", "100")
+	var out []Issue
+	page := 1
+	for {
+		q.Set("page", strconv.Itoa(page))
+		var batch []Issue
+		var next bool
+		u := c.baseURL + path + "?" + q.Encode()
+		var attempt int
+		var decodeErr error
+		for {
+			attempt++
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("PRIVATE-TOKEN", c.token)
+			req.Header.Set("Accept", "application/json")
+			resp, err := c.http.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			switch {
+			case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
+				if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
+					return nil, err
+				}
+				continue
+			case resp.StatusCode >= 500 && attempt <= maxRetries:
+				if err := sleep(ctx, backoff(attempt)); err != nil {
+					return nil, err
+				}
+				continue
+			case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
+				return nil, nil
+			case resp.StatusCode >= 400:
+				return nil, fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
+			}
+			next = resp.Header.Get("X-Next-Page") != ""
+			decodeErr = json.Unmarshal(body, &batch)
+			break
+		}
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		out = append(out, batch...)
+		if !next || len(batch) == 0 {
+			return out, nil
+		}
+		page++
+	}
+}
+
+// FetchProjectNamespace returns the parent namespace (group or user)
+// of a project. The pipeline uses this to derive the group's full path
+// for /epics calls — projects don't carry their own epic endpoint,
+// only groups do.
+func (c *Client) FetchProjectNamespace(ctx context.Context, projectPath string) (Namespace, error) {
+	var pj struct {
+		Namespace Namespace `json:"namespace"`
+	}
+	err := c.getJSON(ctx, fmt.Sprintf("/projects/%s", url.PathEscape(projectPath)), nil, &pj)
+	return pj.Namespace, err
 }
 
 // FetchIssues returns issues updated within [since, now].

@@ -22,8 +22,11 @@ the data flow and the components.
    │ FetchMRChanges (per-MR worker pool, 4 concurrent; 50 MRs ≈ 50s)│
    │ FetchIssues                                                   │
    │ FetchCommits                                                  │
+   │ FetchProjectNamespace  (auto-detects group kind/full_path)    │
+   │ FetchEpics         ─┐ (group-scoped, Premium/Ultimate feature) │
+   │ FetchEpicIssues      (per-epic issues pull; soft-degrades 403) │
    └──────────────────────────────┬───────────────────────────────┘
-                                  │ []MergeRequest / []Issue / []Commit
+                                  │ []MergeRequest / []Issue / []Commit / []Epic
                                   ▼
    ┌───────────────────────────────────────────────────────────────┐
    │  internal/events                                              │
@@ -92,7 +95,7 @@ the data flow and the components.
 | `cmd/summarizer` | Entry point. Subcommand routing, flag parsing, env-fallback for secrets, config + publisher + safety wiring. |
 | `internal/config` | YAML loader; defaults; CLI-override merge; per-field validation. |
 | `internal/gitlab` | `net/http` GitLab REST v4 client. Three fetchers (MRs, issues, commits) + one detail-fetcher (`/changes`). Offset pagination (`X-Next-Page`), 429-aware backoff with ±20% jitter, request caps. |
-| `internal/events` | `NormalizedEvent` type. The single shape that crosses the port boundary between GitLab (any-specific) and the prompt builder (clean). All GitLab-JSON quirks stay in this package. |
+| `internal/events` | `NormalizedEvent` type. The single shape that crosses the port boundary between GitLab (any-specific) and the prompt builder (clean). All GitLab-JSON quirks stay in this package. `AttachEpics` mutates Issue events in place to attach their containing epic (`Epic *gitlab.Epic`); `FilterActiveEpics(window)` filters the pipeline's epic list to those with at least one issue updated within the window. |
 | `internal/prompt` | `Render(audience, project, window, events, cap) → (system, user)`. Two embedded `.tmpl` files plus per-audience system prompts. `RenderRollup(...)` for the multi-project cross-rollup. |
 | `internal/llm` | `Provider` interface. OpenAI Chat Completions + Anthropic Messages adapters. Pluggable — adding a third provider is one new file. |
 | `internal/publisher` | `Publisher` interface. `Local` (atomic disk write, refuse-first) + `GitLab` (branch + Files API + MR). Frontmatter generation in `frontmatter.go`. |

@@ -31,6 +31,15 @@ type Options struct {
 	IncludeDiffs bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
 }
 
+// maxActiveEpics caps the number of epic headers that appear in a
+// per-project report. Applies to ACTIVE epics only — see
+// events.FilterActiveEpics. A project with 50 dormant epics and 5
+// active ones in-window will surface all 5 even though the dormant
+// ones never appear. Set conservatively because each active epic's
+// nested events add roughly 200–400 tokens to the prompt; 20 keeps
+// even a 4-project rollup under 16K tokens for the epic section.
+const maxActiveEpics = 20
+
 // ProjectResult describes what one project produced. Used to feed the
 // rollup step (when len(Projects) > 1) without re-reading from disk.
 type ProjectResult struct {
@@ -153,6 +162,26 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	for _, c := range commits {
 		all = append(all, events.Commit(c))
 	}
+
+	epics, err := p.fetchProjectEpics(ctx, project, since, time.Now().UTC())
+	if err != nil {
+		// Epic failure is non-fatal: skip the epic section but keep the
+		// run. Anything other than the (already-soft-degraded) 403/404
+		// from the epics endpoint is a transport problem, so log it and
+		// continue. The flat rendering path runs as if epics weren't
+		// configured.
+		fmt.Fprintf(os.Stderr, "summarizer: WARN epics unavailable for %s — proceeding without epic section: %v\n", project, err)
+		epics = nil
+	}
+	if len(epics) > maxActiveEpics {
+		// Soft warning; if the project has more than the cap's worth
+		// of active epics, only the first maxActiveEpics surface in the
+		// report (caller already filtered to "had activity in window").
+		fmt.Fprintf(os.Stderr, "summarizer: %s: %d active epics in window, capping at %d\n",
+			project, len(epics), maxActiveEpics)
+		epics = epics[:maxActiveEpics]
+	}
+	events.AttachEpics(all, epics)
 	res.EventsFetched = len(all)
 	res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
 
@@ -165,7 +194,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 
 	window := p.Opts.Since
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-		system, user, err := prompt.Render(aud, project, window, all, p.Cfg.MaxEvents)
+		system, user, err := prompt.Render(aud, project, window, all, p.Cfg.MaxEvents, epics)
 		if err != nil {
 			return res, fmt.Errorf("render %s: %w", aud, err)
 		}
@@ -379,6 +408,54 @@ func fillMRDetails(ctx context.Context, gc *gitlab.Client, project string, mrs [
 		}(i)
 	}
 	wg.Wait()
+}
+
+// fetchProjectEpics fetches the active-epic list for one project:
+// resolve the group's full path via the project metadata, list the
+// group's epics, fetch each epic's linked issues, then filter to the
+// subset that had issue activity in the window. The filter step applies
+// the operator's "epics without activity don't count against the cap"
+// rule — a project with 50 dormant epics produces zero work; a project
+// with 5 active epics produces only the 5 active ones.
+//
+// Graceful-degrade contract: any (403, 404) from /epics or /epics/:iid/issues
+// returns (nil, nil) so the pipeline can skip the section without
+// surfacing an error. 401s and 5xxs DO hard-fail the project — those
+// are real problems the operator must see.
+// nolint:unused // wired via runOneProject
+func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since, until time.Time) ([]*gitlab.Epic, error) {
+	ns, err := p.GitLab.FetchProjectNamespace(ctx, project)
+	if err != nil {
+		return nil, err
+	}
+	if ns.Kind != "group" {
+		// User-namespace projects don't have a group and therefore
+		// don't have epics. Skip silently; not an error.
+		return nil, nil
+	}
+	raw, err := p.GitLab.FetchEpics(ctx, ns.FullPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	// Fetch each epic's linked issues. nil-on-soft-degrade per epic:
+	// a single epic returning 403 doesn't kill the whole list; we
+	// just lose that one's issue map (its events would land in
+	// "Other activity").
+	for i := range raw {
+		rawIssues, err := p.GitLab.FetchEpicIssues(ctx, ns.FullPath, raw[i].IID)
+		if err != nil {
+			return nil, err
+		}
+		raw[i].Issues = rawIssues
+	}
+	all := make([]*gitlab.Epic, 0, len(raw))
+	for i := range raw {
+		all = append(all, &raw[i])
+	}
+	return events.FilterActiveEpics(all, since, until), nil
 }
 
 func filename(window time.Duration, project string, aud prompt.Audience) string {

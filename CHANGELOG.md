@@ -6,6 +6,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Epic-level rollup in per-project reports. When a project's GitLab group has epics (Premium/Ultimate feature), the customer and team prompts surface them as `## Epics active this period` with one H3 per epic, linked issues nested underneath, and an `## Other activity` section for events without an epic link.
+- Activity gate on epics: an epic only counts toward the `maxActiveEpics=20` cap when at least one of its linked issues has `updated_at` within the window. Dormant epics (no issue activity this period) are silently dropped — they don't surface in the report and don't burn the cap.
+- Auto-detected project → group mapping via `GET /projects/:id`. Summarizer reads `namespace.kind` and `namespace.full_path` from the project metadata; user-namespace projects (kind=`user`) bypass the `/epics` fetch with no extra config.
+- Graceful degradation: Free-tier GitLab (no `/epics`), wrong group path (404), or auth issues are all detected. 403/404 → empty epic section with a one-line stderr note; 401 → operator-visible error.
+
+### Changed
+- `internal/prompt.Render(...)` signature gained a final `[]*gitlab.Epic` parameter. Pass `nil` for projects without epics to keep the existing flat rendering. All call sites and the existing test fixtures updated.
+
+### Internals
+- New `Epic` and `Namespace` types in `internal/gitlab`. `Epic.StartDate` and `Epic.DueDate` use a custom `Date` decoder that accepts both `YYYY-MM-DD` (GitLab's epic schema) and RFC3339.
+- `FetchEpics` and `FetchEpicIssues` are paginated like the existing fetchers but carry a soft-degrade contract for 403/404 (Free-tier / wrong group), distinct from the existing `getPage` path. 401s and 5xxs hard-fail (auth/transport).
+- New `events.AttachEpics` correlates issue events with their containing epic by IID. Commits and MRs are intentionally NOT annotated (no issue-linkage in this code path).
+- New `events.FilterActiveEpics(window)` is the half-open `[since, until]` filter that the pipeline runs before the cap.
+
+## [0.1.0] - 2026-10-20
+
 ### Changed
 - Report UID is now a UUID v7 minted by [`inful/mdid`](https://github.com/inful/mdid) (was: a hand-rolled 16-char SHA-256-hex truncation). The mint itself is non-deterministic by design (UUID v7 has random bits); cross-run stability comes from read-before-write in the GitLab publisher, which reads the existing file's frontmatter via [`inful/mdfm`](https://github.com/inful/mdfm) and reuses the existing UID on every re-run.
 - Report fingerprint now goes through [`inful/mdfp`](https://github.com/inful/mdfp)'s `CalculateFingerprintFromParts` (was: an inline `crypto/sha256` of the body bytes). Output format is unchanged (SHA-256 hex); the swap is for ecosystem consistency with the rest of the user's markdown tooling.
