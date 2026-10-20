@@ -213,6 +213,17 @@ summarizer run --project group/a,group/b
 summarizer run --discover-group group/team-a --since 7d
 summarizer run --discover-group group/team-a --project group/team-a/flagship --since 7d
 
+# Audience policy: which projects produce customer-facing output?
+# Three sources union together: --internal-only-project flag,
+# summarizer.yaml's internal_only_projects block, and the GitLab-side
+# `summarizer-team-only` topic on the project. Discovered projects
+# default to team-only unless the project carries the `summarizer`
+# topic (opt-in to customer output). The auditor-friendly rule:
+# absence of any topic = team only for discovered, both audiences
+# for explicit-listed.
+summarizer run --discover-group group/team-a \
+    --internal-only-project group/team-a/internal-tool --since 7d
+
 # When more than one project runs (whether explicit or discovered),
 # summarizer also writes a combined rollup
 # (combined--<since>d--customer.md and --team.md) by feeding the

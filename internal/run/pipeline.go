@@ -16,6 +16,7 @@ import (
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/llm"
+	"github.com/inful/summarizer/internal/policy"
 	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/publisher"
 	"github.com/inful/summarizer/internal/safety"
@@ -23,14 +24,15 @@ import (
 
 // Options are run-time parameters resolved at the CLI boundary.
 type Options struct {
-	Projects         []string      // required (unless DiscoveredGroups is set): one or more GitLab paths "group/subgroup/proj"
-	Since            time.Duration // window: now - Since < since
-	Provider         string        // "openai" or "anthropic" (overrides config)
-	Model            string        // overrides config
-	Force            bool          // overwrite existing reports
-	DryRun           bool          // fetch + print + exit; no LLM call, no file write
-	IncludeDiffs     bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
-	DiscoveredGroups []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
+	Projects             []string      // required (unless DiscoveredGroups is set): one or more GitLab paths "group/subgroup/proj"
+	Since                time.Duration // window: now - Since < since
+	Provider             string        // "openai" or "anthropic" (overrides config)
+	Model                string        // overrides config
+	Force                bool          // overwrite existing reports
+	DryRun               bool          // fetch + print + exit; no LLM call, no file write
+	IncludeDiffs         bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
+	DiscoveredGroups     []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
+	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarizer-team-only" classification; team-only projects produce no customer-facing report.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -46,13 +48,16 @@ const maxActiveEpics = 20
 // rollup step (when len(Projects) > 1) without re-reading from disk.
 type ProjectResult struct {
 	Project          string
+	Source           policy.ProjectSource // SourceDiscovered for --discover-group; SourceExplicit otherwise
 	EventsFetched    int
 	EventsUsed       int
-	CustomerText     string // rendered markdown for the customer audience
+	CustomerText     string // rendered markdown for the customer audience (empty when TeamOnly)
 	TeamText         string // rendered markdown for the team audience
 	FilesWritten     []string
 	TokensByAudience map[string]llm.Usage
-	FromDiscovery    bool           // true when this project was found via --discover-group, false when explicit --project
+	FromDiscovery    bool           // alias for Source == SourceDiscovered; retained for log readability
+	TeamOnly         bool           // true ⇒ no customer-facing content was produced for this project
+	CustomerOn       bool           // true ⇒ customer-facing content was produced (== !TeamOnly)
 	ActiveEpics      []*gitlab.Epic // active epics for this project (had issue activity in window); used by runEpicRollup
 }
 
@@ -178,15 +183,31 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 }
 
 // runOneProject is the single-project slice of the pipeline: fetch +
-// normalize + 2 LLM calls + 2 file writes. Returns a ProjectResult
-// even on partial failure (file write fail after a successful LLM call
-// still records the LLM call's text).
+// normalize + audience-rendered LLM calls + file writes. Returns a
+// ProjectResult even on partial failure (file write fail after a
+// successful LLM call still records the LLM call's text).
+//
+// Audience policy (D5) is decided once at the top of this function:
+// the customer iteration is skipped entirely when the project's
+// policy says TeamOnly (no LLM call, no file, no Epic ordering
+// through the customer audience). The team iteration always runs.
+// The classification is computed from source (Discovered vs
+// Explicit), the project's GitLab topics, and the three sources of
+// team-only override (config / CLI / topic) — see policy.Classify
+// for the truth table.
 func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectResult, error) {
 	res := ProjectResult{
 		Project:          project,
+		Source:           policy.SourceExplicit, // overridden to SourceDiscovered in Run when applicable
 		FilesWritten:     []string{},
 		TokensByAudience: map[string]llm.Usage{},
 	}
+
+	inOverrideList := containsString(p.Opts.InternalOnlyProjects, project)
+	topics := p.projectTopics(ctx, project)
+	audience := policy.Classify(res.Source, topics, inOverrideList)
+	res.TeamOnly = audience.TeamOnly
+	res.CustomerOn = audience.CustomerOn
 
 	since := time.Now().UTC().Add(-p.Opts.Since)
 
@@ -257,6 +278,14 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 
 	window := p.Opts.Since
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
+		if aud == prompt.AudienceCustomer && !res.CustomerOn {
+			// Audience policy (D5) says team-only. Skip the
+			// customer iteration entirely: no LLM call, no file
+			// write, no event rendering for the customer side.
+			// Team iteration runs as usual.
+			continue
+		}
+
 		system, user, err := prompt.Render(aud, project, window, all, p.Cfg.MaxEvents, epics)
 		if err != nil {
 			return res, fmt.Errorf("render %s: %w", aud, err)
@@ -313,11 +342,31 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
 	var files []string
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
+		// Audience policy (D5): filter projects by audience. The
+		// customer-facing rollup only sees projects with CustomerOn;
+		// the team-facing rollup sees all projects. When the
+		// customer-facing list is empty (all-team-only run), skip
+		// the customer rollup entirely — no file should land
+		// containing zero customer-eligible projects.
+		var customerEligible []ProjectResult
+		if aud == prompt.AudienceCustomer {
+			for _, pr := range projects {
+				if pr.CustomerOn {
+					customerEligible = append(customerEligible, pr)
+				}
+			}
+			if len(customerEligible) == 0 {
+				continue
+			}
+		} else {
+			customerEligible = projects
+		}
+
 		// Pick the right per-audience text per project. Per-project
-		// results carry both texts; we feed the rollup the same audience
-		// the per-project report was written for.
-		reports := make([]prompt.ProjectReport, 0, len(projects))
-		for _, pr := range projects {
+		// results carry both texts; we feed the rollup the same
+		// audience the per-project report was written for.
+		reports := make([]prompt.ProjectReport, 0, len(customerEligible))
+		for _, pr := range customerEligible {
 			body := pr.TeamText
 			if aud == prompt.AudienceCustomer {
 				body = pr.CustomerText
@@ -380,8 +429,26 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
 	var files []string
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-		entries := make([]prompt.EpicRollupEntry, 0, len(projects))
-		for _, pr := range projects {
+		// Audience policy (D5): same filtering as runRollup. The
+		// customer-facing epic rollup only sees epics from projects
+		// with CustomerOn == true; the team-facing rollup sees all
+		// epics. Skip the customer audience entirely if no customer-
+		// eligible epics exist.
+		var eligible []ProjectResult
+		if aud == prompt.AudienceCustomer {
+			for _, pr := range projects {
+				if pr.CustomerOn {
+					eligible = append(eligible, pr)
+				}
+			}
+			if len(eligible) == 0 {
+				continue
+			}
+		} else {
+			eligible = projects
+		}
+		entries := make([]prompt.EpicRollupEntry, 0, len(eligible))
+		for _, pr := range eligible {
 			if len(pr.ActiveEpics) == 0 {
 				continue
 			}
@@ -400,6 +467,9 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 				Project: pr.Project,
 				Epics:   summaries,
 			})
+		}
+		if len(entries) == 0 {
+			continue
 		}
 		// Pick a representative project name for the report header
 		// (the rollup spans N projects; we surface a single project
@@ -633,6 +703,25 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 	return events.FilterActiveEpics(all, since, until), nil
 }
 
+// projectTopics fetches the project's GitLab topic list, used by
+// D5's audience classifier (see policy.Classify). One extra
+// /projects/:id fetch per project per run; the result feeds a
+// pure-function classifier so we don't carry the topics around
+// past Classify.
+//
+// On any error (transport, parse, missing field on older GitLab),
+// returns nil and lets the classifier default to "no topics" — the
+// same behavior as a project whose operator never set topics. The
+// err-on-everything alternative would surface a network blip as a
+// customer-output suppression failure; not useful.
+func (p *Pipeline) projectTopics(ctx context.Context, project string) []string {
+	summary, err := p.GitLab.FetchProjectSummary(ctx, project)
+	if err != nil || summary == nil {
+		return nil
+	}
+	return summary.Topics
+}
+
 // resolveProjects merges explicit (--project) and discovered
 // (--discover-group) inputs into the final per-project list, dedupes
 // on path (explicit wins on overlap), probes each discovered project
@@ -688,17 +777,29 @@ func resolveProjectsWithClient(ctx context.Context, gc *gitlab.Client, opts Opti
 				// transport / auth issue that's worth surfacing.
 				return nil, nil, fmt.Errorf("probe %s: %w", proj.Path, err)
 			}
+			// Audience classification (D5): discovered projects
+			// need either the `summarizer` opt-in topic to be
+			// customer-eligible, or they default to team-only (the
+			// default-safe behaviour). Config/CLI overrides apply
+			// here too. Annotate the manifest line so the operator
+			// can audit classifications at a glance.
+			inOverride := containsString(opts.InternalOnlyProjects, proj.Path)
+			aud := policy.Classify(policy.SourceDiscovered, proj.Topics, inOverride)
+			tnoTag := ""
+			if aud.TeamOnly {
+				tnoTag = " (team-only)"
+			}
 			if !active {
 				excluded++
-				fmt.Fprintf(os.Stderr, "  excluded (no MRs in window): %s last_activity_at=%s\n",
-					proj.Path, proj.LastActivityAt.Format(time.RFC3339))
+				fmt.Fprintf(os.Stderr, "  excluded (no MRs in window): %s%s last_activity_at=%s\n",
+					proj.Path, tnoTag, proj.LastActivityAt.Format(time.RFC3339))
 				continue
 			}
 			included++
 			finalList = append(finalList, proj.Path)
 			discoveredSet[proj.Path] = true
-			fmt.Fprintf(os.Stderr, "  included:                       %s last_activity_at=%s\n",
-				proj.Path, proj.LastActivityAt.Format(time.RFC3339))
+			fmt.Fprintf(os.Stderr, "  included:%s %s last_activity_at=%s\n",
+				tnoTag, proj.Path, proj.LastActivityAt.Format(time.RFC3339))
 		}
 	}
 	fmt.Fprintf(os.Stderr, "summarizer: discovery summary included=%d excluded=%d\n", included, excluded)

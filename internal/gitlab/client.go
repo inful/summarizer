@@ -195,6 +195,11 @@ type ProjectSummary struct {
 	Path           string    `json:"path_with_namespace"`
 	ID             int       `json:"id"`
 	LastActivityAt time.Time `json:"last_activity_at"`
+	// Topics is the project's GitLab topic list. summarizer reads
+	// `summarizer` and `summarizer-team-only` from this list to
+	// decide audience policy (see internal/policy.Classify). Free-
+	// tier compatible.
+	Topics []string `json:"topics"`
 }
 
 // FetchGroupProjects lists projects in a single group. recursive=false
@@ -448,6 +453,57 @@ func (c *Client) FetchProjectNamespace(ctx context.Context, projectPath string) 
 	}
 	err := c.getJSON(ctx, fmt.Sprintf("/projects/%s", url.PathEscape(projectPath)), nil, &pj)
 	return pj.Namespace, err
+}
+
+// FetchProjectSummary returns the fields summarizer needs about a single
+// project: path, last-activity timestamp, and topic list. Called by
+// the D5 audience classifier (see internal/policy) so it can decide
+// whether the project should produce customer-facing output. The
+// 404-soft-degrade contract (returns nil summary, no error) lets the
+// caller treat a moved/renamed project as "no metadata available"
+// rather than failing the run — the classifier's default-safe behavior
+// then keeps the project on the team-only side until the operator can
+// re-tag.
+func (c *Client) FetchProjectSummary(ctx context.Context, projectPath string) (*ProjectSummary, error) {
+	var ps ProjectSummary
+	var attempt int
+	for {
+		attempt++
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			c.baseURL+"/projects/"+url.PathEscape(projectPath), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("PRIVATE-TOKEN", c.token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusNotFound:
+			return nil, nil
+		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
+			if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
+				return nil, err
+			}
+			continue
+		case resp.StatusCode >= 500 && attempt <= maxRetries:
+			if err := sleep(ctx, backoff(attempt)); err != nil {
+				return nil, err
+			}
+			continue
+		case resp.StatusCode >= 400:
+			return nil, fmt.Errorf("gitlab %s /projects/%s: %d %s",
+				http.MethodGet, projectPath, resp.StatusCode, truncate(string(body), 200))
+		}
+		if err := json.Unmarshal(body, &ps); err != nil {
+			return nil, fmt.Errorf("decode /projects/%s: %w", projectPath, err)
+		}
+		return &ps, nil
+	}
 }
 
 // FetchIssues returns issues updated within [since, now].

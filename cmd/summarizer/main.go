@@ -119,6 +119,7 @@ Env:
 		gitlabHost     = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
 		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
 		discoverGroups = stringSliceFlag{}
+		internalOnly   = stringSliceFlag{}
 		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
 		openaiBaseURL  = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
 		anthropicKey   = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
@@ -126,6 +127,7 @@ Env:
 	)
 	fs.Var(&projects, "project", "GitLab project path (repeatable, or comma-separated). Examples: --project group/a --project group/b, or --project group/a,group/b. Composes with --discover-group; an explicit listing takes precedence on duplicate paths.")
 	fs.Var(&discoverGroups, "discover-group", "GitLab group path to scan for active projects (repeatable, or comma-separated). Each project's MRs in the window are probed; active ones join the run alongside any --project listings. Recursion into subgroups is not implemented in v1 — pass the leaf group you want covered.")
+	fs.Var(&internalOnly, "internal-only-project", "Project path whose customer-facing output is suppressed (repeatable, or comma-separated). Same effect as setting the `summarizer-team-only` GitLab topic on the project. The three sources (this flag, the YAML `internal_only_projects:` block, the GitLab topic) union together.")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -284,14 +286,15 @@ Env:
 	}
 
 	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
-		Projects:         projects,
-		DiscoveredGroups: discoverGroups,
-		Since:            cfg.Lookback(),
-		Provider:         cfg.Provider,
-		Model:            cfg.Model,
-		Force:            *force,
-		DryRun:           *dryRun,
-		IncludeDiffs:     *includeDiffs,
+		Projects:             projects,
+		DiscoveredGroups:     discoverGroups,
+		Since:                cfg.Lookback(),
+		Provider:             cfg.Provider,
+		Model:                cfg.Model,
+		Force:                *force,
+		DryRun:               *dryRun,
+		IncludeDiffs:         *includeDiffs,
+		InternalOnlyProjects: unionSlices(internalOnly, cfg.InternalOnlyProjects),
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -370,6 +373,27 @@ func classify(err error) int {
 
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && indexOf(s, sub) >= 0
+}
+
+// unionSlices merges two string slices, deduping on exact equality.
+// Order: first input first. Used to combine the --internal-only-project
+// flag with summarizer.yaml's internal_only_projects block.
+func unionSlices(a, b []string) []string {
+	out := make([]string, 0, len(a)+len(b))
+	seen := make(map[string]bool, len(a)+len(b))
+	for _, s := range a {
+		if !seen[s] {
+			out = append(out, s)
+			seen[s] = true
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			out = append(out, s)
+			seen[s] = true
+		}
+	}
+	return out
 }
 
 func indexOf(s, sub string) int {

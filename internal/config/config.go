@@ -60,6 +60,13 @@ type Config struct {
 	// the per-project reports to one extra LLM call per audience.
 	Projects []string `yaml:"projects"`
 
+	// InternalOnlyProjects is the operator-curated list of projects
+	// that should never produce customer-facing output. Same effect
+	// as the GitLab-side `summarizer-team-only` topic (D5) or the
+	// --internal-only-project CLI flag — the three sources union
+	// together. See internal/policy for the classifier.
+	InternalOnlyProjects []string `yaml:"internal_only_projects"`
+
 	// Publish configures the optional GitLab MR-based publisher.
 	// When enabled, the local disk writer is skipped and every report
 	// file is committed to a per-period branch with a reviewable MR
