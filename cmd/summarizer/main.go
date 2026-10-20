@@ -105,25 +105,27 @@ Env:
 	}
 
 	var (
-		since         = fs.Duration("since", 0, "rolling window: '168h' for 7d, '720h' for 30d. Default from config.")
-		provider      = fs.String("provider", "", "LLM provider: openai or anthropic (default from config)")
-		model         = fs.String("model", "", "LLM model id (default from config)")
-		outputDir     = fs.String("output-dir", "", "output directory (default from config)")
-		maxEvents     = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
-		force         = fs.Bool("force", false, "overwrite existing output files")
-		dryRun        = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
-		includeDiffs  = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
-		safetyURL     = fs.String("safety-url", "", "decision API base URL for prompt-injection guard (default from config safety.decision_url)")
-		safetyToken   = fs.String("safety-token", "", "decision API token (default from $SAFETY_DECISION_TOKEN env or config)")
-		safetyEnabled = fs.Bool("safety-enabled", false, "gate every LLM call through the prompt-injection detector; hard-fails the run on verdict (default off)")
-		gitlabHost    = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
-		gitlabToken   = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
-		openaiKey     = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
-		openaiBaseURL = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
-		anthropicKey  = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
-		configPath    = fs.String("config", "./summarizer.yaml", "path to YAML config file")
+		since          = fs.Duration("since", 0, "rolling window: '168h' for 7d, '720h' for 30d. Default from config.")
+		provider       = fs.String("provider", "", "LLM provider: openai or anthropic (default from config)")
+		model          = fs.String("model", "", "LLM model id (default from config)")
+		outputDir      = fs.String("output-dir", "", "output directory (default from config)")
+		maxEvents      = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
+		force          = fs.Bool("force", false, "overwrite existing output files")
+		dryRun         = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
+		includeDiffs   = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
+		safetyURL      = fs.String("safety-url", "", "decision API base URL for prompt-injection guard (default from config safety.decision_url)")
+		safetyToken    = fs.String("safety-token", "", "decision API token (default from $SAFETY_DECISION_TOKEN env or config)")
+		safetyEnabled  = fs.Bool("safety-enabled", false, "gate every LLM call through the prompt-injection detector; hard-fails the run on verdict (default off)")
+		gitlabHost     = fs.String("gitlab-host", "", "GitLab base URL, e.g. https://gitlab.example.com (default from config)")
+		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
+		discoverGroups = stringSliceFlag{}
+		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
+		openaiBaseURL  = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default $OPENAI_BASE_URL, then config openai_base_url, then https://api.openai.com/v1). Set to a local server for Ollama/vLLM/LM Studio.")
+		anthropicKey   = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY). Prefer env var.")
+		configPath     = fs.String("config", "./summarizer.yaml", "path to YAML config file")
 	)
-	fs.Var(&projects, "project", "GitLab project path (repeatable, or comma-separated). Examples: --project group/a --project group/b, or --project group/a,group/b. At least one required.")
+	fs.Var(&projects, "project", "GitLab project path (repeatable, or comma-separated). Examples: --project group/a --project group/b, or --project group/a,group/b. Composes with --discover-group; an explicit listing takes precedence on duplicate paths.")
+	fs.Var(&discoverGroups, "discover-group", "GitLab group path to scan for active projects (repeatable, or comma-separated). Each project's MRs in the window are probed; active ones join the run alongside any --project listings. Recursion into subgroups is not implemented in v1 — pass the leaf group you want covered.")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -282,13 +284,14 @@ Env:
 	}
 
 	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
-		Projects:     projects,
-		Since:        cfg.Lookback(),
-		Provider:     cfg.Provider,
-		Model:        cfg.Model,
-		Force:        *force,
-		DryRun:       *dryRun,
-		IncludeDiffs: *includeDiffs,
+		Projects:         projects,
+		DiscoveredGroups: discoverGroups,
+		Since:            cfg.Lookback(),
+		Provider:         cfg.Provider,
+		Model:            cfg.Model,
+		Force:            *force,
+		DryRun:           *dryRun,
+		IncludeDiffs:     *includeDiffs,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

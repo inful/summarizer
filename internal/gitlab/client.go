@@ -6,6 +6,7 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -185,6 +186,110 @@ type Namespace struct {
 	FullPath string `json:"full_path"`
 }
 
+// ProjectSummary is the minimum info summarizer needs about a project
+// during group discovery. The full Project payload (description,
+// topics, avatar_url, ...) isn't useful here, so we model only the
+// fields the discovery flow reads. Keep the type small — large
+// responses on a big group can run into the megabytes.
+type ProjectSummary struct {
+	Path           string    `json:"path_with_namespace"`
+	ID             int       `json:"id"`
+	LastActivityAt time.Time `json:"last_activity_at"`
+}
+
+// FetchGroupProjects lists projects in a single group. recursive=false
+// is single-level (the GitLab default). recursive=true would traverse
+// subgroups via /groups/:id/groups + recurse; that's a v2 follow-up
+// — the parameter exists so the recursive future change is API-
+// backwards-compatible.
+func (c *Client) FetchGroupProjects(ctx context.Context, groupPath string, recursive bool) ([]ProjectSummary, error) {
+	if recursive {
+		// v1 ships single-level only. The branch exists so a future
+		// recursive implementation can flip on without callers
+		// needing to change their call sites.
+		return nil, errors.New("FetchGroupProjects: recursive=true is not implemented; pass false")
+	}
+	q := url.Values{}
+	q.Set("per_page", "100")
+	path := fmt.Sprintf("/groups/%s/projects", url.PathEscape(groupPath))
+	var out []ProjectSummary
+	page := 1
+	for {
+		q.Set("page", strconv.Itoa(page))
+		var batch []ProjectSummary
+		var next bool
+		err := c.doJSON(ctx, path, q, func(resp *http.Response, body []byte) error {
+			next = resp.Header.Get("X-Next-Page") != ""
+			return json.Unmarshal(body, &batch)
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, batch...)
+		if !next || len(batch) == 0 {
+			return out, nil
+		}
+		page++
+	}
+}
+
+// ProbeProjectActivity asks a single cheap question: did this project
+// have any MR with updated_after ≥ since? Returns (true, nil) when
+// at least one MR matches, (false, nil) when none. 404 (project moved,
+// renamed, or never existed) also degrades to (false, nil) so the
+// discovery loop skips it without surfacing transport noise. 403
+// (token wrong, or the project is confidential/hidden from the
+// caller's PAT) is a real auth/permissions issue and DOES hard-error
+// — soft-degrading would silently hide a project from the report
+// and the operator would never know.
+//
+// MRs are the probe signal (not commits, not issues, not pipelines)
+// because MRs are gitlab's primary "engineering work landed" signal:
+// a code change on its own doesn't mean anything merged; an issue
+// update can be a label flip; a pipeline is plumbing. An MR update
+// (any of opened/closed/merged/commented-on) is what we mean by
+// "the project had engineering activity this period".
+//
+// (Inlined HTTP loop rather than reusing doJSON: we need a 404
+// soft-degrade path, and doJSON's 4xx switch returns a hard error
+// before the decode callback runs. A future refactor could add a
+// soft-fail mode to doJSON itself, but the surface area is small.)
+func (c *Client) ProbeProjectActivity(ctx context.Context, projectPath string, since time.Time) (bool, error) {
+	u := c.baseURL + fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)) +
+		"?updated_after=" + url.QueryEscape(since.UTC().Format(time.RFC3339)) +
+		"&scope=all&per_page=1"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return false, fmt.Errorf("gitlab %s: 429 (probe is one-shot, no retry)", http.MethodGet)
+	case resp.StatusCode >= 500:
+		return false, fmt.Errorf("gitlab %s: %d (probe)", http.MethodGet, resp.StatusCode)
+	case resp.StatusCode >= 400:
+		body, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("gitlab %s: %d %s",
+			http.MethodGet, resp.StatusCode, truncate(string(body), 200))
+	}
+	var batch []MergeRequest
+	if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil {
+		return false, err
+	}
+	return len(batch) > 0, nil
+}
+
+// FetchMRs returns MRs updated within [since, now]. updated_after is the
+// correct filter for "activity in window": it catches both newly opened and
 // FetchMRs returns MRs updated within [since, now]. updated_after is the
 // correct filter for "activity in window": it catches both newly opened and
 // newly commented-on MRs without scanning the full project history.

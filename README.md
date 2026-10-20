@@ -204,9 +204,17 @@ summarizer run --project group/subgroup/project --force
 summarizer run --project group/a --project group/b
 summarizer run --project group/a,group/b
 
-# When --project appears more than once, summarizer also writes a
-# combined rollup (combined--<since>d--customer.md and --team.md) by
-# feeding the per-project reports to one extra LLM call per audience.
+# Wide net: --discover-group scans a group's projects and runs the
+# pipeline on whichever had MR activity in the window. Composes with
+# --project (explicit wins on duplicates; the discovery pass skips
+# already-explicit projects to spare the probe round-trip).
+summarizer run --discover-group group/team-a --since 7d
+summarizer run --discover-group group/team-a --project group/team-a/flagship --since 7d
+
+# When more than one project runs (whether explicit or discovered),
+# summarizer also writes a combined rollup
+# (combined--<since>d--customer.md and --team.md) by feeding the
+# per-project reports to one extra LLM call per audience.
 ```
 
 Output files are written under `--output-dir` (or `output_dir` from config):

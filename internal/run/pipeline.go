@@ -22,13 +22,14 @@ import (
 
 // Options are run-time parameters resolved at the CLI boundary.
 type Options struct {
-	Projects     []string      // required: one or more GitLab paths "group/subgroup/proj"
-	Since        time.Duration // window: now - Since < since
-	Provider     string        // "openai" or "anthropic" (overrides config)
-	Model        string        // overrides config
-	Force        bool          // overwrite existing reports
-	DryRun       bool          // fetch + print + exit; no LLM call, no file write
-	IncludeDiffs bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
+	Projects         []string      // required (unless DiscoveredGroups is set): one or more GitLab paths "group/subgroup/proj"
+	Since            time.Duration // window: now - Since < since
+	Provider         string        // "openai" or "anthropic" (overrides config)
+	Model            string        // overrides config
+	Force            bool          // overwrite existing reports
+	DryRun           bool          // fetch + print + exit; no LLM call, no file write
+	IncludeDiffs     bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
+	DiscoveredGroups []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -50,6 +51,7 @@ type ProjectResult struct {
 	TeamText         string // rendered markdown for the team audience
 	FilesWritten     []string
 	TokensByAudience map[string]llm.Usage
+	FromDiscovery    bool // true when this project was found via --discover-group, false when explicit --project
 }
 
 // Result describes what the run produced. Used by main to write the stderr
@@ -90,11 +92,31 @@ func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Pu
 // Run executes the pipeline. Returns a Result on success; on failure
 // returns a descriptive error and the partial Result so main can still
 // emit a run summary on stderr before exiting non-zero.
+//
+// Discovery: when --discover-group is supplied, the pipeline first
+// resolves each group's projects, probes each for activity (a single
+// cheap MR-list call per project), and adds the active ones to the
+// run. The explicit --project list and the discovered list compose:
+// duplicates collapse to the explicit listing. The cross-project
+// rollup covers ALL active projects in the run — explicit + discovered
+// together.
 func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	res := Result{Projects: []ProjectResult{}, TokensByAudience: map[string]llm.Usage{}}
 
-	if len(p.Opts.Projects) == 0 {
-		return res, errors.New("at least one --project is required")
+	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 {
+		return res, errors.New("at least one --project or --discover-group is required")
+	}
+
+	finalList, discoveredSet, err := p.resolveProjects(ctx)
+	if err != nil {
+		return res, err
+	}
+	if len(finalList) == 0 {
+		// Discovery ran and found nothing active. Surface a
+		// stderr line so the operator can tell discovery ran vs
+		// crashed silently.
+		fmt.Fprintln(os.Stderr, "summarizer: no active projects after resolution (explicit=0, discovered=0); nothing to do")
+		return res, nil
 	}
 
 	// Per-project loop. Each project produces two files (customer +
@@ -102,8 +124,11 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	// than one project. Failures on one project don't stop the others —
 	// the partial-result contract is the same as the single-project
 	// path's.
-	for _, project := range p.Opts.Projects {
+	for _, project := range finalList {
 		pr, err := p.runOneProject(ctx, project)
+		// Tag whether this project came from discovery. Consumed by
+		// the operator-visible summary so a wide-net run is auditable.
+		pr.FromDiscovery = discoveredSet[project]
 		res.Projects = append(res.Projects, pr)
 		if err != nil {
 			return res, fmt.Errorf("project %s: %w", project, err)
@@ -456,6 +481,98 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 		all = append(all, &raw[i])
 	}
 	return events.FilterActiveEpics(all, since, until), nil
+}
+
+// resolveProjects merges explicit (--project) and discovered
+// (--discover-group) inputs into the final per-project list, dedupes
+// on path (explicit wins on overlap), probes each discovered project
+// for activity, and emits a structured manifest to stderr.
+//
+// Two return values:
+//   - finalList: every project to run, in deterministic order
+//     (explicit first, then discovered)
+//   - discoveredSet: paths that came from discovery. The orchestrator
+//     tags each ProjectResult with this so summaries can tell the
+//     operator which projects were auto-discovered.
+func (p *Pipeline) resolveProjects(ctx context.Context) ([]string, map[string]bool, error) {
+	return resolveProjectsWithClient(ctx, p.GitLab, p.Opts)
+}
+
+// resolveProjectsWithClient is the testable form: takes a Client
+// directly so unit tests don't need a full Pipeline.
+func resolveProjectsWithClient(ctx context.Context, gc *gitlab.Client, opts Options) ([]string, map[string]bool, error) {
+	finalList := make([]string, 0, len(opts.Projects))
+	discoveredSet := make(map[string]bool)
+
+	// Explicit projects always pass through.
+	finalList = append(finalList, opts.Projects...)
+
+	if len(opts.DiscoveredGroups) == 0 {
+		return finalList, discoveredSet, nil
+	}
+
+	since := time.Now().UTC().Add(-opts.Since)
+	excluded := 0
+	included := 0
+
+	for _, group := range opts.DiscoveredGroups {
+		// v1: recursive=false. The recursive branch is reserved
+		// for a future change; see FetchGroupProjects.
+		projects, err := gc.FetchGroupProjects(ctx, group, false)
+		if err != nil {
+			return nil, nil, fmt.Errorf("discover group %s: %w", group, err)
+		}
+		fmt.Fprintf(os.Stderr, "summarizer: discovery from group=%s recursive=false; scanned=%d\n",
+			group, len(projects))
+		for _, proj := range projects {
+			// Skip projects already explicit-listed (dedupe wins to
+			// the explicit listing: FromDiscovery stays false).
+			if containsString(opts.Projects, proj.Path) {
+				continue
+			}
+			active, err := gc.ProbeProjectActivity(ctx, proj.Path, since)
+			if err != nil {
+				// 4xx (other than 404 already softened) and 5xx fail
+				// the whole run via the wrapped error. We could
+				// soften further, but a probe-failure signals a real
+				// transport / auth issue that's worth surfacing.
+				return nil, nil, fmt.Errorf("probe %s: %w", proj.Path, err)
+			}
+			if !active {
+				excluded++
+				fmt.Fprintf(os.Stderr, "  excluded (no MRs in window): %s last_activity_at=%s\n",
+					proj.Path, proj.LastActivityAt.Format(time.RFC3339))
+				continue
+			}
+			included++
+			finalList = append(finalList, proj.Path)
+			discoveredSet[proj.Path] = true
+			fmt.Fprintf(os.Stderr, "  included:                       %s last_activity_at=%s\n",
+				proj.Path, proj.LastActivityAt.Format(time.RFC3339))
+		}
+	}
+	fmt.Fprintf(os.Stderr, "summarizer: discovery summary included=%d excluded=%d\n", included, excluded)
+	return finalList, discoveredSet, nil
+}
+
+// resolveProjectsForTest wraps resolveProjectsWithClient for use by
+// tests that don't construct a full Pipeline. Returns the same shape
+// (final list + discovered-set) without the legacy stderr-lines arg
+// the older test fixtures assumed.
+func resolveProjectsForTest(gc *gitlab.Client, opts Options, _ time.Time) (finalList []string, discoveredSet map[string]bool, err error) {
+	return resolveProjectsWithClient(context.Background(), gc, opts)
+}
+
+// containsString is a small helper used to skip already-explicit
+// projects during the discovery loop. Hand-rolled linear scan: the
+// project list is small and slices.Contains would add an import.
+func containsString(ss []string, target string) bool {
+	for _, s := range ss {
+		if s == target {
+			return true
+		}
+	}
+	return false
 }
 
 func filename(window time.Duration, project string, aud prompt.Audience) string {
