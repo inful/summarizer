@@ -20,6 +20,7 @@ func TestMR_ActionAndRefs(t *testing.T) {
 		CreatedAt: time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC),
 		UpdatedAt: merged,
 		MergedAt: &merged,
+		Changes: &gitlab.ChangesSummary{Files: 5, Additions: 312, Deletions: 47},
 	}
 	e := MR(g)
 	if e.Kind != KindMR || e.Action != "merged" || e.Ref != "#42" || e.Author != "alice" {
@@ -33,6 +34,9 @@ func TestMR_ActionAndRefs(t *testing.T) {
 	}
 	if e.TeamOnly == nil || e.TeamOnly.Description == "" {
 		t.Fatalf("team-only description not carried: %+v", e)
+	}
+	if e.Changes == nil || e.Changes.Files != 5 || e.Changes.Additions != 312 || e.Changes.Deletions != 47 {
+		t.Fatalf("changes not carried through normalize: %+v", e.Changes)
 	}
 }
 

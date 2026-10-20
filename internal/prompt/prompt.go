@@ -100,6 +100,9 @@ func formatEvents(evs []events.NormalizedEvent, aud Audience) string {
 	var buf bytes.Buffer
 	for _, e := range sorted {
 		fmt.Fprintf(&buf, "- [%s %s] (%s, by %s) %q", kindLabel(e.Kind), e.Ref, e.Action, e.Author, e.Title)
+		if e.Changes != nil {
+			fmt.Fprintf(&buf, " [+%d/-%d in %d files]", e.Changes.Additions, e.Changes.Deletions, e.Changes.Files)
+		}
 		if len(e.Labels) > 0 {
 			fmt.Fprintf(&buf, " (tags: %s)", joinLabels(e.Labels))
 		}

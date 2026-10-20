@@ -39,6 +39,7 @@ func MR(g gitlab.MergeRequest) NormalizedEvent {
 		Created:  g.CreatedAt,
 		Updated:  updated,
 		TeamOnly: &TeamOnlyFields{Description: truncate(g.Description, DescriptionCap)},
+		Changes:  g.Changes,
 	}
 }
 

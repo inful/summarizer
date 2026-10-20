@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/inful/summarizer/internal/config"
@@ -63,6 +64,12 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	if err != nil {
 		return res, fmt.Errorf("fetch mrs: %w", err)
 	}
+	// Per-MR /changes calls. The list endpoint doesn't expose per-file
+	// stats; we need one extra round-trip per MR to surface "this MR was
+	// 5 lines vs 30 files". Fan out to changeConcurrency workers so a
+	// busy week doesn't serialize the wall clock.
+	fillMRChanges(ctx, p.GitLab, p.Opts.Project, mrs)
+
 	issues, err := p.GitLab.FetchIssues(ctx, p.Opts.Project, since)
 	if err != nil {
 		return res, fmt.Errorf("fetch issues: %w", err)
@@ -123,6 +130,41 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 // filename: <sanitized project>--<since-days>d--<audience>.md. The "since"
 // is encoded in the filename so re-runs land on different files; combined
 // with the refuse-first policy in writer, double-runs are safe.
+
+// changeConcurrency caps how many /merge_requests/:iid/changes calls run
+// in parallel. The endpoint is one HTTP round-trip per MR; without this,
+// a 50-MR week serializes to ~50 seconds on a slow connection. 4 is small
+// enough to stay well under GitLab's per-second rate-limit thresholds on
+// most plans, big enough to keep total wall time bounded.
+const changeConcurrency = 4
+
+// fillMRChanges fans out the per-MR /changes call across changeConcurrency
+// workers and attaches the result onto each MergeRequest. A failure on one
+// MR is logged to stderr and the MR proceeds without changes data; we
+// don't fail the whole run for one missing per-file summary.
+func fillMRChanges(ctx context.Context, gc *gitlab.Client, project string, mrs []gitlab.MergeRequest) {
+	if len(mrs) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, changeConcurrency)
+	for i := range mrs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s, err := gc.FetchMRChanges(ctx, project, mrs[i].IID)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "summarizer: changes fetch for MR %d failed: %v (skipping)\n", mrs[i].IID, err)
+				return
+			}
+			mrs[i].Changes = &s
+		}(i)
+	}
+	wg.Wait()
+}
+
 func filename(window time.Duration, project string, aud prompt.Audience) string {
 	days := int(window / (24 * time.Hour))
 	if days < 1 {

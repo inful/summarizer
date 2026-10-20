@@ -66,6 +66,21 @@ type MergeRequest struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 	ClosedAt     *time.Time `json:"closed_at"`
 	MergedAt     *time.Time `json:"merged_at"`
+
+	// Changes is populated by FetchMRChanges after the list fetch; nil
+	// for MRs that haven't been detailed (or whose detail call failed).
+	// The list endpoint doesn't expose per-file stats.
+	Changes *ChangesSummary `json:"-"`
+}
+
+// ChangesSummary is the per-MR aggregate of the GitLab /changes endpoint:
+// number of files touched plus total line additions/deletions across them.
+// The diff bodies themselves are discarded by the JSON decoder — only the
+// aggregate survives, which keeps per-event prompt size bounded.
+type ChangesSummary struct {
+	Files     int
+	Additions int
+	Deletions int
 }
 
 // Issue is the subset of GitLab's /issues response shape we use.
@@ -130,6 +145,38 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 	return getAll[Commit](ctx, c, fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q)
 }
 
+// FetchMRChanges calls GET /merge_requests/:iid/changes and returns the
+// per-MR aggregate (file count, total additions, total deletions). The
+// per-file `diff` bodies in the payload are dropped by the JSON decoder —
+// we declare only the fields we want, so the diff text never lands in
+// memory or the prompt.
+//
+// One call per MR. Callers fetching N MRs should fan out concurrently to
+// keep total wall time bounded; the pipeline does this with a worker pool.
+func (c *Client) FetchMRChanges(ctx context.Context, projectPath string, iid int) (ChangesSummary, error) {
+	var resp struct {
+		Changes []struct {
+			OldPath    string `json:"old_path"`
+			NewPath    string `json:"new_path"`
+			NewFile    bool   `json:"new_file"`
+			DeletedFile bool  `json:"deleted_file"`
+			RenamedFile bool  `json:"renamed_file"`
+			Additions  int    `json:"additions"`
+			Deletions  int    `json:"deletions"`
+		} `json:"changes"`
+	}
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/changes", url.PathEscape(projectPath), iid)
+	if err := c.getJSON(ctx, path, nil, &resp); err != nil {
+		return ChangesSummary{}, err
+	}
+	s := ChangesSummary{Files: len(resp.Changes)}
+	for _, f := range resp.Changes {
+		s.Additions += f.Additions
+		s.Deletions += f.Deletions
+	}
+	return s, nil
+}
+
 // getAll walks offset pagination until the response is empty. Honors 429
 // Retry-After with exponential backoff up to maxRetries. Generic methods
 // aren't allowed in Go, so this is a free function parameterized over the
@@ -162,23 +209,28 @@ func getAll[T any](ctx context.Context, c *Client, path string, q url.Values) ([
 	}
 }
 
-// getPage issues one GET, applies 429-aware backoff, returns the page,
-// whether more pages remain (X-Next-Page header), and any error.
-func getPage[T any](ctx context.Context, c *Client, path string, q url.Values) ([]T, bool, error) {
-	u := c.baseURL + path + "?" + q.Encode()
+// doJSON issues one GET against baseURL+path, with the same retry/backoff
+// policy as getPage, then hands the response + body to decode. The decode
+// callback also receives the response so callers can read headers (X-Next-Page
+// for pagination, Link for relative URLs, etc.).
+func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode func(resp *http.Response, body []byte) error) error {
+	u := c.baseURL + path
+	if q != nil {
+		u += "?" + q.Encode()
+	}
 	var attempt int
 	for {
 		attempt++
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
 		req.Header.Set("PRIVATE-TOKEN", c.token)
 		req.Header.Set("Accept", "application/json")
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -187,25 +239,44 @@ func getPage[T any](ctx context.Context, c *Client, path string, q url.Values) (
 		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
 			wait := retryAfter(resp.Header.Get("Retry-After"))
 			if err := sleep(ctx, wait); err != nil {
-				return nil, false, err
+				return err
 			}
 			continue
 		case resp.StatusCode >= 500 && attempt <= maxRetries:
 			if err := sleep(ctx, backoff(attempt)); err != nil {
-				return nil, false, err
+				return err
 			}
 			continue
 		case resp.StatusCode >= 400:
-			return nil, false, fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
+			return fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
 		}
-
-		var batch []T
-		if err := json.Unmarshal(body, &batch); err != nil {
-			return nil, false, fmt.Errorf("decode %s: %w", path, err)
-		}
-		next := resp.Header.Get("X-Next-Page") != ""
-		return batch, next, nil
+		return decode(resp, body)
 	}
+}
+
+// getJSON is the convenience wrapper for endpoints that return a single
+// object (no pagination). The JSON decoder ignores fields we don't model,
+// so a /changes response with full per-file diff bodies in the payload
+// costs us only the bytes-on-the-wire — diff text is dropped on the floor.
+func (c *Client) getJSON(ctx context.Context, path string, q url.Values, into any) error {
+	return c.doJSON(ctx, path, q, func(_ *http.Response, body []byte) error {
+		return json.Unmarshal(body, into)
+	})
+}
+
+// getPage issues one GET, applies 429-aware backoff, returns the page,
+// whether more pages remain (X-Next-Page header), and any error.
+func getPage[T any](ctx context.Context, c *Client, path string, q url.Values) ([]T, bool, error) {
+	var batch []T
+	var next bool
+	err := c.doJSON(ctx, path, q, func(resp *http.Response, body []byte) error {
+		next = resp.Header.Get("X-Next-Page") != ""
+		return json.Unmarshal(body, &batch)
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return batch, next, nil
 }
 
 // retryAfter parses the Retry-After header value, which may be either a

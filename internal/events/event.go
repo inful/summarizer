@@ -4,7 +4,11 @@
 // reads from it.
 package events
 
-import "time"
+import (
+	"time"
+
+	"github.com/inful/summarizer/internal/gitlab"
+)
 
 // Kind identifies the source record type.
 type Kind string
@@ -36,6 +40,12 @@ type NormalizedEvent struct {
 	// markers and length caps in the prompt builder are the second line of
 	// defense, the first is not putting this in customer events at all.
 	TeamOnly *TeamOnlyFields `json:"team_only,omitempty"`
+
+	// Changes is the per-MR aggregate of files touched + line adds/dels.
+	// Nil for issues and commits (the /changes endpoint is MR-only). When
+	// present, the prompt formatter appends "+N/-M in K files" so the
+	// model can distinguish a 30-file refactor from a 5-line bug fix.
+	Changes *gitlab.ChangesSummary `json:"changes,omitempty"`
 }
 
 type TeamOnlyFields struct {

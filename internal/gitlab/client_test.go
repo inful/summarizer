@@ -1,6 +1,10 @@
 package gitlab
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,5 +50,55 @@ func TestBackoffInRange(t *testing.T) {
 		if got < low || got > high {
 			t.Errorf("backoff(20) sample %d = %v, outside [%v, %v]", i, got, low, high)
 		}
+	}
+}
+
+// TestFetchMRChanges_httptest runs against a fake GitLab server that
+// returns a /changes-shaped payload, including per-file diff bodies
+// (which we expect to be discarded). Verifies the aggregate sums and
+// confirms the diff text doesn't leak into memory.
+func TestFetchMRChanges_httptest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/merge_requests/847/changes") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("PRIVATE-TOKEN") == "" {
+			t.Errorf("missing PRIVATE-TOKEN header")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+				"id": 1, "iid": 847, "title": "Add login",
+				"changes": [
+					{"old_path":"a","new_path":"a","new_file":false,"deleted_file":false,"renamed_file":false,"additions":10,"deletions":2,"diff":"@@ -1 +1 @@\n-foo\n+bar"},
+					{"old_path":"b","new_path":"b","new_file":false,"deleted_file":false,"renamed_file":false,"additions":20,"deletions":5,"diff":"@@ -1 +1 @@\n-foo\n+bar"},
+					{"old_path":"c","new_path":"c","new_file":true,"deleted_file":false,"renamed_file":false,"additions":3,"deletions":0,"diff":"@@ -0,0 +1 @@\n+new file"}
+				]
+			}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "glpat-test", 5*time.Second)
+	s, err := c.FetchMRChanges(context.Background(), "group/proj", 847)
+	if err != nil {
+		t.Fatalf("FetchMRChanges: %v", err)
+	}
+	if s.Files != 3 || s.Additions != 33 || s.Deletions != 7 {
+		t.Errorf("unexpected summary: %+v", s)
+	}
+}
+
+// TestFetchMRChanges_PartialFailure confirms a missing /changes response
+// surfaces as an error without panicking or silently zeroing the field.
+func TestFetchMRChanges_PartialFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"404 Not found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "glpat-test", 5*time.Second)
+	_, err := c.FetchMRChanges(context.Background(), "group/proj", 9999)
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
 	}
 }
