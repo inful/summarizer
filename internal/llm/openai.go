@@ -19,10 +19,10 @@ type OpenAIProvider struct {
 	HTTP      *http.Client
 }
 
-func NewOpenAI(apiKey, model string) *OpenAIProvider {
+func NewOpenAI(apiKey, model, baseURL string) *OpenAIProvider {
 	return &OpenAIProvider{
 		APIKey:    apiKey,
-		BaseURL:   "https://api.openai.com/v1",
+		BaseURL:   normalizeBaseURL(firstNonEmpty(baseURL, "https://api.openai.com/v1")),
 		Model:     firstNonEmpty(model, "gpt-4o-mini"),
 		MaxTokens: 2048,
 		HTTP:      &http.Client{Timeout: 60 * time.Second},
@@ -39,7 +39,7 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		"max_tokens": pickMaxTokens(req.MaxTokens, o.MaxTokens),
 	}
 	buf, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/chat/completions", bytes.NewReader(buf))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/v1/chat/completions", bytes.NewReader(buf))
 	if err != nil {
 		return Response{}, err
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,12 +25,30 @@ type Client struct {
 
 // New returns a client configured for the given host + PAT. timeout is the
 // per-request timeout; 30s is a reasonable default for GitLab REST v4.
+//
+// baseURL may be either:
+//   - the GitLab API root (e.g. "https://gitlab.example.com/api/v4"), or
+//   - the GitLab web-UI base URL (e.g. "https://gitlab.example.com" or the
+//     $CI_SERVER_URL CI variable). When the URL does not already end with
+//     "/api/v4", New prepends it automatically — the same ergonomic fix
+//     mreview applies for $CI_SERVER_URL-style configs.
 func New(baseURL, token string, timeout time.Duration) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: normalizeGitLabURL(baseURL),
 		token:   token,
 		http:    &http.Client{Timeout: timeout},
 	}
+}
+
+// normalizeGitLabURL accepts both web-UI base URLs and API-root URLs and
+// returns the API root. A trailing slash is tolerated; the "/api/v4" suffix
+// is idempotent (already-present URLs are passed through unchanged).
+func normalizeGitLabURL(raw string) string {
+	u := strings.TrimRight(raw, "/")
+	if !strings.HasSuffix(u, "/api/v4") {
+		u += "/api/v4"
+	}
+	return u
 }
 
 // MergeRequest is the subset of GitLab's /merge_requests response shape we use.
@@ -89,7 +108,7 @@ func (c *Client) FetchMRs(ctx context.Context, projectPath string, since time.Ti
 	q.Set("updated_after", since.UTC().Format(time.RFC3339))
 	q.Set("scope", "all")
 	q.Set("per_page", "100")
-	return getAll[MergeRequest](ctx, c, fmt.Sprintf("/api/v4/projects/%s/merge_requests", url.PathEscape(projectPath)), q)
+	return getAll[MergeRequest](ctx, c, fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)), q)
 }
 
 // FetchIssues returns issues updated within [since, now].
@@ -98,7 +117,7 @@ func (c *Client) FetchIssues(ctx context.Context, projectPath string, since time
 	q.Set("updated_after", since.UTC().Format(time.RFC3339))
 	q.Set("scope", "all")
 	q.Set("per_page", "100")
-	return getAll[Issue](ctx, c, fmt.Sprintf("/api/v4/projects/%s/issues", url.PathEscape(projectPath)), q)
+	return getAll[Issue](ctx, c, fmt.Sprintf("/projects/%s/issues", url.PathEscape(projectPath)), q)
 }
 
 // FetchCommits returns commits on the default branch authored within [since, now].
@@ -108,7 +127,7 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 	q := url.Values{}
 	q.Set("since", since.UTC().Format(time.RFC3339))
 	q.Set("per_page", "100")
-	return getAll[Commit](ctx, c, fmt.Sprintf("/api/v4/projects/%s/repository/commits", url.PathEscape(projectPath)), q)
+	return getAll[Commit](ctx, c, fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q)
 }
 
 // getAll walks offset pagination until the response is empty. Honors 429
@@ -116,6 +135,15 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 // aren't allowed in Go, so this is a free function parameterized over the
 // record type T.
 const maxRetries = 3
+
+// retryAfterCapDefault is the upper bound on a server-requested Retry-After
+// wait. A misbehaving server that returns "Retry-After: 999999" gets capped.
+// Matches mreview's default.
+const retryAfterCapDefault = 60 * time.Second
+
+// maxBackoff caps the exponential backoff between retries. Also prevents
+// `1<<n` from overflowing at large attempt counts.
+const maxBackoff = 30 * time.Second
 
 func getAll[T any](ctx context.Context, c *Client, path string, q url.Values) ([]T, error) {
 	var out []T
@@ -180,23 +208,50 @@ func getPage[T any](ctx context.Context, c *Client, path string, q url.Values) (
 	}
 }
 
+// retryAfter parses the Retry-After header value, which may be either a
+// delta-seconds integer ("120") or an HTTP-date. Returns the requested
+// wait, capped at retryAfterCapDefault, or falls back to the exponential
+// backoff when the header is missing or unparseable.
 func retryAfter(h string) time.Duration {
 	if h == "" {
 		return backoff(1)
 	}
-	if d, err := strconv.Atoi(h); err == nil {
-		return time.Duration(d) * time.Second
+	var d time.Duration
+	if n, err := strconv.Atoi(h); err == nil && n >= 0 {
+		d = time.Duration(n) * time.Second
+	} else if t, err := http.ParseTime(h); err == nil {
+		d = max(time.Until(t), 0)
+	} else {
+		return backoff(1)
 	}
-	if t, err := http.ParseTime(h); err == nil {
-		return max(time.Until(t), 0)
+	if d > retryAfterCapDefault {
+		d = retryAfterCapDefault
 	}
-	return backoff(1)
+	return d
 }
 
+// backoff returns the wait before the next attempt: base * 2^(n-1), capped
+// at maxBackoff, with ±20% jitter to avoid thundering-herd retries.
+//
+// attempt is 1-indexed (the wait BEFORE the Nth retry), so attempt=1 yields
+// ~base, attempt=2 yields ~2*base, etc.
 func backoff(n int) time.Duration {
-	d := time.Duration(1<<n) * time.Second
-	if d > 30*time.Second {
-		d = 30 * time.Second
+	if n < 1 {
+		n = 1
+	}
+	mult := 1 << (n - 1) // n=1 → 1, n=2 → 2, n=3 → 4, ...
+	if mult > 30 {
+		mult = 30
+	}
+	d := time.Duration(mult) * time.Second
+	if d > maxBackoff {
+		d = maxBackoff
+	}
+	// ±20% jitter.
+	jitter := time.Duration(float64(d) * 0.2 * (2*rand.Float64() - 1))
+	d += jitter
+	if d < 0 {
+		d = 0
 	}
 	return d
 }

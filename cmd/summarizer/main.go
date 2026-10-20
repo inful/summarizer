@@ -179,7 +179,7 @@ Env:
 			fmt.Fprintln(os.Stderr, "error: provider=openai but OPENAI_API_KEY is not set")
 			return exitEnv
 		}
-		llmProvider = llm.NewOpenAI(key, cfg.Model)
+		llmProvider = llm.NewOpenAI(key, cfg.Model, "")
 	case "anthropic":
 		key := *anthropicKey
 		if key == "" {
@@ -189,7 +189,7 @@ Env:
 			fmt.Fprintln(os.Stderr, "error: provider=anthropic but ANTHROPIC_API_KEY is not set")
 			return exitEnv
 		}
-		llmProvider = llm.NewAnthropic(key, cfg.Model)
+		llmProvider = llm.NewAnthropic(key, cfg.Model, "")
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown provider %q\n", cfg.Provider)
 		return exitConfig

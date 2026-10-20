@@ -19,10 +19,10 @@ type AnthropicProvider struct {
 	HTTP      *http.Client
 }
 
-func NewAnthropic(apiKey, model string) *AnthropicProvider {
+func NewAnthropic(apiKey, model, baseURL string) *AnthropicProvider {
 	return &AnthropicProvider{
 		APIKey:    apiKey,
-		BaseURL:   "https://api.anthropic.com",
+		BaseURL:   normalizeBaseURL(firstNonEmpty(baseURL, "https://api.anthropic.com")),
 		Model:     firstNonEmpty(model, "claude-3-5-haiku-latest"),
 		MaxTokens: 2048,
 		HTTP:      &http.Client{Timeout: 60 * time.Second},
