@@ -16,10 +16,9 @@ import (
 // wideScanServer serves N active projects and counts how many were
 // actually probed. It models an instance far wider than the cap.
 type wideScanServer struct {
-	n           int
-	probes      int
-	fileReads   int
-	mostRecentI int // the path suffix that should survive the cap
+	n         int
+	probes    int
+	fileReads int
 }
 
 func (w *wideScanServer) handler() http.Handler {
