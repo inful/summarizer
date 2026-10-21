@@ -33,9 +33,22 @@ gitlab_host: "https://gitlab.example.com"
 ```
 
 The project set is a CLI flag, not a config key. With no discovery
-flag, summarizer runs every project the token can see that had
-activity in the window; `--project`, `--discover-group` and
-`--discover-by-topic` narrow or redirect that. See the README.
+flag, summarizer runs **every project the token can see that had
+activity in the window** — no topic, no config entry needed. A project
+opts out with a `.summaryignore` or `.docignore` file at its repo
+root. To narrow the scope instead:
+
+| Flag | Selects |
+|---|---|
+| *(none)* | every project with activity in the window |
+| `--discover-active` | the same, stated explicitly |
+| `--discover-group G` | only projects in group `G` |
+| `--discover-by-topic` | only projects carrying a `summarize*` topic |
+| `--project P` | exactly `P` |
+
+Customer-facing output is separate: every project that runs gets a
+team report, and only projects carrying the `summarize` topic also get
+a customer one.
 
 ## First run — dry
 
@@ -46,6 +59,14 @@ summarizer run --project group/subgroup/project --dry-run
 Fetches the last 7 days of activity from GitLab and prints a one-line
 summary to stderr. No LLM call, no file write. Tells you whether the
 token works and the project path resolves.
+
+For the real default, drop `--project` to see the activity scan and
+read the `discovery summary included=N excluded=M` line before letting
+it publish:
+
+```bash
+summarizer run --dry-run
+```
 
 ## Real run
 
@@ -77,6 +98,23 @@ summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (windo
 ```
 
 (Monday morning, 09:00 UTC.)
+
+Reports land under a week-numbered directory — `./summarizer-out/2026-W43/`
+locally, `<prefix>/2026-W43/` in the target repo. Every run inside the
+same Mon–Sun week overwrites that directory, so a daily cron refines
+one week's report instead of opening seven.
+
+## Month end
+
+Once weekly reports are being published to a GitLab target repo:
+
+```bash
+summarizer monthly                    # previous calendar month
+summarizer monthly --month 2026-09    # re-run a past month
+```
+
+Reads last month's published weekly rollups and writes one month-end
+file per audience. Needs `publish.enabled: true` in the config.
 
 ## Next
 

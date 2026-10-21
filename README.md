@@ -226,9 +226,17 @@ The diff text is always wrapped in `<data>` markers (same OWASP LLM01:2025 mitig
 
 | Cap | Value | Source |
 |---|---|---|
+| Events per project in the prompt | `--max-events`, default 200 | `internal/prompt/prompt.go` `capEvents` |
 | Per-file diff (decode-time, memory bound) | 600 runes | `internal/gitlab/client.go` `maxDiffRunesPerFile` |
 | Per-MR diff total (prompt-time) | 4000 runes | `internal/prompt/prompt.go` `diffMaxPerMR` |
+| Active epics per project in the epic rollup | 20 | `internal/run/pipeline.go` `maxActiveEpics` |
+| Rollup body, per input / total | 4000 / 16000 runes, oldest inputs dropped first | `internal/prompt/prompt.go` `rollupPerBodyCap` / `rollupTotalCap` |
 | Wire cost | One extra `/changes` call per MR | worker pool, 4 concurrent |
+
+`capEvents` keeps the most recently **updated** events, not the first
+N in fetch order — MRs, issues and commits arrive as three separate
+batches, so a head-slice would starve commits whenever MRs and issues
+already filled the budget.
 
 For a project with 50 MRs, `--include-diffs` adds one extra HTTP round-trip per MR (50 calls, ~50s parallel-ish at 4-concurrency). The model already produces the team report; the diff lands in the existing prompt context, so no extra LLM call is added.
 
@@ -244,7 +252,8 @@ summarizer run --project group/subgroup/project
 # Custom window + provider.
 summarizer run --project group/subgroup/project --since 30d --provider anthropic
 
-# Cron-friendly: refuse to overwrite an existing report unless --force.
+# Cron-friendly: --force is accepted but not needed. Period buckets
+# are weeks, so a re-run always overwrites the same path in place.
 summarizer run --project group/subgroup/project --force
 
 # Multi-project: --project is repeatable; comma-separated works too.
@@ -288,8 +297,11 @@ summarizer run --discover-group group/team-a \
 
 # When more than one project runs (whether explicit or discovered),
 # summarizer also writes a combined rollup
-# (combined--<since>d--customer.md and --team.md) by feeding the
-# per-project reports to one extra LLM call per audience.
+# (combined--rollup--<days>d--customer.md and --team.md) by feeding
+# the per-project reports to one extra LLM call per audience. Active
+# epics add combined--epics-rollup--*, split per customer into
+# combined--epics-<customer-slug>--* when issues carry org::CODE
+# labels.
 
 # Period bucketing is by ISO week number. Every run inside the same
 # Mon-Sun week writes to <prefix>/<YYYY-Www>/, onto the same source
@@ -306,8 +318,13 @@ Output files are written under `--output-dir` (or `output_dir` from config):
 <project>--<duration>d--team.md
 
 # Multi-project run (additionally):
-combined--<duration>d--customer.md
-combined--<duration>d--team.md
+combined--rollup--<duration>d--customer.md
+combined--rollup--<duration>d--team.md
+
+# With active epics (additionally):
+combined--epics-rollup--<duration>d--customer.md
+combined--epics-rollup--<duration>d--team.md
+combined--epics-<customer-slug>--<duration>d--customer.md
 ```
 
 ## Monthly rollups

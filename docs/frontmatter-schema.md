@@ -11,7 +11,7 @@ reading Go source.
 ```
 ---
 uid: 0192b6a0-72cd-7abc-8def-0123456789ab
-title: "Weekly customer report — group/proj, 2026-10-19"
+title: "Weekly customer report — group/proj, 2026-W43"
 date: 2026-10-19T09:00:00Z
 lastmod: 2026-10-19T09:00:00Z
 fingerprint: 7e5d...e8b9
@@ -21,7 +21,7 @@ categories:
 tags:
   - summarizer
   - customer
-  - 2026-10-19
+  - 2026-W43
   - per-project
   - group/proj
 aliases:
@@ -30,6 +30,10 @@ aliases:
 
 (rendered Markdown body)
 ```
+
+`date` and `lastmod` are the run timestamp, so they move within a
+week while `title` and `tags` stay pinned to the week slug — a weekly
+report is refined in place across seven runs but keeps one identity.
 
 ## Keys
 
@@ -89,9 +93,11 @@ Summarizer's UID stability across runs and moves therefore comes from
 
 The **only** way to get a new UID for a `(project, audience, period)`
 triple on the GitLab publisher is to delete the existing file from the
-branch first. On the local disk publisher, the refuse-first policy
-already preserves UIDs: a second `summarizer run` without `--force`
-sees the existing file, refuses, and leaves it untouched.
+branch first. Both publishers overwrite in place otherwise: every run
+in a week targets the same `(project, audience, period)` path, so
+refuse-first would break the cron from the second run of the week. The
+UID survives because it is read back from the existing file before the
+new one is written.
 
 ## Fingerprint vs UID — why both
 
@@ -120,21 +126,23 @@ ingests the file.
 
 ## Output file inventory per run
 
-A complete non-dry-run produces up to 4 distinct file shapes per
+A complete non-dry-run produces up to 5 distinct file shapes per
 period, all under `<prefix>/<period>/`:
 
 | File shape | Audience | When it lands |
 |---|---|---|
 | `<project-sanitized>--<days>d--<aud>.md` | customer + team | one pair per project (always) |
-| `combined--<days>d--<aud>.md` | customer + team | when ≥2 projects run |
-| `combined--epics--<days>d--<aud>.md` | customer + team | when ≥1 active epic exists anywhere in the run |
+| `combined--rollup--<days>d--<aud>.md` | customer + team | when ≥2 projects run |
+| `combined--epics-rollup--<days>d--<aud>.md` | customer + team | when ≥1 active epic exists anywhere in the run |
+| `combined--epics-<customer-slug>--<days>d--customer.md` | customer only | one per `org::CODE` bucket, plus one with an empty slug for the unattributed backlog |
+| `monthly--<YYYY-MM>--<aud>.md` | customer + team | `summarizer monthly` only, under its own `<YYYY-MM>` period directory |
 
-The two `combined--*` shapes coexist: the first is a cross-project
-narrative rollup; the second is a cross-project epic rollup. The
-`epics` segment is intentionally distinct from `combined` so a
-docbuilder operator browsing the period directory can tell them
-apart without rendering.
+Every `combined--*` file carries its kind as an explicit segment, so a
+docbuilder operator browsing the period directory can tell a plain
+cross-project rollup from an epic rollup without rendering either. The
+two epic shapes differ by whether a customer slug follows `epics-`.
 
-When `--project` and `--discover-group` are both supplied, every
-file above covers the union of explicit + discovered projects.
+When several discovery inputs are supplied (`--project`,
+`--discover-group`, `--discover-by-topic`, `--discover-active`), every
+file above covers the union of the projects they select.
 

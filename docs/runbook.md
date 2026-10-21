@@ -36,7 +36,7 @@ below), which `cron` mails to the operator.
 | 3 | `exitConfig` | YAML parse error, missing required field, validation failed. | typo in `summarizer.yaml` |
 | 4 | `exitGitLab` | GitLab API fetch failed (auth, 5xx exhausted retries, network). | token expired, host unreachable, MR list too big |
 | 5 | `exitLLM` | LLM call failed (auth, 4xx, 5xx exhausted retries, prompt-render error, safety-verdict rejection). | OPENAI_API_KEY wrong, model id typo, safety guard said injection |
-| 6 | `exitWrite` | Refused to overwrite an existing output file; or disk-write failed. | `--force` missing; EACCES; ENOSPC |
+| 6 | `exitWrite` | Disk-write failed (local publisher only). | EACCES; ENOSPC |
 | 7 | `exitEnv` | Required env var missing; `--safety-enabled` without URL; invalid combo. | missing $GITLAB_TOKEN, $OPENAI_API_KEY, $ANTHROPIC_API_KEY |
 
 Wire these in your cron wrapper:
@@ -126,16 +126,21 @@ What to do:
 
 ## GitLab publish scenarios
 
-### "Refuse overwrite" (exit 6)
+### "Refuse overwrite"
 
-```
-publisher: target file already exists (use --force to overwrite)
-```
+Not reachable any more. Every run in a week targets the same
+`(project, audience, period)` path, so both publishers overwrite in
+place — otherwise the cron would fail on the second run of every week.
+On the GitLab publisher the UID is read back from the existing file
+before the rewrite, so overwriting preserves document identity.
 
-The local-disk publisher refuses to overwrite an existing file unless
-`--force` is passed. For re-running the same window deliberately, use
-`--force`. For accidental double-runs, the file from the first run is
-preserved (no data loss).
+`--force` is accepted and does nothing; it is kept only so existing
+cron lines and muscle memory don't break.
+
+If you want the previous week's content back, re-run with a `--since`
+window that ends before the current week, or read the file out of git
+history — the publisher commits each run to the period branch, so every
+intermediate version is recoverable.
 
 ### "GitLab MR didn't auto-merge"
 
@@ -165,6 +170,37 @@ Rotate by changing the env var on the cron agent. The publisher's
 `publish.token_env` config field defaults to `GITLAB_REPORTS_TOKEN`;
 the safety guard's `safety.decision_token_env` defaults to
 `SAFETY_DECISION_TOKEN`.
+
+## Flag reference
+
+Everything on the command line, and where it can also come from. CLI
+wins over config in every case.
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--project P` | — | repeatable or comma-separated. Exact projects; skips discovery. |
+| `--discover-active` | **on when nothing else is set** | every project with activity in the window |
+| `--discover-group G` | — | repeatable. One group's projects. |
+| `--discover-by-topic` | — | instance-wide, projects carrying `summarize*`. |
+| `--internal-only-project P` | — | repeatable. Forces team-only. Unions with the YAML block and the `summarize-team-only` topic. |
+| `--since D` | from config | rolling window, e.g. `168h` or `7d`. |
+| `--period-mode` | **removed** | week numbers replaced it; passing it is a usage error. |
+| `--force` | no-op | accepted for compatibility. Week buckets always overwrite. |
+| `--dry-run` | off | no LLM call, no write. |
+| `--include-diffs` | off | adds per-MR `/changes` bodies to the team prompt. |
+| `--max-events N` | 200 | events per project in the prompt; most recent kept. |
+| `--output-dir D` | from config | local publisher only. |
+| `--model M` / `--provider P` | from config | `openai` or `anthropic`. |
+| `--openai-key` | `$OPENAI_API_KEY` | prefer the env var. |
+| `--openai-base-url` | `$OPENAI_BASE_URL`, then config | local Ollama / vLLM / LM Studio. |
+| `--anthropic-key` | `$ANTHROPIC_API_KEY` | prefer the env var. |
+| `--config P` | `./summarizer.yaml` | |
+| `--gitlab-host` | from config | |
+| `--gitlab-token` | `$GITLAB_TOKEN` | source-instance token. Prefer the env var. |
+| `--safety-enabled` | off | prompt-injection guard. |
+| `--safety-url` | from config | decide API base. |
+| `--safety-token` | `$SAFETY_DECISION_TOKEN` | |
+| `--month M` | previous month | `summarizer monthly` only, `YYYY-MM`. |
 
 ## Config playbook
 
