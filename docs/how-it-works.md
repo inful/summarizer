@@ -139,3 +139,13 @@ repo starts producing reports the week it is first pushed to. Projects
 opt out with the `no-summarize` topic or a `.summaryignore` /
 `.docignore` file at their repo root. The only curation left is the optional `summarize` topic, which
 decides whether a project also gets customer-facing output.
+
+Two projects are excluded without being asked. The one you name on the
+command line always runs, whatever else is true of it — an explicit
+listing is the operator overriding a default. Everything else has to
+earn its way in: it opted out, or it is the reports project itself.
+`summarizer` writing to `sfb/reports` does not also summarise
+`sfb/reports`: its merge requests are summarizer's own publishing MRs,
+so including it would spend an LLM call every week describing last
+week's reports. `--project sfb/reports` brings it back if you ever
+want that.

@@ -38,6 +38,7 @@ type Options struct {
 	DiscoverByTopic      bool          // --discover-by-topic: scan every project on the instance carrying a `summarize*` topic, across all groups the token can see. Composes with Projects and DiscoveredGroups.
 	DiscoverActive       bool          // --discover-active: include every project the token can see that had activity since the window opened. Set automatically when no other discovery input is given, which is the documented default: an active project runs unless it opts out.
 	MaxProjects          int           // --max-projects: hard cap on projects fed to the LLM, applied after discovery and opt-out but before any LLM call. Each project costs two completions, so a quarter where 200 repos were touched is ~400 calls; this bounds the bill. 0 = DefaultMaxProjects.
+	PublishTarget        string        // the reports project summarizer writes into; discovery skips it. See config.PublishTarget, which returns "" when there is nothing to skip.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -1066,6 +1067,17 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		// Skip projects already explicit-listed (dedupe wins to
 		// the explicit listing: FromDiscovery stays false).
 		if slices.Contains(opts.Projects, proj.Path) {
+			return nil
+		}
+		// Skip the reports project. Its merge requests ARE summarizer's
+		// publishing MRs, so summarising it spends an LLM call every
+		// week describing last week's reports. Placed after the
+		// explicit-listing check so `--project <reports repo>` still
+		// runs — an explicit listing is the operator overriding a
+		// default, same authority as setting publish.project.
+		if opts.PublishTarget != "" && proj.Path == opts.PublishTarget {
+			excluded++
+			fmt.Fprintf(os.Stderr, "  excluded (publish target): %s\n", proj.Path)
 			return nil
 		}
 		// Project-level opt-out. Checked before the activity probe so

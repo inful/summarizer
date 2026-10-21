@@ -181,3 +181,35 @@ func TestLookback(t *testing.T) {
 		t.Errorf("garbage duration should yield 0, got %v", got)
 	}
 }
+
+// TestPublishTarget: the reports project is skipped by discovery, but
+// only when it is a project the scan can actually see. A cross-host
+// reports repo is invisible to the source scan anyway, and matching on
+// path alone would exclude an unrelated same-named project.
+func TestPublishTarget(t *testing.T) {
+	const host = "https://gitlab.example.com"
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"local publisher", Config{GitLabHost: host}, ""},
+		{"publish disabled", Config{GitLabHost: host,
+			Publish: PublishConfig{Project: "sfb/reports"}}, ""},
+		{"no project", Config{GitLabHost: host,
+			Publish: PublishConfig{Enabled: true}}, ""},
+		{"same host by default", Config{GitLabHost: host,
+			Publish: PublishConfig{Enabled: true, Project: "sfb/reports"}}, "sfb/reports"},
+		{"explicit same host", Config{GitLabHost: host,
+			Publish: PublishConfig{Enabled: true, Host: host, Project: "sfb/reports"}}, "sfb/reports"},
+		{"cross-host", Config{GitLabHost: host,
+			Publish: PublishConfig{Enabled: true, Host: "https://reports.example.net",
+				Project: "sfb/reports"}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.PublishTarget(); got != tc.want {
+				t.Errorf("PublishTarget() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -37,7 +37,8 @@ flag, summarizer runs **every project the token can see that had
 activity in the window** — no topic, no config entry needed. A project
 opts out with the `no-summarize` topic or a `.summaryignore` /
 `.docignore` file at its repo root. Both also win over an explicit
-`--project` listing. To narrow the scope instead:
+`--project` listing. The reports project itself is skipped too, so
+`publish.project` never summarises itself. To narrow the scope instead:
 
 | Flag | Selects |
 |---|---|

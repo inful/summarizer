@@ -342,6 +342,7 @@ Env:
 		DiscoverByTopic:      *discoverTopic,
 		DiscoverActive:       *discoverActive,
 		MaxProjects:          *maxProjects,
+		PublishTarget:        cfg.PublishTarget(),
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

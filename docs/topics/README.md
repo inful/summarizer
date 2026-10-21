@@ -29,6 +29,7 @@ project is still explainable:
 ```
   excluded (topic no-summarize): group/legacy-billing
   excluded (opt-out file): group/archive
+  excluded (publish target): sfb/reports
 ```
 
 ## How to use

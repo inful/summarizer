@@ -102,6 +102,28 @@ type SafetyConfig struct {
 	InjectionThreshold float64 `yaml:"injection_threshold"` // noul above this = injection; default 0.7
 }
 
+// PublishTarget is the project summarizer writes its reports into, or
+// "" when there is none to skip.
+//
+// A reports repo is not a project anyone wants summarised: its MRs are
+// summarizer's own publishing MRs, so including it would spend an LLM
+// call every week describing the previous week's reports. Discovery
+// skips it by default.
+//
+// Only returned when the publisher lives on the SAME host. A
+// cross-host reports repo is invisible to the source scan anyway, and
+// matching on path alone would exclude an unrelated same-named project
+// on the source host.
+func (c *Config) PublishTarget() string {
+	if !c.Publish.Enabled || c.Publish.Project == "" {
+		return ""
+	}
+	if h := c.Publish.Host; h != "" && h != c.GitLabHost {
+		return ""
+	}
+	return c.Publish.Project
+}
+
 // Defaults fills in zero values with sensible built-ins.
 func (c *Config) Defaults() {
 	if c.Model == "" {
