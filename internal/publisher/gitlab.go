@@ -10,12 +10,77 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/inful/mdfm"
 	"github.com/inful/summarizer/internal/textutil"
 )
+
+// Retry policy for the write path, matching internal/gitlab's reads and
+// internal/llm's: a transient upstream failure must not lose an
+// unattended Sunday-night run, and a hostile Retry-After must not park
+// the process for a day. Not shared — the gitlab package's are
+// unexported, and a third copy of four small functions is worse than
+// two.
+//
+// shortcut: identical values to internal/gitlab and internal/llm. If
+// one changes, this is the third place to change it; promote to a
+// shared package only when a fourth copy appears.
+const (
+	maxRetries           = 3
+	retryAfterCapDefault = 60 * time.Second
+	maxBackoff           = 30 * time.Second
+)
+
+// maxResponseBytes bounds every body read here, for the same reason
+// internal/llm does: this talks to a host, and an unbounded read is a
+// remote-triggered OOM.
+const maxResponseBytes = 16 << 20
+
+func retryAfter(h string) time.Duration {
+	if h == "" {
+		return backoff(1)
+	}
+	var d time.Duration
+	if n, err := strconv.Atoi(h); err == nil && n >= 0 {
+		d = time.Duration(n) * time.Second
+	} else if t, err := http.ParseTime(h); err == nil {
+		d = max(time.Until(t), 0)
+	} else {
+		return backoff(1)
+	}
+	return min(d, retryAfterCapDefault)
+}
+
+func backoff(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	return min(time.Duration(1<<(n-1))*time.Second, maxBackoff)
+}
+
+// sleep waits for d, or returns early when ctx is cancelled — which is
+// what makes Ctrl-C interrupt a backoff instead of waiting it out.
+// Overwritten in tests so the retry path is exercised without real
+// waits; see sleepFn.
+var sleepFn = sleep
+
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
 // GitLabPublisher commits each report to a per-period source branch on
 // the target project and opens/updates a merge request so operators
@@ -227,7 +292,7 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 		Encoding:      "base64",
 		LastCommitID:  lastCommitID,
 	})
-	if err := g.api(ctx, urlStr, method, putBody, nil); err != nil {
+	if err := g.api(ctx, urlStr, method, putBody, nil, true); err != nil {
 		// The response body rarely tells you what's wrong with the
 		// request body. Echo the request fields so the next debug
 		// session doesn't need tcpdump.
@@ -238,6 +303,22 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 	// 3. Find or create the MR for this period.
 	mrURL, err := g.findOrCreateMR(ctx, branch, req)
 	if err != nil {
+		if errors.Is(err, errPeriodClosed) {
+			// The week was already published and its MR merged or
+			// closed. Re-running it is the ordinary response to a
+			// report that said the wrong thing, and the file has
+			// just been committed to a branch that will never merge
+			// again. That is worth a line, not a failed project: the
+			// caller skips both cross-project rollups and exits
+			// non-zero when Publish returns an error.
+			fmt.Fprintf(os.Stderr, "summarizer: %s was already published (%v); %s was updated on %s and will not reach %s\n",
+				req.Period, err, req.Name, branch, g.DefaultBranch)
+			return Result{
+				Ref:    fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path),
+				Branch: branch,
+				Closed: true,
+			}, nil
+		}
 		// File landed; an MR-side failure should still report the branch ref.
 		return Result{Ref: fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path), Branch: branch}, err
 	}
@@ -262,7 +343,7 @@ func (g *GitLabPublisher) ensureBranch(ctx context.Context, branch string) error
 		Branch: branch,
 		Ref:    g.DefaultBranch,
 	})
-	return g.api(ctx, urlStr, "POST", body, nil)
+	return g.api(ctx, urlStr, "POST", body, nil, true)
 }
 
 // branchExists treats only 200 as "yes"; every other status (404, 403,
@@ -335,7 +416,7 @@ func (g *GitLabPublisher) readExistingUID(ctx context.Context, path, branch stri
 		// and the PUT will create the file (no last_commit_id needed).
 		return "", "", nil
 	case resp.StatusCode >= 400:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		return "", "", fmt.Errorf("%s %s: %d %s",
 			http.MethodGet, urlStr, resp.StatusCode, textutil.Truncate(string(body), 300))
 	}
@@ -365,6 +446,11 @@ func (g *GitLabPublisher) readExistingUID(ctx context.Context, path, branch stri
 		return "", "", fmt.Errorf("parse existing %s: %w", path, err)
 	}
 	if !doc.HasFrontmatter() {
+		// The UID is docbuilder's cross-project link identity — the
+		// whole reason for read-before-write. Losing it silently
+		// breaks every /_uid/<uid>/ link to the document and nothing
+		// says so on a run that otherwise reports success.
+		warnUIDLost(path)
 		return "", fr.LastCommitID, nil
 	}
 	parsedUID, found, err := doc.GetString("uid")
@@ -375,12 +461,23 @@ func (g *GitLabPublisher) readExistingUID(ctx context.Context, path, branch stri
 		// An existing summarizer-written file should always carry a uid
 		// (NewFrontmatter renders one on every Publish). Absence means
 		// either a manual edit, a corrupted clone, or a file from a
-		// tool other than summarizer — all rare and recoverable. Treat
-		// as "no usable uid" so the next publish mints fresh; the
-		// last_commit_id still flows so the PUT authorises the update.
+		// tool other than summarizer. The next publish mints fresh,
+		// which is the recoverable half; the broken links are not, so
+		// say so.
+		warnUIDLost(path)
 		return "", fr.LastCommitID, nil
 	}
 	return parsedUID, fr.LastCommitID, nil
+}
+
+// warnUIDLost names the file whose uid is about to be replaced. The
+// write still proceeds — a missing uid is not a reason to refuse, and
+// refusing would wedge the week — but the link loss is permanent, so
+// the operator gets a line that points at the file they can restore.
+func warnUIDLost(path string) {
+	fmt.Fprintf(os.Stderr, "summarizer: %s has no uid in its frontmatter; minting a new one. "+
+		"Any docbuilder /_uid/ links to the old document are now broken — restore the uid line "+
+		"if this file was edited by hand.\n", path)
 }
 
 // mergeRequests lists MRs; we use a wide state filter so we can detect
@@ -389,11 +486,17 @@ func (g *GitLabPublisher) mergeRequests(ctx context.Context, sourceBranch, state
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?source_branch=%s&state=%s",
 		g.Host, url.PathEscape(g.Project), url.QueryEscape(sourceBranch), url.QueryEscape(state))
 	var out []mergeRequest
-	if err := g.api(ctx, urlStr, "GET", nil, &out); err != nil {
+	if err := g.api(ctx, urlStr, "GET", nil, &out, true); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
+
+// errPeriodClosed says the week's MR already reached merged or closed,
+// so this branch will never be merged again. It is a sentinel so
+// Publish can treat re-publishing a completed week as a logged no-op
+// rather than a failed project.
+var errPeriodClosed = errors.New("period already published")
 
 // findOrCreateMR opens the MR if one isn't open for this source branch.
 // Returns the MR web URL. If an MR exists in merged / closed state we
@@ -408,13 +511,20 @@ func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req
 		return mrs[0].WebURL, nil
 	}
 
-	// No open MR. Check merged/closed before creating a fresh one.
+	// No open MR. Closing an MR without merging is the ordinary way to
+	// abandon a week, so `closed` counts too — querying only `merged`
+	// let that case open a SECOND MR for the same branch.
 	nonOpen, err := g.mergeRequests(ctx, branch, "merged")
 	if err != nil {
 		return "", err
 	}
-	if len(nonOpen) > 0 {
-		return "", fmt.Errorf("existing MR for period %s is %s; refusing to reopen — merge the existing MR or use a different period", req.Period, nonOpen[0].State)
+	closedMRs, err := g.mergeRequests(ctx, branch, "closed")
+	if err != nil {
+		return "", err
+	}
+	all := append(nonOpen, closedMRs...)
+	if len(all) > 0 {
+		return "", fmt.Errorf("%w: %s is %s", errPeriodClosed, req.Period, all[0].State)
 	}
 
 	// No MR at all — create one.
@@ -433,7 +543,7 @@ func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req
 			req.Period, projectLine(req), visibilityLine(req)),
 	})
 	var mr mergeRequest
-	if err := g.api(ctx, createURL, "POST", body, &mr); err != nil {
+	if err := g.api(ctx, createURL, "POST", body, &mr, false); err != nil {
 		return "", err
 	}
 	return mr.WebURL, nil
@@ -470,32 +580,74 @@ func commitMessage(req Request) string {
 // api issues method URL with body (or nil for GET) and decodes the
 // response into out (or discards). Handles auth + JSON content-type for
 // write paths.
-func (g *GitLabPublisher) api(ctx context.Context, urlStr, method string, body []byte, out any) error {
-	var bodyReader io.Reader
-	if body != nil {
-		bodyReader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
+//
+// retry says whether a 429 or 5xx is worth another attempt. It is safe
+// for every call here EXCEPT the merge-request create: GitLab does not
+// de-duplicate those, so a retried POST that actually succeeded the
+// first time opens two MRs for one week. Branch create is guarded by
+// branchExists and the file write by the last_commit_id dispatch, so
+// both are safe to repeat.
+//
+// This asymmetry existed because reads went through internal/gitlab's
+// doJSON, which has retried 429/5xx all along, while every write came
+// here and did not. One 502 during the unattended Sunday-night run lost
+// the week; the discovery phase before it shrugged off the same error
+// four times.
+func (g *GitLabPublisher) api(ctx context.Context, urlStr, method string, body []byte, out any, retry bool) error {
+	status, respBody, err := g.doRetry(ctx, urlStr, method, body, retry)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("PRIVATE-TOKEN", g.Token)
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := g.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("%s %s: %d %s", method, urlStr, resp.StatusCode, textutil.Truncate(string(respBody), 300))
+	if status >= 400 {
+		return fmt.Errorf("%s %s: %d %s", method, urlStr, status, textutil.Truncate(string(respBody), 300))
 	}
 	if out != nil && len(respBody) > 0 {
 		return json.Unmarshal(respBody, out)
 	}
 	return nil
+}
+
+// doRetry performs one request, repeating it on 429 and 5xx when retry is
+// set, and returns the final status and body. The body is bounded for
+// the same reason internal/gitlab's reads are: this talks to a host, and
+// an unbounded read is a remote-triggered OOM.
+func (g *GitLabPublisher) doRetry(ctx context.Context, urlStr, method string, body []byte, retry bool) (int, []byte, error) {
+	for attempt := 1; ; attempt++ {
+		var bodyReader io.Reader
+		if body != nil {
+			bodyReader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
+		if err != nil {
+			return 0, nil, err
+		}
+		req.Header.Set("PRIVATE-TOKEN", g.Token)
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := g.HTTP.Do(req)
+		if err != nil {
+			return 0, nil, err
+		}
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		_ = resp.Body.Close()
+
+		if !retry || attempt > maxRetries {
+			return resp.StatusCode, respBody, nil
+		}
+		var wait time.Duration
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			wait = retryAfter(resp.Header.Get("Retry-After"))
+		case resp.StatusCode >= 500:
+			wait = backoff(attempt)
+		default:
+			return resp.StatusCode, respBody, nil
+		}
+		if err := sleepFn(ctx, wait); err != nil {
+			return 0, nil, err
+		}
+	}
 }

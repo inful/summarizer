@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,10 +27,16 @@ type fakeGitLab struct {
 	branchCreates atomic.Int64
 	branchGets    atomic.Int64
 	filePuts      atomic.Int64
-	fileReads     atomic.Int64
-	mergeRequests []mergeRequest
-	mrCreateCount atomic.Int64
-	lastMRDesc    string
+	// Flaky counters: the first N writes / MR creates answer 503, so a
+	// test can tell a retried write from a duplicated one.
+	flakyWrites      int
+	flakyMRCreates   int
+	filePutAttempts  atomic.Int64
+	mrCreateAttempts atomic.Int64
+	fileReads        atomic.Int64
+	mergeRequests    []mergeRequest
+	mrCreateCount    atomic.Int64
+	lastMRDesc       string
 
 	// files pre-populates "branch -> path -> content" so read-before-write
 	// tests can put a file on the branch before the publisher's
@@ -133,6 +140,12 @@ func (f *fakeGitLab) handler() http.Handler {
 		// Capture the decoded PUT body so UID-preservation tests can
 		// assert on what's actually rendered.
 		f.lastPutContent.Store(string(decoded))
+		f.filePutAttempts.Add(1)
+		if f.flakyWrites > 0 {
+			f.flakyWrites--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		f.filePuts.Add(1)
 		w.WriteHeader(http.StatusOK)
 	})
@@ -164,6 +177,12 @@ func (f *fakeGitLab) handler() http.Handler {
 			return
 		}
 		f.lastMRDesc = mr.Description
+		f.mrCreateAttempts.Add(1)
+		if f.flakyMRCreates > 0 {
+			f.flakyMRCreates--
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		f.mrCreateCount.Add(1)
 		f.mergeRequests = append(f.mergeRequests, mergeRequest{
 			IID:          42,
@@ -655,7 +674,13 @@ func TestGitLabPublisher_MultipleFilesOneBranch(t *testing.T) {
 	}
 }
 
-func TestGitLabPublisher_RejectsMergedMR(t *testing.T) {
+// TestGitLabPublisher_MergedPeriodIsALoggedNoOp: re-running a week
+// whose MR was already merged is the ORDINARY response to a report that
+// said the wrong thing. It used to return an error, which the pipeline
+// surfaced as two failed projects, skipped both cross-project rollups
+// and exited non-zero — even though the file had been written
+// successfully, onto a branch that will never merge again.
+func TestGitLabPublisher_MergedPeriodIsALoggedNoOp(t *testing.T) {
 	f := &fakeGitLab{
 		mergeRequests: []mergeRequest{
 			{IID: 5, WebURL: "x", State: "merged", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main", Title: "old"},
@@ -665,16 +690,100 @@ func TestGitLabPublisher_RejectsMergedMR(t *testing.T) {
 	defer srv.Close()
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
-
-	_, err := p.Publish(context.Background(), Request{
+	res, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
 	})
-	if err == nil {
-		t.Fatal("expected error when prior MR is merged")
+	if err != nil {
+		t.Fatalf("a re-run of an already-published week must not fail: %v", err)
 	}
-	if !strings.Contains(err.Error(), "merged") {
-		t.Errorf("error should mention merged state: %v", err)
+	if !res.Closed {
+		t.Error("Result.Closed should be set so the caller can report it")
 	}
+	if res.Ref == "" {
+		t.Error("the branch ref should still be returned; the file did land")
+	}
+}
+
+// TestGitLabPublisher_ClosedMRCountsAsPublished: closing an MR without
+// merging is the ordinary way to abandon a week. findOrCreateMR
+// queried only state=merged, so this state was invisible to it and the
+// next run opened a SECOND MR for the same branch.
+func TestGitLabPublisher_ClosedMRCountsAsPublished(t *testing.T) {
+	f := &fakeGitLab{
+		mergeRequests: []mergeRequest{
+			{IID: 6, WebURL: "x", State: "closed", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main", Title: "abandoned"},
+		},
+	}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	res, err := p.Publish(context.Background(), Request{
+		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
+	})
+	if err != nil {
+		t.Fatalf("a closed period should be a no-op, not an error: %v", err)
+	}
+	if !res.Closed {
+		t.Error("a closed MR should mark the period as already published")
+	}
+	if got := f.mrCreateCount.Load(); got != 0 {
+		t.Errorf("created %d MR(s) for a week that already had a closed one; "+
+			"that is how a second MR for the same branch appeared", got)
+	}
+}
+
+// TestGitLabPublisher_MissingUIDIsReportedNotSilent: the uid is
+// docbuilder's cross-project link identity — the entire reason for
+// read-before-write. A file with no uid (or no frontmatter at all) is
+// re-minted, which is the recoverable half; the broken links are not,
+// so stderr has to say which file lost one.
+func TestGitLabPublisher_MissingUIDIsReportedNotSilent(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"no frontmatter", "# just a report\n"},
+		{"frontmatter without uid", "---\ntitle: \"x\"\n---\n\nbody\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeGitLab{}
+			const path = "reports/2026-10-19/x.md"
+			f.files.Store(path, tc.body)
+			srv := httptest.NewServer(f.handler())
+			defer srv.Close()
+
+			out := captureStderr(t, func() {
+				p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+				if _, err := p.Publish(context.Background(), Request{
+					Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
+				}); err != nil {
+					t.Fatalf("Publish: %v", err)
+				}
+			})
+			if !strings.Contains(out, "uid") || !strings.Contains(out, path) {
+				t.Errorf("losing the uid must be reported, naming the file. stderr:\n%s", out)
+			}
+		})
+	}
+}
+
+// captureStderr runs fn with stderr redirected and returns what it wrote.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		var sb strings.Builder
+		_, _ = io.Copy(&sb, r)
+		done <- sb.String()
+	}()
+	fn()
+	_ = w.Close()
+	os.Stderr = old
+	return <-done
 }
 
 // TestGitLabPublisher_PreservesExistingUID: when the file is already
@@ -786,5 +895,58 @@ func TestGitLabPublisher_FreshFileMintsUUID(t *testing.T) {
 	}
 	if !uuidV7Re.MatchString(uidLine) {
 		t.Errorf("fresh-file mint should produce a UUID v7, got %q", uidLine)
+	}
+}
+
+// TestGitLabPublisher_RetriesIdempotentWrites: the reads go through
+// internal/gitlab's doJSON, which has retried 429/5xx all along, while
+// every write came through api() and did not. One 502 during the
+// unattended Sunday-night run lost the week — after the discovery phase
+// had shrugged off the same error four times.
+func TestGitLabPublisher_RetriesIdempotentWrites(t *testing.T) {
+	// No real backoff: the retry path is what is under test.
+	restore := swapSleep(t)
+	defer restore()
+	f := &fakeGitLab{flakyWrites: 2}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	if _, err := p.Publish(context.Background(), Request{
+		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
+	}); err != nil {
+		t.Fatalf("a file write should survive two 503s: %v", err)
+	}
+	if got := f.filePuts.Load(); got != 1 {
+		t.Errorf("file put %d times, want 1 logical write (%d attempts is fine)", got, got)
+	}
+}
+
+// TestGitLabPublisher_DoesNotRetryTheMRCreate: GitLab does not
+// de-duplicate merge requests, so a retried POST that actually
+// succeeded the first time opens two MRs for one week.
+// swapSleep makes backoff instantaneous for one test.
+func swapSleep(t *testing.T) func() {
+	t.Helper()
+	old := sleepFn
+	sleepFn = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	return func() { sleepFn = old }
+}
+
+func TestGitLabPublisher_DoesNotRetryTheMRCreate(t *testing.T) {
+	f := &fakeGitLab{flakyMRCreates: 1}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	// The MR create fails; Publish must surface it rather than
+	// retrying into a duplicate.
+	if _, err := p.Publish(context.Background(), Request{
+		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
+	}); err == nil {
+		t.Fatal("expected the MR create error to surface")
+	}
+	if got := f.mrCreateAttempts.Load(); got != 1 {
+		t.Errorf("attempted the MR create %d times, want exactly 1", got)
 	}
 }

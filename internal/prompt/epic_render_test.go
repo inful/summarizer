@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -134,5 +135,39 @@ func TestRender_OnlyOrphansBecomesOtherActivity(t *testing.T) {
 	}
 	if strings.Contains(user, "### Inert epic") {
 		t.Errorf("inert epic should not surface when no event matches")
+	}
+}
+
+// TestRenderEpicRollup_IsBounded: the two sibling renderers cap their
+// input at rollupTotalCap. This one did not, and its ceiling is
+// structural — MaxProjects × maxActiveEpics — so a full instance
+// rendered 1,000 epic blocks at roughly 8× the combined rollup's
+// budget, on the customer path, every week.
+func TestRenderEpicRollup_IsBounded(t *testing.T) {
+	var entries []EpicRollupEntry
+	for p := 0; p < 50; p++ { // MaxProjects
+		for e := 0; e < 20; e++ { // maxActiveEpics
+			entries = append(entries, EpicRollupEntry{
+				Project: fmt.Sprintf("group/p%02d", p),
+				Epics: []EpicSummary{{
+					Epic:       &gitlab.Epic{IID: e, Title: strings.Repeat("objective text ", 12), WebURL: "https://gitlab.example/g/p/-/epics/1"},
+					EventCount: 7,
+				}},
+			})
+		}
+	}
+	_, user, err := RenderEpicRollup(AudienceCustomer, "g/p", entries)
+	if err != nil {
+		t.Fatalf("RenderEpicRollup: %v", err)
+	}
+	if n := len(user); n > rollupTotalCap*2 {
+		t.Errorf("prompt is %d bytes for %d entries, over the %d budget; "+
+			"the epic renderer is the only one without a cap", n, len(entries), rollupTotalCap)
+	}
+	if strings.Contains(user, "p49") {
+		t.Error("the last entries should have been dropped oldest-first")
+	}
+	if !strings.Contains(user, "p00") {
+		t.Error("the oldest project should be kept")
 	}
 }

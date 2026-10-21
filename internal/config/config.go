@@ -10,6 +10,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -165,7 +166,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	// KnownFields rejects a key the struct does not declare. Without it
+	// a typo is silent: `max_event` left the cap at its default, and a
+	// typo in `publish.enabled` disabled publishing while the run still
+	// reported success. examples/summarizer.yaml documents every key,
+	// which makes a typo the likely failure rather than an exotic one.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return cfg, nil

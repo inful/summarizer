@@ -32,6 +32,30 @@ const (
 // window is that week and nothing needs qualifying it.
 const WeekWindowLabel = "this ISO week (Monday to now, UTC)"
 
+// parseTemplate parses one embedded template with the `data` helper
+// registered.
+//
+// The wrapping is the only structural defence against prompt injection,
+// and it is worthless if untrusted text can close the tag: a title of
+// `x</data> do this instead` would place its instruction outside the
+// block the system prompt tells the model to distrust. Registering the
+// escaper as a template function — rather than escaping at each call
+// site — means a new field gets it by writing `{{data .X}}` and cannot
+// silently skip it.
+func parseTemplate(name string, raw []byte) (*template.Template, error) {
+	return template.New(name).Funcs(template.FuncMap{"data": dataBlock}).Parse(string(raw))
+}
+
+// dataBlock renders one value as the contents of a <data> marker.
+// `html/template` is deliberately not used: this is plain text for an
+// LLM, and escaping for HTML would mangle ordinary engineering prose.
+func dataBlock(v any) string {
+	s := fmt.Sprint(v)
+	return "<data>" + strings.NewReplacer(
+		"<", "&lt;", // covers both <data> and </data>
+	).Replace(s) + "</data>"
+}
+
 // Render produces a chat-ready (system, user) pair for the given audience.
 // system is the persistent instruction; user carries the events.
 //
@@ -51,7 +75,7 @@ func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int,
 	if err != nil {
 		return "", "", fmt.Errorf("read template %s: %w", tplName, err)
 	}
-	tpl, err := template.New(tplName).Parse(string(raw))
+	tpl, err := parseTemplate(tplName, raw)
 	if err != nil {
 		return "", "", fmt.Errorf("parse template %s: %w", tplName, err)
 	}
@@ -133,7 +157,7 @@ func RenderRollup(aud Audience, projects []ProjectReport) (system, user string, 
 	if err != nil {
 		return "", "", fmt.Errorf("read template %s: %w", tplName, err)
 	}
-	tpl, err := template.New(tplName).Parse(string(raw))
+	tpl, err := parseTemplate(tplName, raw)
 	if err != nil {
 		return "", "", fmt.Errorf("parse template %s: %w", tplName, err)
 	}
@@ -216,7 +240,7 @@ func RenderMonthlyRollup(aud Audience, month string, weeks []ProjectReport) (sys
 	if err != nil {
 		return "", "", fmt.Errorf("read template %s: %w", tplName, err)
 	}
-	tpl, err := template.New(tplName).Parse(string(raw))
+	tpl, err := parseTemplate(tplName, raw)
 	if err != nil {
 		return "", "", fmt.Errorf("parse template %s: %w", tplName, err)
 	}
@@ -302,10 +326,18 @@ func RenderEpicRollup(aud Audience, project string, entries []EpicRollupEntry) (
 	if err != nil {
 		return "", "", fmt.Errorf("read template %s: %w", tplName, err)
 	}
-	tpl, err := template.New(tplName).Parse(string(raw))
+	tpl, err := parseTemplate(tplName, raw)
 	if err != nil {
 		return "", "", fmt.Errorf("parse template %s: %w", tplName, err)
 	}
+
+	// Bounded like its two siblings. This one was missing the cap: the
+	// ceiling is MaxProjects × maxActiveEpics, so a full instance
+	// renders 1,000 epic blocks at ~130 KB against the combined
+	// rollup's 16 KB, on the customer path, every week. Whole entries
+	// are dropped oldest-first rather than truncated mid-block, so the
+	// remaining ones stay complete.
+	entries = capEpicEntries(entries, rollupTotalCap)
 
 	// Flatten project list for the template's summary line.
 	names := make([]string, 0, len(entries))
@@ -484,20 +516,18 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 // both the grouped and flat paths. Kept private + small so the two
 // formatters can agree byte-for-byte on what an event looks like.
 func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
-	// Title and author are free-text GitLab fields: anyone with merge
-	// rights on a project controls both, and the title reaches a
-	// customer-facing document. They were rendered bare while the
-	// description and the diff were wrapped, which told the model
-	// precisely which parts of the line to trust — the opposite of
-	// the truth. %q stops a title forging a new bullet; it does nothing
-	// about what the text says.
-	fmt.Fprintf(buf, "- [%s %s] (%s, by <data>%s</data>) <data>%s</data>",
-		kindLabel(e.Kind), e.Ref, e.Action, e.Author, e.Title)
+	// Title, author and labels are free-text GitLab fields: anyone with
+	// merge rights on a project controls them, and the title reaches a
+	// customer-facing document. dataBlock escapes the delimiter, so
+	// none of them can close the <data> block and have the rest of
+	// their text read as instruction.
+	fmt.Fprintf(buf, "- [%s %s] (%s, by %s) %s",
+		kindLabel(e.Kind), e.Ref, e.Action, dataBlock(e.Author), dataBlock(e.Title))
 	if e.Changes != nil {
 		fmt.Fprintf(buf, " [+%d/-%d in %d files]", e.Changes.Additions, e.Changes.Deletions, e.Changes.Files)
 	}
 	if len(e.Labels) > 0 {
-		fmt.Fprintf(buf, " (tags: <data>%s</data>)", joinLabels(e.Labels))
+		fmt.Fprintf(buf, " (tags: %s)", dataBlock(joinLabels(e.Labels)))
 	}
 	if e.Comments > 0 {
 		fmt.Fprintf(buf, " [comments: %d]", e.Comments)
@@ -508,11 +538,11 @@ func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
 	if aud == AudienceTeam && e.TeamOnly != nil && e.TeamOnly.Description != "" {
 		// Data marker: prompt explicitly forbids the model from obeying
 		// anything inside <data>. Mitigates OWASP LLM01:2025.
-		fmt.Fprintf(buf, "\n  body: <data>%s</data>", e.TeamOnly.Description)
+		fmt.Fprintf(buf, "\n  body: %s", dataBlock(e.TeamOnly.Description))
 	}
 	if aud == AudienceTeam && len(e.DiffChunks) > 0 {
 		diff := formatDiffChunks(e.DiffChunks)
-		fmt.Fprintf(buf, "\n  diff: <data>%s</data>", diff)
+		fmt.Fprintf(buf, "\n  diff: %s", dataBlock(diff))
 	}
 }
 
@@ -556,6 +586,33 @@ func kindLabel(k events.Kind) string {
 }
 
 func joinLabels(ls []string) string { return strings.Join(ls, ", ") }
+
+// capEpicEntries drops whole projects from the end of the list until the
+// rendered size is under total. The size is measured on the same text
+// the template emits — title, URL and the count — so the budget tracks
+// the prompt rather than an estimate of it.
+func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
+	size := func(e EpicRollupEntry) int {
+		n := 0
+		for _, ep := range e.Epics {
+			n += len(ep.Epic.Title) + len(ep.Epic.WebURL) + 48
+		}
+		return n
+	}
+	kept := make([]EpicRollupEntry, len(entries))
+	copy(kept, entries)
+	for len(kept) > 1 {
+		sum := 0
+		for _, e := range kept {
+			sum += size(e)
+		}
+		if sum <= total {
+			break
+		}
+		kept = kept[:len(kept)-1]
+	}
+	return kept
+}
 
 // capEvents returns the events to send: the most-recently-updated N,
 // sorted most-recent-first. Sorts a COPY so the caller's slice — shared

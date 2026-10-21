@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/inful/summarizer/internal/textutil"
@@ -26,74 +28,66 @@ import (
 //
 // Used by `summarizer monthly`, which rolls up last month's weeks.
 func (g *GitLabPublisher) ListPeriodBranches(ctx context.Context) ([]string, error) {
-	q := url.Values{}
-	q.Set("per_page", "100")
-	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches?%s",
-		g.Host, url.PathEscape(g.Project), q.Encode())
-
-	body, err := g.get(ctx, urlStr)
-	if err != nil {
-		return nil, fmt.Errorf("list branches: %w", err)
-	}
-	var branches []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(body, &branches); err != nil {
-		return nil, fmt.Errorf("decode branches: %w", err)
-	}
-
+	// Paged. A reports repo accrues one branch per week and never loses
+	// them, so a single per_page=100 stops returning recent weeks in the
+	// second year — and the monthly rollup then quietly reports those
+	// weeks as "no rollup file" and still exits zero. The monthly
+	// branches are filtered out below, but the server has already spent
+	// their slots by then, costing 12 a year.
 	prefix := g.SourceBranchPrefix
 	if prefix != "" {
 		prefix += "/"
 	}
-	out := make([]string, 0, len(branches))
-	for _, b := range branches {
-		if !strings.HasPrefix(b.Name, prefix) {
-			continue
+	out := make([]string, 0, 64)
+	for page := 1; page <= maxBranchPages; page++ {
+		q := url.Values{}
+		q.Set("per_page", "100")
+		q.Set("page", strconv.Itoa(page))
+		body, next, err := g.getPaged(ctx, fmt.Sprintf("/projects/%s/repository/branches",
+			url.PathEscape(g.Project)), q)
+		if err != nil {
+			return nil, fmt.Errorf("list branches: %w", err)
 		}
-		if !isWeekSlug(strings.TrimPrefix(b.Name, prefix)) {
-			continue
+		var branches []struct {
+			Name string `json:"name"`
 		}
-		out = append(out, b.Name)
+		if err := json.Unmarshal(body, &branches); err != nil {
+			return nil, fmt.Errorf("decode branches: %w", err)
+		}
+		for _, b := range branches {
+			if !strings.HasPrefix(b.Name, prefix) {
+				continue
+			}
+			if !isWeekSlug(strings.TrimPrefix(b.Name, prefix)) {
+				continue
+			}
+			out = append(out, b.Name)
+		}
+		if !next || len(branches) == 0 {
+			return out, nil
+		}
 	}
+	fmt.Fprintf(os.Stderr, "summarizer: branch listing stopped after %d pages; older or newer weeks may be missing\n", maxBranchPages)
 	return out, nil
 }
 
-// ListReportFiles returns the basenames in <prefix>/<period>/ on a
-// branch. The monthly rollup needs it to notice that a week's branch
-// carries rollups for more than one window size — which happens
-// whenever the window changed mid-week, because the window is part of the
-// filename and old files are never pruned from the branch.
-func (g *GitLabPublisher) ListReportFiles(ctx context.Context, branch, period string) ([]string, error) {
-	dir := period
-	if g.Prefix != "" {
-		dir = g.Prefix + "/" + period
-	}
-	q := url.Values{}
-	q.Set("ref", branch)
-	q.Set("path", dir)
-	q.Set("per_page", "100")
-	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/tree?%s",
-		g.Host, url.PathEscape(g.Project), q.Encode())
+// maxBranchPages is 200 branches at 100 a page — twenty years of weekly
+// runs, well past any repo's lifetime.
+const maxBranchPages = 200
 
-	body, err := g.get(ctx, urlStr)
+// getPaged is get plus the X-Next-Page header, so a caller can walk a
+// paginated list. Mirrors internal/gitlab's getPage without importing
+// that package's unexported helper.
+func (g *GitLabPublisher) getPaged(ctx context.Context, path string, q url.Values) ([]byte, bool, error) {
+	u := fmt.Sprintf("%s/api/v4%s?%s", g.Host, path, q.Encode())
+	resp, err := g.getStatus(ctx, u)
 	if err != nil {
-		return nil, fmt.Errorf("list %s on %s: %w", dir, branch, err)
+		return nil, false, err
 	}
-	var entries []struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
+	if resp.status >= 400 {
+		return nil, false, fmt.Errorf("GET %s: %d %s", u, resp.status, textutil.Truncate(string(resp.body), 300))
 	}
-	if err := json.Unmarshal(body, &entries); err != nil {
-		return nil, fmt.Errorf("decode tree %s: %w", dir, err)
-	}
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.Type == "blob" {
-			out = append(out, e.Name)
-		}
-	}
-	return out, nil
+	return resp.body, resp.headers.Get("X-Next-Page") != "", nil
 }
 
 // isWeekSlug reports whether s looks like "2026-W42" — four digits, a
@@ -162,22 +156,14 @@ func (g *GitLabPublisher) ReadReportFile(ctx context.Context, branch, path strin
 	return fr.Content, nil
 }
 
-// get / getStatus: authenticated GETs against the GitLab API. Split so
-// ReadReportFile can branch on 404 while the other callers don't care.
-func (g *GitLabPublisher) get(ctx context.Context, urlStr string) ([]byte, error) {
-	resp, err := g.getStatus(ctx, urlStr)
-	if err != nil {
-		return nil, err
-	}
-	if resp.status >= 400 {
-		return nil, fmt.Errorf("GET %s: %d %s", urlStr, resp.status, textutil.Truncate(string(resp.body), 300))
-	}
-	return resp.body, nil
-}
+// getStatus is the authenticated GET every read here goes through.
+// getPaged and ReadReportFile both branch on the status themselves, so
+// there is no error-returning wrapper to keep.
 
 type rawResponse struct {
-	status int
-	body   []byte
+	status  int
+	body    []byte
+	headers http.Header
 }
 
 func (g *GitLabPublisher) getStatus(ctx context.Context, urlStr string) (rawResponse, error) {
@@ -194,11 +180,12 @@ func (g *GitLabPublisher) getStatus(ctx context.Context, urlStr string) (rawResp
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	// Bounded, like every other body read in this repo.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return rawResponse{}, fmt.Errorf("read body: %w", err)
 	}
-	return rawResponse{status: resp.StatusCode, body: body}, nil
+	return rawResponse{status: resp.StatusCode, body: body, headers: resp.Header}, nil
 }
 
 // ReadReportFile is on GitLabPublisher only. The interface deliberately

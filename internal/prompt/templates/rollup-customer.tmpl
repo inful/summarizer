@@ -7,15 +7,15 @@ Rules:
 - Output Markdown only. No preamble, no "Here is the report:". Start directly with the rollup.
 
 Window: {{.Window}}
+<data>
 Projects in this rollup: {{.ProjectCount}}
-{{range .ProjectNames}}  - {{.}}
+{{range .ProjectNames}}  - {{data .}}
 {{end}}
 
-<data>
 {{range $name, $body := .ProjectBodies}}
-# Project: {{$name}}
+# Project: {{data $name}}
 
-{{$body}}
+{{data $body}}
 
 {{end}}</data>
 

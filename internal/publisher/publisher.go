@@ -54,6 +54,13 @@ type Result struct {
 	Ref    string // display path / URL for the run summary log
 	Branch string // GitLab branch the file landed on; empty for local
 	MRURL  string // GitLab MR web URL when one was created or updated; empty for local
+
+	// Closed is true when the period's MR had already been merged or
+	// closed, so Ref points at a branch that will never reach the
+	// default branch again. The write succeeded; the content just has
+	// nowhere to go. Callers report it rather than treating it as a
+	// failure, because re-running a published week is ordinary.
+	Closed bool
 }
 
 // Publisher writes one Markdown file at a time. Implementations are

@@ -10,16 +10,16 @@ Rules:
 - Output Markdown only. No preamble, no "Here is the report:". Start directly with the rollup.
 
 Window: {{.Window}}
+<data>
 Projects in this epic rollup: {{.ProjectCount}}
-{{range .ProjectNames}}- {{.}}
+{{range .ProjectNames}}- {{data .}}
 {{end}}
 
-<data>
 {{range .ProjectViews}}
-# Project: {{.Project}}
+# Project: {{data .Project}}
 
 {{range .Epics}}
-## {{.Epic.Title}} (objective #{{.Epic.IID}}, {{.Epic.State}})
+## {{data .Epic.Title}} (objective #{{.Epic.IID}}, {{.Epic.State}})
 URL: {{.Epic.WebURL}}
 Activity in window: {{.EventCount}} events
 {{end}}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -212,5 +214,83 @@ func TestLocalPublisher_ReadReportFileUnsupported(t *testing.T) {
 	lp := NewLocal(t.TempDir())
 	if _, err := lp.ReadReportFile(context.Background(), "x", "y"); err == nil {
 		t.Error("local publisher should reject ReadReportFile")
+	}
+}
+
+// TestListPeriodBranches_PagesUntilGitLabStops: a reports repo
+// accrues one branch per week and never loses them, so a single
+// per_page=100 stopped returning recent weeks in the second year — and
+// `summarizer monthly` reported those weeks as "no rollup file" while
+// still exiting zero. The monthly branches the code discards on arrival
+// cost 12 slots a year of that budget, because the server had already
+// spent them.
+func TestListPeriodBranches_PagesUntilGitLabStops(t *testing.T) {
+	const perPage = 100
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page < 1 {
+			page = 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Three pages then done, so the loop must stop at three rather
+		// than run to maxBranchPages.
+		if page < 3 {
+			w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		} else {
+			w.Header().Del("X-Next-Page")
+		}
+		var list []map[string]string
+		for i := 0; i < perPage; i++ {
+			// A distinct name per row, so a short read cannot hide
+			// behind deduplication.
+			// A different year per page, so all 300 rows are distinct
+			// week slugs and none is filtered — the count below is the
+			// count the server sent, not a deduplicated one.
+			list = append(list, map[string]string{
+				"name": fmt.Sprintf("summarizer/%d-W%02d", 2000+page, i%52+1),
+			})
+		}
+		_ = json.NewEncoder(w).Encode(list)
+	}))
+	defer srv.Close()
+
+	got, err := NewGitLab(srv.URL, "glpat-x", "group/reports", "reports", "main", "summarizer").
+		ListPeriodBranches(context.Background())
+	if err != nil {
+		t.Fatalf("ListPeriodBranches: %v", err)
+	}
+	if requests < 3 {
+		t.Errorf("made %d requests, want at least 3 to see past the first page", requests)
+	}
+	// 3 pages × 100 rows.
+	if len(got) != 300 {
+		t.Errorf("collected %d branches, want 156 — the listing stopped at one page", len(got))
+	}
+}
+
+// TestListPeriodBranches_StopsOnTheLastPage: the loop must end when
+// GitLab stops offering more, not after maxBranchPages.
+func TestListPeriodBranches_StopsOnTheLastPage(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Del("X-Next-Page") // last page
+		_, _ = w.Write([]byte(`[{"name":"summarizer/2026-W43"}]`))
+	}))
+	defer srv.Close()
+
+	got, err := NewGitLab(srv.URL, "glpat-x", "group/reports", "reports", "main", "summarizer").
+		ListPeriodBranches(context.Background())
+	if err != nil {
+		t.Fatalf("ListPeriodBranches: %v", err)
+	}
+	if requests != 1 {
+		t.Errorf("made %d requests, want 1", requests)
+	}
+	if len(got) != 1 {
+		t.Errorf("got %v, want one week branch", got)
 	}
 }
