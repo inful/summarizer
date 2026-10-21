@@ -452,72 +452,15 @@ func (c *Client) FetchMRs(ctx context.Context, projectPath string, since time.Ti
 // valid token is still load-bearing.
 //
 // Note: this endpoint handles 403/404 specially (soft-degrade), so it
-// does NOT use the shared getPage helper. The free-tier 403 is a
-// feature, not a bug, and the shared switch can't distinguish them.
 func (c *Client) FetchEpics(ctx context.Context, groupPath string) ([]Epic, error) {
-	path := fmt.Sprintf("/groups/%s/epics", url.PathEscape(groupPath))
-	var out []Epic
-	for page := 1; ; page++ {
-		batch, next, err := c.pageEpics(ctx, path, page)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, batch...)
-		if !next {
-			return out, nil
-		}
-	}
-}
-
-// pageEpics issues one page of /epics. Distinct from getPage because
-// it carries the soft-degrade contract for 403/404.
-// nolint:unused // (returns are used via the wrapped call path; signature is identical to getPage)
-func (c *Client) pageEpics(ctx context.Context, path string, page int) ([]Epic, bool, error) {
 	q := url.Values{}
 	q.Set("per_page", "100")
-	q.Set("page", strconv.Itoa(page))
-	u := c.baseURL + path + "?" + q.Encode()
-	var batch []Epic
-	var next bool
-	var attempt int
-	for {
-		attempt++
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			return nil, false, err
-		}
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return nil, false, err
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-		_ = resp.Body.Close()
-		switch {
-		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
-			if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
-				return nil, false, err
-			}
-			continue
-		case resp.StatusCode >= 500 && attempt <= maxRetries:
-			if err := sleep(ctx, backoff(attempt)); err != nil {
-				return nil, false, err
-			}
-			continue
-		case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
-			// Soft-degrade: Free-tier or wrong group path. Caller treats
-			// (nil, nil) as "no epic data; skip the section".
-			return nil, false, nil
-		case resp.StatusCode >= 400:
-			return nil, false, fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
-		}
-		next = resp.Header.Get("X-Next-Page") != ""
-		if err := json.Unmarshal(body, &batch); err != nil {
-			return nil, false, err
-		}
-		return batch, next, nil
-	}
+	// 403/404 soft-degrade: epics are Premium, so a Free-tier instance
+	// or a wrong group path must skip the section, not fail the run.
+	out, _, err := getAll[Epic](ctx, c,
+		fmt.Sprintf("/groups/%s/epics", url.PathEscape(groupPath)),
+		q, 0, http.StatusForbidden, http.StatusNotFound)
+	return out, err
 }
 
 // FetchEpicIssues returns the issues linked to a single epic. The bare
@@ -557,46 +500,23 @@ func (c *Client) FetchProjectNamespace(ctx context.Context, projectPath string) 
 // rather than failing the run — the classifier's default-safe behavior
 // then keeps the project on the team-only side until the operator can
 // re-tag.
+// FetchProjectSummary GETs one project. 404 soft-degrades to (nil, nil):
+// a renamed or moved project must not fail a run that is otherwise fine.
 func (c *Client) FetchProjectSummary(ctx context.Context, projectPath string) (*ProjectSummary, error) {
 	var ps ProjectSummary
-	var attempt int
-	for {
-		attempt++
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-			c.baseURL+"/projects/"+url.PathEscape(projectPath), nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-		_ = resp.Body.Close()
-		switch {
-		case resp.StatusCode == http.StatusNotFound:
-			return nil, nil
-		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
-			if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
-				return nil, err
-			}
-			continue
-		case resp.StatusCode >= 500 && attempt <= maxRetries:
-			if err := sleep(ctx, backoff(attempt)); err != nil {
-				return nil, err
-			}
-			continue
-		case resp.StatusCode >= 400:
-			return nil, fmt.Errorf("gitlab %s /projects/%s: %d %s",
-				http.MethodGet, projectPath, resp.StatusCode, truncate(string(body), 200))
-		}
-		if err := json.Unmarshal(body, &ps); err != nil {
-			return nil, fmt.Errorf("decode /projects/%s: %w", projectPath, err)
-		}
-		return &ps, nil
+	decoded := false
+	err := c.doJSON(ctx, fmt.Sprintf("/projects/%s", url.PathEscape(projectPath)), nil,
+		func(_ *http.Response, body []byte) error {
+			decoded = true
+			return json.Unmarshal(body, &ps)
+		}, http.StatusNotFound)
+	if err != nil {
+		return nil, err
 	}
+	if !decoded {
+		return nil, nil
+	}
+	return &ps, nil
 }
 
 // HasOptOutFile reports whether the project carries either of the
@@ -623,8 +543,23 @@ func (c *Client) FetchProjectSummary(ctx context.Context, projectPath string) (*
 // simply don't opt the project out. A 401, 429 or 5xx DOES error,
 // because that's an auth/rate/infra problem the operator must see.
 func (c *Client) HasOptOutFile(ctx context.Context, projectPath string) (bool, error) {
+	// The default branch is resolved ONCE, above the filename loop. The
+	// lookup used to live inside hasRepoRootFile, so checking one
+	// project cost two project fetches and two file reads. On a
+	// 50-project discovery run that is 100 requests spent re-reading a
+	// field the /projects listing had already delivered.
+	summary, err := c.FetchProjectSummary(ctx, projectPath)
+	if err != nil {
+		return false, err
+	}
+	if summary == nil || summary.DefaultBranch == "" {
+		// 404 (moved or renamed), or an old GitLab that omits
+		// default_branch. Either way the file cannot be queried, so
+		// treat the project as opted in rather than failing the run.
+		return false, nil
+	}
 	for _, name := range optOutFileNames {
-		exists, err := c.hasRepoRootFile(ctx, projectPath, name)
+		exists, err := c.hasRepoRootFile(ctx, projectPath, summary.DefaultBranch, name)
 		if err != nil {
 			return false, err
 		}
@@ -647,72 +582,28 @@ var optOutFileNames = []string{".summaryignore", ".docignore"}
 // confidential projects the PAT can't read) is treated as "doesn't
 // exist" so a project that can't be read is treated as opted-in
 // rather than crashing the run — same call we make elsewhere.
-func (c *Client) hasRepoRootFile(ctx context.Context, projectPath, name string) (bool, error) {
-	// Read default branch + project path in one call (cheap), then
-	// hit the Files API. We need the default branch name to query
-	// the file; the Files endpoint requires ?ref=<ref>.
-	summary, err := c.FetchProjectSummary(ctx, projectPath)
+// hasRepoRootFile reports whether one file exists at the repo root.
+// ref is the project's default branch, which the Files endpoint
+// requires. 404 and 403 mean "not there": 403 is a confidential
+// project, or a PAT that can read metadata but not files, and the
+// project-owner's opt-out signal cannot reach us in that case — so the
+// run continues rather than crashing. 401/429/5xx are real errors.
+func (c *Client) hasRepoRootFile(ctx context.Context, projectPath, ref, name string) (bool, error) {
+	found := false
+	err := c.doJSON(ctx,
+		fmt.Sprintf("/projects/%s/repository/files/%s",
+			url.PathEscape(projectPath), url.PathEscape(name)),
+		url.Values{"ref": {ref}},
+		func(resp *http.Response, _ []byte) error {
+			// Reached only on a 2xx. A soft status returns before the
+			// decoder runs, so found stays false without this flag.
+			found = resp.StatusCode == http.StatusOK
+			return nil
+		}, http.StatusNotFound, http.StatusForbidden)
 	if err != nil {
 		return false, err
 	}
-	if summary == nil {
-		// 404 from /projects/:id — treat as "no opt-out file" so the
-		// caller doesn't fail the run on a moved/renamed project.
-		return false, nil
-	}
-	ref := summary.DefaultBranch
-	if ref == "" {
-		// Old GitLab versions may not return default_branch on every
-		// payload shape. Without a ref we can't query the file;
-		// fall back to "no opt-out".
-		return false, nil
-	}
-
-	u := c.baseURL + fmt.Sprintf("/projects/%s/repository/files/%s?ref=%s",
-		url.PathEscape(projectPath), url.PathEscape(name), url.QueryEscape(ref))
-	var attempt int
-	for {
-		attempt++
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			return false, err
-		}
-		req.Header.Set("PRIVATE-TOKEN", c.token)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.http.Do(req)
-		if err != nil {
-			return false, err
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-		_ = resp.Body.Close()
-		switch {
-		case resp.StatusCode == http.StatusNotFound:
-			return false, nil
-		case resp.StatusCode == http.StatusOK:
-			return true, nil
-		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
-			if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
-				return false, err
-			}
-			continue
-		case resp.StatusCode >= 500 && attempt <= maxRetries:
-			if err := sleep(ctx, backoff(attempt)); err != nil {
-				return false, err
-			}
-			continue
-		case resp.StatusCode == http.StatusForbidden:
-			// Confidential project or a PAT the operator can read
-			// the topic/metadata of but not the file. The
-			// project-owner signal can't reach us, so fall through
-			// to "no opt-out" — the run continues, and if the
-			// file truly exists the operator will see the
-			// published report and can iterate.
-			return false, nil
-		case resp.StatusCode >= 400:
-			return false, fmt.Errorf("gitlab %s /repository/files/%s: %d %s",
-				http.MethodGet, name, resp.StatusCode, truncate(string(body), 200))
-		}
-	}
+	return found, nil
 }
 
 // FetchIssues returns issues updated within [since, now].

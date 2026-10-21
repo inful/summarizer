@@ -303,3 +303,43 @@ func TestFetchActiveProjects_StopsAtPageCeiling(t *testing.T) {
 			len(projs), want, maxActiveScanPages)
 	}
 }
+
+// TestHasOptOutFile_ResolvesTheBranchOnce: the default-branch lookup
+// lived inside hasRepoRootFile, so checking one project cost two
+// project fetches and two file reads. On a 50-project discovery run
+// that is 100 requests spent re-reading a field the /projects listing
+// had already delivered.
+func TestHasOptOutFile_ResolvesTheBranchOnce(t *testing.T) {
+	var summaries, fileReads int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		w.Header().Set("X-Next-Page", "")
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "/repository/files/"):
+			fileReads++
+			w.WriteHeader(http.StatusNotFound)
+		case strings.HasSuffix(p, "/api/v4/projects/g/p"):
+			summaries++
+			_, _ = w.Write([]byte(`{"id":1,"default_branch":"main","topics":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// Neither sentinel file exists, so both are probed.
+	got, err := New(srv.URL, "glpat-x", 5*time.Second).HasOptOutFile(context.Background(), "g/p")
+	if err != nil {
+		t.Fatalf("HasOptOutFile: %v", err)
+	}
+	if got {
+		t.Error("no opt-out file exists; want false")
+	}
+	if summaries != 1 {
+		t.Errorf("fetched the project summary %d times, want 1", summaries)
+	}
+	if fileReads != 2 {
+		t.Errorf("probed %d files, want 2 (one per sentinel name)", fileReads)
+	}
+}

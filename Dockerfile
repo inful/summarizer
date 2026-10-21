@@ -31,6 +31,13 @@ COPY --chown=65532:65532 ${TARGETPLATFORM}/summarizer /usr/local/bin/summarizer
 # .goreleaser.yaml dockers_v2.annotations), so this Dockerfile stays
 # free of build-arg sprawl and works identically for any tag/version.
 
+# Stated rather than inherited. distroless/static:nonroot already runs
+# as 65532, so this changes nothing — it makes the uid a fact about this
+# image instead of a property of the base, and it is what an operator
+# hits when `docker run -v ./out:/out` fails: the process cannot write a
+# host directory owned by anyone else. chown it, or run with --user.
+USER 65532:65532
+
 # OCI exec form so the binary gets argv[0] rather than "sh -c".
 # `docker run --rm ghcr.io/inful/summarizer --help` and
 # `docker run --rm ghcr.io/inful/summarizer version` both work.

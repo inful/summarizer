@@ -162,7 +162,9 @@ release:
     documented subcommands work as arguments. `summarizer run` writes
     reports to a directory inside the container — mount a host path
     to `--output-dir` or to a volume to retrieve them, or set up the
-    GitLab MR publisher (see `docs/runbook.md`).
+    GitLab MR publisher (see `docs/runbook.md`). The image runs as uid
+    65532, so a bind-mounted host directory has to be writable by that
+    uid (`chown 65532 ./out`, or pass `--user "$(id -u):$(id -g)"`).
 
 # Multi-arch Docker images (linux/amd64 + linux/arm64), built by
 # buildx and pushed to GitHub Container Registry. Same trigger as

@@ -28,6 +28,7 @@ import (
 type Options struct {
 	Projects             []string  // required (unless DiscoveredGroups is set): one or more GitLab paths "group/subgroup/proj"
 	Since                time.Time // window start: Monday 00:00 UTC of the current ISO week
+	Period               string    // the same week's slug, e.g. "2026-W43". Derived from the same instant as Since, so a run cannot file a week under the wrong directory.
 	Provider             string    // "openai" or "anthropic" (overrides config)
 	Model                string    // overrides config
 	DryRun               bool      // fetch + print + exit; no LLM call, no file write
@@ -203,7 +204,7 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 		return res, firstErr
 	}
 
-	if len(res.Projects) > 1 && !p.Opts.DryRun {
+	if len(res.Projects) > 0 && !p.Opts.DryRun {
 		rollupFiles, err := p.runRollup(ctx, res.Projects)
 		if err != nil {
 			return res, fmt.Errorf("rollup: %w", err)
@@ -383,7 +384,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		}
 
 		name := filename(project, aud)
-		period := periodSlug()
+		period := p.Opts.Period
 		res2, err := p.Publisher.Publish(ctx, publisher.Request{
 			Name:     name,
 			Body:     []byte(text),
@@ -479,7 +480,7 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				Name:     rollupFilename(aud, part.name),
 				Body:     []byte(resp.Text),
 				Kind:     publisher.KindRollup,
-				Period:   periodSlug(),
+				Period:   p.Opts.Period,
 				Title:    part.title + " " + string(aud),
 				Audience: string(aud),
 				Project:  "",
@@ -759,22 +760,21 @@ func optOutReason(ctx context.Context, gc *gitlab.Client, path string, topics []
 	return "", nil
 }
 
-// periodSlug returns the ISO-8601 week slug for the current period,
-// e.g. "2026-W42". The GitLab publisher uses this as the
-// source-branch suffix and the per-period directory, so every run
-// within the same Mon→Sun week lands on the same branch and updates
-// the same MR rather than forking a new one per invocation.
+// weekSlugFor returns the ISO-8601 week slug for a period, e.g.
+// "2026-W42". The GitLab publisher uses this as the source-branch
+// suffix and the per-period directory, so every run within the same
+// Mon→Sun week lands on the same branch and updates the same MR rather
+// than forking a new one per invocation.
 //
-// This replaced a `--period-mode daily|monday` flag. A day-granular
+// It replaced a `--period-mode daily|monday` flag. A day-granular
 // bucket can't be expressed as a week number — seven runs would
-// collide on one directory — so the flag went away with its daily
-// mode rather than leaving two modes that meant the same thing.
-func periodSlug() string {
-	return weekSlugFor(time.Now().UTC())
-}
-
-// weekSlugFor is periodSlug with the timestamp injected so the
-// calendar arithmetic is unit-testable without freezing time.
+// collide on one directory — so the flag went away with its daily mode
+// rather than leaving two modes that meant the same thing.
+//
+// Called once, at start-up, from the same instant that produced
+// Options.Since — not once per publish. A run crossing Sunday midnight
+// would otherwise compute a window from one week and file the files
+// under the next.
 func weekSlugFor(now time.Time) string {
 	year, week := now.ISOWeek()
 	// %02d on the week matters: Go's ISOWeek returns 1..53, but a
@@ -786,6 +786,10 @@ func weekSlugFor(now time.Time) string {
 // mondayAnchor returns the most-recent Monday at-or-before t. Calendar
 // math: Weekday() is Sunday=0..Saturday=6, so we want the offset
 // to be (Weekday() + 6) mod 7 (Monday=0). Subtract that many days.
+// WeekSlug returns the ISO-8601 week slug for the period containing
+// t, e.g. "2026-W43". Paired with WeekStart from the same instant.
+func WeekSlug(t time.Time) string { return weekSlugFor(t) }
+
 // WeekStart returns Monday 00:00 UTC of the ISO week containing t.
 // Reports are filed under a week-number directory, so the window and the
 // directory have to agree. A rolling 7 days does not: run on a Monday
@@ -890,15 +894,28 @@ const changeConcurrency = 4
 // diff as data, not instructions.
 // keepNewestMRs trims an over-long merge-request list to the n most
 // recently updated, returning the kept slice and how many were dropped.
-// Same ordering as prompt.capEvents — newest first, IID as the
-// tiebreak — so the trim and the cap agree on what "the newest n"
-// means and no event in the prompt is left without its /changes fetch.
+//
+// Sorted by events.MR's timestamp, not by MergeRequest.UpdatedAt. The
+// event carries merged_at for a merged MR and closed_at for a closed
+// one, and prompt.capEvents sorts on that. GitLab also bumps
+// updated_at when a label changes, so sorting on it here disagreed
+// with the cap: a housekeeping label sweep over 150 archived MRs made
+// all 150 look recent, and the trim then discarded merges the cap
+// would have kept. IID is the tiebreak for both.
+//
+// shortcut: builds one NormalizedEvent per MR to read one field. At
+// maxEvents-scale that is a few hundred short-lived structs; revisit
+// only if the list ever stops being bounded before this call.
 func keepNewestMRs(mrs []gitlab.MergeRequest, n int) ([]gitlab.MergeRequest, int) {
 	sorted := make([]gitlab.MergeRequest, len(mrs))
 	copy(sorted, mrs)
+	eventTime := make(map[int]time.Time, len(sorted))
+	for _, m := range sorted {
+		eventTime[m.IID] = events.MR(m).Updated
+	}
 	sort.SliceStable(sorted, func(i, j int) bool {
-		if !sorted[i].UpdatedAt.Equal(sorted[j].UpdatedAt) {
-			return sorted[i].UpdatedAt.After(sorted[j].UpdatedAt)
+		if ti, tj := eventTime[sorted[i].IID], eventTime[sorted[j].IID]; !ti.Equal(tj) {
+			return ti.After(tj)
 		}
 		return sorted[i].IID < sorted[j].IID
 	})

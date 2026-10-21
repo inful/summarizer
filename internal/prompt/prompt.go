@@ -484,12 +484,20 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 // both the grouped and flat paths. Kept private + small so the two
 // formatters can agree byte-for-byte on what an event looks like.
 func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
-	fmt.Fprintf(buf, "- [%s %s] (%s, by %s) %q", kindLabel(e.Kind), e.Ref, e.Action, e.Author, e.Title)
+	// Title and author are free-text GitLab fields: anyone with merge
+	// rights on a project controls both, and the title reaches a
+	// customer-facing document. They were rendered bare while the
+	// description and the diff were wrapped, which told the model
+	// precisely which parts of the line to trust — the opposite of
+	// the truth. %q stops a title forging a new bullet; it does nothing
+	// about what the text says.
+	fmt.Fprintf(buf, "- [%s %s] (%s, by <data>%s</data>) <data>%s</data>",
+		kindLabel(e.Kind), e.Ref, e.Action, e.Author, e.Title)
 	if e.Changes != nil {
 		fmt.Fprintf(buf, " [+%d/-%d in %d files]", e.Changes.Additions, e.Changes.Deletions, e.Changes.Files)
 	}
 	if len(e.Labels) > 0 {
-		fmt.Fprintf(buf, " (tags: %s)", joinLabels(e.Labels))
+		fmt.Fprintf(buf, " (tags: <data>%s</data>)", joinLabels(e.Labels))
 	}
 	if e.Comments > 0 {
 		fmt.Fprintf(buf, " [comments: %d]", e.Comments)

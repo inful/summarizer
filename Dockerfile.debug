@@ -43,4 +43,7 @@ COPY --chown=65532:65532 ${TARGETPLATFORM}/summarizer /usr/local/bin/summarizer
 # .goreleaser.yaml dockers_v2.annotations).
 
 # OCI exec form so the binary gets argv[0] rather than "sh -c".
+# Same uid as the production image; see Dockerfile for why it is stated.
+USER 65532:65532
+
 ENTRYPOINT ["/usr/local/bin/summarizer"]

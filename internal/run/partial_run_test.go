@@ -206,3 +206,59 @@ func TestEpicEventCounts_ExactNotTitleMatch(t *testing.T) {
 		t.Errorf("nil epic: got %v, want empty", got)
 	}
 }
+
+// TestRun_SingleProjectStillPublishesACombinedRollup: the combined
+// rollup used to require two or more projects, so a run naming one --
+// which is exactly what the quickstart does -- published per-project
+// files and no combined--rollup--wk--*.md at all. `summarizer monthly`
+// reads only that filename, so every month of such runs failed with
+// "no weekly rollups found", pointing at the target repo rather than at
+// the run that never wrote the file.
+func TestRun_SingleProjectStillPublishesACombinedRollup(t *testing.T) {
+	p, _ := twoProjectPipeline(t, "")
+	p.Opts.Projects = []string{"group/aaa"}
+	p.Opts.Period = "2026-W43"
+
+	res, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(res.Projects))
+	}
+	if len(res.RollupFiles) == 0 {
+		t.Error("a single-project run must still publish the combined rollup; " +
+			"summarizer monthly reads nothing else")
+	}
+	for _, f := range res.RollupFiles {
+		if !strings.Contains(f, "combined--rollup--wk--") {
+			t.Errorf("unexpected rollup file %q", f)
+		}
+	}
+}
+
+// TestRun_PeriodIsNotRecomputedPerPublish: Options.Since and
+// Options.Period come from one instant. Calling time.Now() per publish
+// meant a run crossing Sunday midnight summarised week 43 and filed it
+// under 2026-W44 — invisible until someone read the month.
+func TestRun_PeriodIsNotRecomputedPerPublish(t *testing.T) {
+	p, _ := twoProjectPipeline(t, "")
+	p.Opts.Period = "2026-W43"
+
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// capturePublisher records every write; none may carry a slug the
+	// pipeline did not set.
+	pub := p.Publisher.(*capturePublisher)
+	pub.mu.Lock()
+	defer pub.mu.Unlock()
+	if len(pub.written) == 0 {
+		t.Fatal("nothing was published")
+	}
+	for _, req := range pub.written {
+		if req.Period != "2026-W43" {
+			t.Errorf("file %q published under period %q, want 2026-W43", req.Name, req.Period)
+		}
+	}
+}

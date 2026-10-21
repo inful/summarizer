@@ -330,12 +330,18 @@ Env:
 	// The report lands in a week-numbered directory, so the window is
 	// that week. One window, no flag: an operator who wants something
 	// else can post-date the cron line or read the branch by hand.
-	weekStart := run.WeekStart(time.Now())
+	//
+	// Both come from one `now`. Computing the directory per publish
+	// meant a run crossing Sunday midnight summarised week 43 and filed
+	// it under 2026-W44.
+	now := time.Now().UTC()
+	weekStart := run.WeekStart(now)
 
 	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
 		Projects:             projects,
 		DiscoveredGroups:     discoverGroups,
 		Since:                weekStart,
+		Period:               run.WeekSlug(now),
 		Provider:             cfg.Provider,
 		Model:                cfg.Model,
 		DryRun:               *dryRun,

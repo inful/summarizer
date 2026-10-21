@@ -15,7 +15,9 @@ docker pull ghcr.io/inful/summarizer:latest
 docker run --rm ghcr.io/inful/summarizer --help
 ```
 
-The image defaults to the `summarizer` entrypoint, so any of the documented subcommands work as arguments. To write reports into a host directory, mount it to the path you pass via `--output-dir`:
+The image defaults to the `summarizer` entrypoint, so any of the documented subcommands work as arguments. It runs as uid 65532, so a bind-mounted host directory must be writable by that uid — either `chown 65532 ./reports` first, or add `--user "$(id -u):$(id -g)"` to the run. Without one of those the write fails with `permission denied` on a directory owned by your own user.
+
+To write reports into a host directory, mount it to the path you pass via `--output-dir`:
 
 ```bash
 docker run --rm \
@@ -310,7 +312,7 @@ summarizer run --discover-group group/team-a \
 # summarizer also writes a combined rollup
 # (combined--rollup--<days>d--customer.md and --team.md) by feeding
 # the per-project reports to one extra LLM call per audience. Active
-# epics add combined--epics-rollup--*, split per customer into
+# epics add combined--epics-rollup--*, split per customer as
 # combined--epics-<customer-slug>--* when issues carry org::CODE
 # labels.
 
@@ -336,8 +338,8 @@ uses in the target repo:
 <output_dir>/2026-W43/combined--rollup--<duration>d--team.md
 
 # With active epics (additionally):
-<output_dir>/2026-W43/combined--epics-rollup--<duration>d--customer.md
-<output_dir>/2026-W43/combined--epics-rollup--<duration>d--team.md
+<output_dir>/2026-W43/combined--epics-rollup--wk--customer.md
+<output_dir>/2026-W43/combined--epics-rollup--wk--team.md
 <output_dir>/2026-W43/combined--epics-<customer-slug>--<duration>d--customer.md
 ```
 
@@ -373,7 +375,7 @@ failing the month. A month with no published weeks at all is an error
 Output lands in `reports/<YYYY-MM>/monthly--<YYYY-MM>--<audience>.md`,
 on its own branch and MR, so it never collides with a week's.
 
-Per-customer epic rollups (`combined--epics-rollup--*`) are **not**
+Per-customer epic rollups (`combined--epics-<customer>--*`) are **not**
 folded into the monthly summary. They're already split per customer;
 combining them into one blob would mix customers together, which is
 what that split exists to prevent.
