@@ -282,11 +282,21 @@ summarizer run --discover-group group/team-a --project group/team-a/flagship --s
 summarizer run --discover-by-topic --since 7d
 summarizer run --discover-by-topic --discover-group group/team-a --since 7d
 
-# Opting out: drop a `.summaryignore` or `.docignore` file in the
-# project repository root and summarizer skips it, whatever the
-# discovery mode. This is the project owner's signal and it wins
-# over an explicit --project listing.
-#   touch .summaryignore && git add .summaryignore && git commit -m "skip summarizer"
+# Opting out: two project-owner signals, either sufficient.
+#
+# 1. The `no-summarize` GitLab topic — a one-click reversible toggle,
+#    and free to check because the topics already arrive with the
+#    project summary. Use it for "noisy this sprint" or a repo you
+#    administer in GitLab but shouldn't be pushing branches into.
+#
+# 2. A `.summaryignore` or `.docignore` file in the project repo root.
+#    The better signal: version-controlled, greppable, visible to
+#    everyone who clones the repo. It costs a commit and a merge.
+#      touch .summaryignore && git add .summaryignore && git commit -m "skip summarizer"
+#
+# Both win over discovery AND over an explicit --project listing: a
+# cron line is not a licence to publish something a project asked not
+# to be published. The discovery log names which signal fired.
 
 # Audience policy: every project that runs produces a team-only
 # report. Customer-facing output needs the `summarize` topic on the

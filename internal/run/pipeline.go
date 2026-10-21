@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -704,6 +705,36 @@ func countEpicEvents(events []events.NormalizedEvent, e *gitlab.Epic) int {
 	return n
 }
 
+// optOutReason reports why a project is excluded from the run, or ""
+// when it should run. Two project-owner signals, either sufficient:
+//
+//   - the `no-summarize` topic — free, the topics already arrived with
+//     the project summary, so it costs nothing and short-circuits the
+//     file read below.
+//   - a `.summaryignore` or `.docignore` file at the repo root — one
+//     Files API call, or zero if the topic already excluded it.
+//
+// The topic is checked first purely because it is free, not because it
+// wins: both signals mean "do not run me", so precedence only decides
+// which reason gets logged. The reason is printed, because the topic is
+// otherwise invisible to anyone who only looks at the repository.
+func optOutReason(ctx context.Context, gc *gitlab.Client, path string, topics []string) (string, error) {
+	if slices.Contains(topics, policy.TopicNoSummarize) {
+		return "topic " + policy.TopicNoSummarize, nil
+	}
+	has, err := gc.HasOptOutFile(ctx, path)
+	if err != nil {
+		// 5xx/401/429 — real errors, fail the run. 404/403
+		// soft-degrade inside HasOptOutFile to (false, nil) so moved
+		// or confidential projects are included by default.
+		return "", fmt.Errorf("opt-out check %s: %w", path, err)
+	}
+	if has {
+		return "opt-out file", nil
+	}
+	return "", nil
+}
+
 // periodSlug returns the ISO-8601 week slug for the current period,
 // e.g. "2026-W42". The GitLab publisher uses this as the
 // source-branch suffix and the per-period directory, so every run
@@ -964,17 +995,43 @@ func (p *Pipeline) resolveProjects(ctx context.Context) ([]string, map[string]bo
 func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]string, map[string]bool, error) {
 	finalList := make([]string, 0, len(opts.Projects))
 	discoveredSet := make(map[string]bool)
+	included := 0
+	excluded := 0
 
-	// Explicit projects always pass through.
-	finalList = append(finalList, opts.Projects...)
+	// Explicit projects pass through the same opt-out gate as
+	// discovered ones. They used to be appended unconditionally, which
+	// meant an operator's `--project` silently overrode a project's own
+	// `.summaryignore` — the opposite of what the comment below claimed
+	// and of what the operator chose. The project-owner signal wins: a
+	// cron line is not a licence to publish something the project asked
+	// not to be published.
+	for _, path := range opts.Projects {
+		summary, err := gc.FetchProjectSummary(ctx, path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("fetch project %s: %w", path, err)
+		}
+		var topics []string
+		if summary != nil {
+			topics = summary.Topics
+		}
+		reason, err := optOutReason(ctx, gc, path, topics)
+		if err != nil {
+			return nil, nil, err
+		}
+		if reason != "" {
+			excluded++
+			fmt.Fprintf(os.Stderr, "  excluded (%s): %s\n", reason, path)
+			continue
+		}
+		included++
+		finalList = append(finalList, path)
+	}
 
 	if len(opts.DiscoveredGroups) == 0 && !opts.DiscoverByTopic && !opts.DiscoverActive {
 		return finalList, discoveredSet, nil
 	}
 
 	since := time.Now().UTC().Add(-opts.Since)
-	excluded := 0
-	included := 0
 
 	// Probe + classify + manifest one candidate. Shared by the group
 	// scan and the server-wide topic scan; both produce the same
@@ -985,24 +1042,15 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		if containsString(opts.Projects, proj.Path) {
 			return nil
 		}
-		// Project-level opt-out: .summaryignore or .docignore at
-		// the repo root. The project-owner signal trumps discovery
-		// and trumps explicit-listing: the file says "do not
-		// summarise me", and we honour that. The check is
-		// cheapest here (before the activity probe) so an opted-out
-		// project doesn't even count against the discovery
-		// summary's excluded count.
-		optedOut, err := gc.HasOptOutFile(ctx, proj.Path)
+		// Project-level opt-out. Checked before the activity probe so
+		// an opted-out project costs one API call and no probe at all.
+		reason, err := optOutReason(ctx, gc, proj.Path, proj.Topics)
 		if err != nil {
-			// 5xx/401/429 — real errors, fail the run.
-			// 404/403 — soft-degrade inside HasOptOutFile to
-			// (false, nil) so moved/confidential projects are
-			// included by default.
-			return fmt.Errorf("opt-out check %s: %w", proj.Path, err)
+			return err
 		}
-		if optedOut {
+		if reason != "" {
 			excluded++
-			fmt.Fprintf(os.Stderr, "  excluded (.summaryignore): %s\n", proj.Path)
+			fmt.Fprintf(os.Stderr, "  excluded (%s): %s\n", reason, proj.Path)
 			return nil
 		}
 		active, err := gc.ProbeProjectActivity(ctx, proj.Path, since)

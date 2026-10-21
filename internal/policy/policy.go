@@ -24,6 +24,26 @@ const (
 	// appears, the project produces team output only. Sticky across
 	// all signals: if any of them says "team only", team only wins.
 	TopicSummarizeTeamOnly = "summarize-team-only"
+
+	// TopicNoSummarize opts the project out of the run entirely, as an
+	// alternative to the .summaryignore / .docignore file.
+	//
+	// Why both: the file is the better signal — version-controlled,
+	// greppable, and visible to everyone who clones the repo — but it
+	// needs a commit and a merge, and it puts noise in a project's
+	// history for something that is not a code change. A topic is a
+	// one-click reversible toggle, which is what you want for "noisy
+	// this sprint, skip it for a fortnight", or a repo you administer in
+	// GitLab but should not be pushing branches into.
+	//
+	// The cost is visibility: a topic is invisible to anyone reading the
+	// repository, so the reason is named in the discovery log line.
+	//
+	// Naming follows GitLab's own exclusion convention (`no-issue`,
+	// `no label`, `skip ci`) rather than this repo's `summarize-*`
+	// family, so it reads as an exclusion to anyone who already knows
+	// GitLab and does not read as a third summarizer mode.
+	TopicNoSummarize = "no-summarize"
 )
 
 // ProjectPolicy is what summarizer does with one project.

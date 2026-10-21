@@ -14,8 +14,10 @@ the data flow and the components.
                                  │ resolveProjects()
                                  │  FetchActiveProjects  (default: every project with
                                  │    activity in the window, via last_activity_after)
-                                 │  HasOptOutFile        (.summaryignore / .docignore
-                                 │    at the repo root → skip the project entirely)
+                                 │  optOutReason: `no-summarize` topic (free), else
+                                 │    HasOptOutFile (.summaryignore / .docignore at
+                                 │    the repo root) → skip the project entirely.
+                                 │    Applies to explicit --project too.
                                  │  ProbeProjectActivity (MRs → issues → commits;
                                  │    the MR probe answers most of the time)
                                  │  policy.Classify      (audience: team-only unless the
@@ -134,6 +136,6 @@ projects" as out of scope, because projects had to be listed or
 topic-tagged. That is no longer true: discovery defaults to every
 project the token can see that had activity in the window, so a new
 repo starts producing reports the week it is first pushed to. Projects
-opt out with a `.summaryignore` or `.docignore` file at their repo
-root. The only curation left is the optional `summarize` topic, which
+opt out with the `no-summarize` topic or a `.summaryignore` /
+`.docignore` file at their repo root. The only curation left is the optional `summarize` topic, which
 decides whether a project also gets customer-facing output.

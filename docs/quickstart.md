@@ -35,8 +35,9 @@ gitlab_host: "https://gitlab.example.com"
 The project set is a CLI flag, not a config key. With no discovery
 flag, summarizer runs **every project the token can see that had
 activity in the window** — no topic, no config entry needed. A project
-opts out with a `.summaryignore` or `.docignore` file at its repo
-root. To narrow the scope instead:
+opts out with the `no-summarize` topic or a `.summaryignore` /
+`.docignore` file at its repo root. Both also win over an explicit
+`--project` listing. To narrow the scope instead:
 
 | Flag | Selects |
 |---|---|
