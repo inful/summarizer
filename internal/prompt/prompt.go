@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"text/template"
-	"time"
 
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
@@ -28,6 +27,11 @@ const (
 	AudienceTeam     Audience = "team"
 )
 
+// WeekWindowLabel is what the prompts call the reporting window.
+// summarizer is weekly and reports into an ISO-week directory, so the
+// window is that week and nothing needs qualifying it.
+const WeekWindowLabel = "this ISO week (Monday to now, UTC)"
+
 // Render produces a chat-ready (system, user) pair for the given audience.
 // system is the persistent instruction; user carries the events.
 //
@@ -41,7 +45,7 @@ const (
 // annotation flow to an "Other activity" section. When empty, the
 // rendering falls back to the existing flat list — backwards
 // compatible with no-epic projects.
-func Render(aud Audience, project string, window time.Duration, evs []events.NormalizedEvent, cap int, epics []*gitlab.Epic) (system, user string, err error) {
+func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int, epics []*gitlab.Epic) (system, user string, err error) {
 	tplName := string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -63,7 +67,7 @@ func Render(aud Audience, project string, window time.Duration, evs []events.Nor
 		Dropped   int
 		Events    string
 	}{
-		Window:    fmt.Sprintf("last %s", window),
+		Window:    WeekWindowLabel,
 		Project:   project,
 		Truncated: dropped > 0,
 		Used:      len(kept),
@@ -123,7 +127,7 @@ func systemPrompt(aud Audience, subj subject) string {
 // does not touch disk. Per-project report text is capped at rollupPerBodyCap
 // runes; the total cap (rollupTotalCap) drops oldest projects first so a
 // large fleet of projects stays within the model's context window.
-func RenderRollup(aud Audience, window time.Duration, projects []ProjectReport) (system, user string, err error) {
+func RenderRollup(aud Audience, projects []ProjectReport) (system, user string, err error) {
 	tplName := "rollup-" + string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -171,7 +175,7 @@ func RenderRollup(aud Audience, window time.Duration, projects []ProjectReport) 
 		ProjectNames  []string
 		ProjectBodies map[string]string
 	}{
-		Window:        fmt.Sprintf("last %s", window),
+		Window:        WeekWindowLabel,
 		ProjectCount:  len(projects),
 		ProjectNames:  names,
 		ProjectBodies: bodies,
@@ -292,7 +296,7 @@ type EpicSummary struct {
 // detail. Cost: one extra LLM call per audience per run; value:
 // a single page sized for project-management and customer-facing
 // briefings that surfaces epic progress across the fleet.
-func RenderEpicRollup(aud Audience, project string, window time.Duration, entries []EpicRollupEntry) (system, user string, err error) {
+func RenderEpicRollup(aud Audience, project string, entries []EpicRollupEntry) (system, user string, err error) {
 	tplName := "epics-rollup-" + string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -318,7 +322,7 @@ func RenderEpicRollup(aud Audience, project string, window time.Duration, entrie
 		ProjectNames []string
 		ProjectViews []EpicRollupEntry
 	}{
-		Window:       fmt.Sprintf("last %s", window),
+		Window:       WeekWindowLabel,
 		Project:      project,
 		ProjectCount: len(names),
 		ProjectNames: names,

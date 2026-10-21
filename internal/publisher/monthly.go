@@ -62,7 +62,7 @@ func (g *GitLabPublisher) ListPeriodBranches(ctx context.Context) ([]string, err
 // ListReportFiles returns the basenames in <prefix>/<period>/ on a
 // branch. The monthly rollup needs it to notice that a week's branch
 // carries rollups for more than one window size — which happens
-// whenever --since changed mid-week, because the window is part of the
+// whenever the window changed mid-week, because the window is part of the
 // filename and old files are never pruned from the branch.
 func (g *GitLabPublisher) ListReportFiles(ctx context.Context, branch, period string) ([]string, error) {
 	dir := period

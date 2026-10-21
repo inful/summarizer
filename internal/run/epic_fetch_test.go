@@ -78,7 +78,7 @@ func newEpicPipeline(t *testing.T, epics int) (*Pipeline, *epicCountingServer) {
 		LLM:       &failingLLM{},
 		Publisher: &capturePublisher{},
 		Guard:     safety.NoopGuard{},
-		Opts:      Options{Since: 168 * time.Hour, DryRun: true},
+		Opts:      Options{Since: weekStart(), DryRun: true},
 	}, srv
 }
 
@@ -230,7 +230,7 @@ func newEpicPipelineFrom(t *testing.T, s *recencyEpicServer) *Pipeline {
 		LLM:       &failingLLM{},
 		Publisher: &capturePublisher{},
 		Guard:     safety.NoopGuard{},
-		Opts:      Options{Since: 168 * time.Hour, DryRun: true},
+		Opts:      Options{Since: weekStart(), DryRun: true},
 	}
 }
 

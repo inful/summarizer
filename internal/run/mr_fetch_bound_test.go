@@ -73,7 +73,7 @@ func newChangesPipeline(t *testing.T, n, maxEvents int) (*Pipeline, *changesServ
 		LLM:       &failingLLM{},
 		Publisher: &capturePublisher{},
 		Guard:     safety.NoopGuard{},
-		Opts:      Options{Since: 168 * time.Hour, Projects: []string{"g/p"}, MaxProjects: 10},
+		Opts:      Options{Since: weekStart(), Projects: []string{"g/p"}, MaxProjects: 10},
 	}, srv
 }
 

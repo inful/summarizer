@@ -2,11 +2,7 @@ package run
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"path"
-	"sort"
 	"strings"
 	"time"
 
@@ -22,7 +18,6 @@ import (
 // remote repo to read and forcing it to stub these would hide that.
 type MonthlyReader interface {
 	ListPeriodBranches(ctx context.Context) ([]string, error)
-	ListReportFiles(ctx context.Context, branch, period string) ([]string, error)
 	ReadReportFile(ctx context.Context, branch, path string) (string, error)
 	PeriodBranch(period string) string
 }
@@ -100,23 +95,10 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 			res.Skipped = append(res.Skipped, week+" (no branch)")
 			continue
 		}
-		names, err := r.Reader.ListReportFiles(ctx, branch, week)
-		if err != nil {
-			return res, err
-		}
 		found := false
-		// A week with rollups for more than one window size is
-		// reported as skipped rather than guessed at. One bad week
-		// must not cost the operator the other three.
-		var conflicts []string
 		for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-			body, err := r.readWeeklyRollup(ctx, branch, aud, names)
+			body, err := r.Reader.ReadReportFile(ctx, branch, r.pathFor(branch, weeklyRollupName(aud)))
 			if err != nil {
-				var ambiguous *ambiguousWindowError
-				if errors.As(err, &ambiguous) {
-					conflicts = append(conflicts, ambiguous.Found...)
-					continue
-				}
 				return res, err
 			}
 			if body == "" {
@@ -125,22 +107,10 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 			byWeek[aud] = append(byWeek[aud], prompt.ProjectReport{Name: week, Body: body})
 			found = true
 		}
-		if len(conflicts) > 0 {
-			sort.Strings(conflicts)
-			fmt.Fprintf(os.Stderr, "summarizer: %s skipped from the monthly rollup; "+
-				"delete the stale file from branch %s, or re-run the week with a consistent --since\n",
-				week, branch)
-			for _, f := range conflicts {
-				fmt.Fprintf(os.Stderr, "  %s\n", f)
-			}
-			res.Skipped = append(res.Skipped, week+
-				" (more than one window: "+strings.Join(dedupe(conflicts), ", ")+")")
-			continue
-		}
 		if found {
 			res.Weeks = append(res.Weeks, week)
 		} else {
-			res.Skipped = append(res.Skipped, week+" (no unambiguous rollup file)")
+			res.Skipped = append(res.Skipped, week+" (no rollup file)")
 		}
 	}
 
@@ -194,85 +164,19 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 	return res, nil
 }
 
-// readWeeklyRollup fetches one week's cross-project rollup for one
-// audience off its branch. Returns "" when the branch carries none.
+// weeklyRollupName is the one file this reader wants out of a week's
+// directory. The name is fixed because the window is: summarizer reports
+// on the current ISO week and nothing else, so there is no second window
+// size to disambiguate, and no stale file that a reconfigured window
+// could have left behind.
 //
-// Only the plain `combined--<N>d--<audience>.md` file is read. The
-// per-customer epic rollups (`combined--epics-<slug>--<N>d--customer.md`)
-// are deliberately excluded: they are already split per customer, and
-// folding them into one monthly blob would mix customers together —
-// the opposite of what that split was built to prevent.
-func (r *MonthlyRunner) readWeeklyRollup(ctx context.Context, branch string, aud prompt.Audience, names []string) (string, error) {
-	// Collect every window size present for this audience. A weekly
-	// branch accumulates one file per distinct filename for the whole
-	// week, so changing --since mid-week leaves both behind — and the
-	// old code tried 1d, 7d, 14d, 30d in order and took the first hit,
-	// which silently presented a one-day rollup as the week's input.
-	//
-	// The Files API carries no modification time, so there is no way to
-	// tell which one is current. Ambiguity is therefore reported and
-	// the week skipped, rather than guessed at: a month-end summary
-	// built from the wrong window is worse than one missing a week.
-	//
-	// Matched on the kind segment, not on prefix and suffix. Both of
-	// those also match the epic rollups:
-	//
-	//	combined--rollup--wk--customer.md        ← wanted
-	//	combined--epics-rollup--wk--customer.md  ← same prefix, same suffix
-	//	combined--epics-acme--wk--customer.md    ← same again
-	//
-	// So every week carrying epics looked like it had two window sizes,
-	// and the whole week was skipped — the ambiguity check causing
-	// exactly the loss it exists to prevent, and naming the epic files
-	// in its own error as if they were competing windows. Segment count
-	// is not enough either: `epics-rollup` holds a single `-`, so it
-	// splits into the same four `--` segments as the file we want.
-	// Only parts[1] tells them apart.
-	var candidates []string
-	for _, n := range names {
-		parts := strings.Split(n, "--")
-		if len(parts) != 4 || parts[0] != "combined" || parts[1] != "rollup" {
-			continue
-		}
-		if parts[3] != string(aud)+".md" {
-			continue
-		}
-		candidates = append(candidates, n)
-	}
-	if len(candidates) == 0 {
-		return "", nil
-	}
-	if len(candidates) > 1 {
-		sort.Strings(candidates)
-		return "", &ambiguousWindowError{Week: path.Base(branch), Found: candidates}
-	}
-	return r.Reader.ReadReportFile(ctx, branch, r.pathFor(branch, candidates[0]))
-}
-
-// ambiguousWindowError reports a week whose branch carries rollups for
-// more than one window size. The Files API returns no modification
-// time, so there is no honest way to pick one; Run skips the week and
-// names the files.
-type ambiguousWindowError struct {
-	Week  string
-	Found []string
-}
-
-func (e *ambiguousWindowError) Error() string {
-	return fmt.Sprintf("week %s has rollups for more than one window (%s)",
-		e.Week, strings.Join(e.Found, ", "))
-}
-
-// dedupe drops repeats while preserving order. Both audiences report
-// the same conflicting filenames, so the skip reason lists each once.
-func dedupe(in []string) []string {
-	out := in[:0:0]
-	for i, s := range in {
-		if i == 0 || s != in[i-1] {
-			out = append(out, s)
-		}
-	}
-	return out
+// The `rollup` kind segment is what separates this from the epic
+// rollups, which share the prefix and the audience suffix. Naming the
+// whole file rather than pattern-matching is deliberate: the epic
+// rollups stay out of the monthly summary because they are already
+// split per customer and folding them in would mix customers.
+func weeklyRollupName(aud prompt.Audience) string {
+	return fmt.Sprintf("combined--rollup--wk--%s.md", aud)
 }
 
 // pathFor rebuilds the repo-relative path the publisher writes to.

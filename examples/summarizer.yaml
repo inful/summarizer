@@ -9,15 +9,6 @@ gitlab_host: "https://gitlab.example.com"
 # Output directory for the two reports (one per audience).
 output_dir: "./summarizer-out"
 
-# Default window when --since is not passed on the CLI. Go duration:
-# "168h" is a rolling 7 days, "720h" is 30 days. CLI flag overrides.
-#
-# Leave it unset (the default) to use the current ISO week so far, which
-# is what matches the week-numbered output directories. Set it only to
-# deliberately run a window that disagrees with the directory the file
-# lands in — the filename records which window was used, so a monthly
-# rollup can tell the difference.
-# default_lookback: "168h"
 
 # LLM provider and model. Per-audience override is not yet supported;
 # one model drives both reports. CLI flag overrides.

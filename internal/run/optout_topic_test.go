@@ -114,7 +114,7 @@ func TestNoSummarizeTopic_ExcludesDiscoveredProject(t *testing.T) {
 
 	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -147,7 +147,7 @@ func TestNoSummarizeTopic_WinsOverSummarize(t *testing.T) {
 
 	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -172,7 +172,7 @@ func TestOptOutOverridesExplicitProject(t *testing.T) {
 
 	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		Projects: []string{"g/quiet", "g/filed", "g/wanted"},
-		Since:    7 * 24 * time.Hour,
+		Since:    weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -231,7 +231,7 @@ func TestNoSummarizeTopic_CaseSensitive(t *testing.T) {
 
 	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

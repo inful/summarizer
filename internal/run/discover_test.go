@@ -115,7 +115,7 @@ func TestResolveProjects_OnlyExplicit(t *testing.T) {
 
 	proj, disc, _, err := resolveProjects(context.Background(), gc, Options{
 		Projects: []string{"group/a", "group/b"},
-		Since:    7 * 24 * time.Hour,
+		Since:    weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -163,7 +163,7 @@ func TestResolveProjects_DiscoverOnly(t *testing.T) {
 
 	proj, disc, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoveredGroups: []string{"infra"},
-		Since:            7 * 24 * time.Hour,
+		Since:            weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -216,7 +216,7 @@ func TestResolveProjects_ComposableDedupes(t *testing.T) {
 	proj, disc, _, err := resolveProjects(context.Background(), gc, Options{
 		Projects:         []string{"infra/overlap"},
 		DiscoveredGroups: []string{"infra"},
-		Since:            7 * 24 * time.Hour,
+		Since:            weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

@@ -96,7 +96,7 @@ func newSourcePipeline(t *testing.T, topics []string, projects []string) *source
 		Guard:     safety.NoopGuard{},
 		Opts: Options{
 			Projects: projects,
-			Since:    168 * time.Hour,
+			Since:    weekStart(),
 		},
 	}
 	return &sourcePipeline{p: pipe, llm: llmStub, pub: pub, topic: topics}

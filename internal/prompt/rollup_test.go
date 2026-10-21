@@ -3,7 +3,6 @@ package prompt
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestRenderRollup_EmbedsAllProjects(t *testing.T) {
@@ -11,7 +10,7 @@ func TestRenderRollup_EmbedsAllProjects(t *testing.T) {
 		{Name: "group/alpha", Body: "# alpha\nShipped login."},
 		{Name: "group/beta", Body: "# beta\nFixed pagination."},
 	}
-	system, user, err := RenderRollup(AudienceTeam, 7*24*time.Hour, projects)
+	system, user, err := RenderRollup(AudienceTeam, projects)
 	if err != nil {
 		t.Fatalf("render rollup: %v", err)
 	}
@@ -44,7 +43,7 @@ func TestRenderRollup_DropsOverflowByTotal(t *testing.T) {
 		{Name: "p4", Body: mkBody('D')},
 		{Name: "p5", Body: mkBody('E')},
 	}
-	_, user, err := RenderRollup(AudienceTeam, 7*24*time.Hour, projects)
+	_, user, err := RenderRollup(AudienceTeam, projects)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -66,7 +65,7 @@ func TestRenderRollup_CapsIndividualBody(t *testing.T) {
 	// One body of 10 KB — should be truncated to rollupPerBodyCap=4000 runes.
 	big := strings.Repeat("a", 10000)
 	projects := []ProjectReport{{Name: "only", Body: big}}
-	_, user, err := RenderRollup(AudienceCustomer, 7*24*time.Hour, projects)
+	_, user, err := RenderRollup(AudienceCustomer, projects)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

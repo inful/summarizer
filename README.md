@@ -131,7 +131,7 @@ summarizer run --project group/proj
 
 What you get:
 
-1. For each run, a source branch is created (e.g. `summarizer/2026-W43`) from `<default_branch>` if it doesn't exist. The default window is **this ISO week so far**, so the branch named `2026-W43` holds Monday-to-now of week 43 and nothing else. Pass `--since 7d` only for a deliberate rolling-window backfill.
+1. For each run, a source branch is created (e.g. `summarizer/2026-W43`) from `<default_branch>` if it doesn't exist. The window is **this ISO week** — Monday 00:00 UTC to now — so the branch named `2026-W43` holds Monday-to-now of week 43 and nothing else. There is no `--since`; one window means a filename, a directory and its contents can never disagree.
 2. Each rendered report (per project, per audience) is committed to that branch under `<prefix>/<period>/<filename>`, wrapped in **docbuilder-format frontmatter** (`uid`, `title`, `date`, `lastmod`, `fingerprint`, `tags`, `categories`, `aliases`, plus `public: true` for customer-audience reports). docbuilder in your `reports` project indexes them automatically.
 3. A single MR is opened against `<default_branch>` with body: "Summarizer rollup 2026-W43".
 4. Re-runs for the same period accumulate commits on the same MR — no branch/MR sprawl.
@@ -251,7 +251,7 @@ summarizer run --project group/subgroup/project --dry-run
 summarizer run --project group/subgroup/project
 
 # Custom window + provider.
-summarizer run --project group/subgroup/project --since 30d --provider anthropic
+summarizer run --project group/subgroup/project --provider anthropic
 
 # Cron-friendly: period buckets overwrite in place, so a second run of
 # are weeks, so a re-run always overwrites the same path in place.

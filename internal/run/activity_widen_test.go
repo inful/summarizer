@@ -64,7 +64,7 @@ func TestDiscovery_ProjectActiveByIssuesAlone(t *testing.T) {
 
 	finalList, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoveredGroups: []string{"group"},
-		Since:            7 * 24 * time.Hour,
+		Since:            weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -98,7 +98,7 @@ func TestDiscovery_ProjectInactiveWithoutMRsOrIssues(t *testing.T) {
 
 	finalList, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoveredGroups: []string{"group"},
-		Since:            7 * 24 * time.Hour,
+		Since:            weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

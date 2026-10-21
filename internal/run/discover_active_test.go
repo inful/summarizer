@@ -67,7 +67,7 @@ func TestResolveProjects_DiscoverActive_IncludesActiveExcludesOptOut(t *testing.
 
 	proj, disc, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

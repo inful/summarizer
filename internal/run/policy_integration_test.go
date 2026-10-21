@@ -229,7 +229,7 @@ func newTeamOnlyPipeline(t *testing.T) (*Pipeline, *countingLLM, *capturePublish
 		Guard:     safety.NoopGuard{},
 		Opts: Options{
 			Projects: []string{"group/public", "group/secret"},
-			Since:    168 * time.Hour,
+			Since:    weekStart(),
 		},
 	}
 	return pipe, llmStub, pub

@@ -3,7 +3,6 @@ package prompt
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/inful/summarizer/internal/gitlab"
 )
@@ -13,7 +12,7 @@ import (
 // pair. Caller (the pipeline) is responsible for not publishing
 // the empty file — RenderEpicRollup doesn't gate on count.
 func TestRenderEpicRollup_Empty(t *testing.T) {
-	_, user, err := RenderEpicRollup(AudienceCustomer, "group/x", 7*24*time.Hour, nil)
+	_, user, err := RenderEpicRollup(AudienceCustomer, "group/x", nil)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -35,7 +34,7 @@ func TestRenderEpicRollup_SingleProjectOneEpic(t *testing.T) {
 			{Epic: epic, EventCount: 3},
 		}},
 	}
-	_, user, err := RenderEpicRollup(AudienceCustomer, "group/infra", 7*24*time.Hour, entries)
+	_, user, err := RenderEpicRollup(AudienceCustomer, "group/infra", entries)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -77,7 +76,7 @@ func TestRenderEpicRollup_MultipleProjectsEachWithEpics(t *testing.T) {
 			},
 		},
 	}
-	_, user, err := RenderEpicRollup(AudienceCustomer, "group/*", 7*24*time.Hour, included)
+	_, user, err := RenderEpicRollup(AudienceCustomer, "group/*", included)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -105,11 +104,11 @@ func TestRenderEpicRollup_DifferentAudiencesProduceDifferentOutput(t *testing.T)
 			{Epic: &gitlab.Epic{IID: 1, Title: "Auth", State: "opened"}, EventCount: 1},
 		}},
 	}
-	_, custUser, err := RenderEpicRollup(AudienceCustomer, "g/p", 7*24*time.Hour, entries)
+	_, custUser, err := RenderEpicRollup(AudienceCustomer, "g/p", entries)
 	if err != nil {
 		t.Fatalf("render customer: %v", err)
 	}
-	_, teamUser, err := RenderEpicRollup(AudienceTeam, "g/p", 7*24*time.Hour, entries)
+	_, teamUser, err := RenderEpicRollup(AudienceTeam, "g/p", entries)
 	if err != nil {
 		t.Fatalf("render team: %v", err)
 	}

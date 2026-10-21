@@ -26,7 +26,6 @@ func TestLoad_EveryDocumentedKeyBinds(t *testing.T) {
 gitlab_host: "https://gitlab.example.com"
 model: "gpt-4o"
 output_dir: "/tmp/out"
-default_lookback: "720h"
 max_events: 42
 provider: "anthropic"
 openai_base_url: "http://localhost:11434/v1"
@@ -55,7 +54,6 @@ safety:
 		{"gitlab_host", cfg.GitLabHost, "https://gitlab.example.com"},
 		{"model", cfg.Model, "gpt-4o"},
 		{"output_dir", cfg.OutputDir, "/tmp/out"},
-		{"default_lookback", cfg.DefaultLookback, "720h"},
 		{"provider", cfg.Provider, "anthropic"},
 		{"openai_base_url", cfg.OpenAIBaseURL, "http://localhost:11434/v1"},
 		{"publish.token_env", cfg.Publish.TokenEnv, "TOK"},
@@ -118,13 +116,6 @@ func TestDefaults(t *testing.T) {
 	if cfg.OutputDir != "./summarizer-out" {
 		t.Errorf("OutputDir: got %q", cfg.OutputDir)
 	}
-	if cfg.DefaultLookback != "" {
-		// Empty means "the current ISO week", resolved in run.WeekWindow.
-		// A concrete default here would silently disagree with the
-		// week-numbered period directories — a rolling 168h run on a
-		// Monday files a week of W42's work under 2026-W43.
-		t.Errorf("DefaultLookback: got %q, want empty", cfg.DefaultLookback)
-	}
 	if cfg.MaxEvents != 200 {
 		t.Errorf("MaxEvents: got %d", cfg.MaxEvents)
 	}
@@ -142,11 +133,12 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-// TestValidate: the required-host check, the provider enum, the
-// duration parse, and the MaxEvents floor.
+// TestValidate: the required-host check, the provider enum, and the
+// MaxEvents floor.
 func TestValidate(t *testing.T) {
 	base := func() *Config {
-		c := &Config{GitLabHost: "https://g", Provider: "openai", DefaultLookback: "168h", MaxEvents: 200}
+		c := &Config{GitLabHost: "https://gitlab.example.com"}
+		c.Defaults()
 		return c
 	}
 	if err := base().Validate(); err != nil {
@@ -159,7 +151,6 @@ func TestValidate(t *testing.T) {
 	}{
 		{"no host", func(c *Config) { c.GitLabHost = "" }},
 		{"bad provider", func(c *Config) { c.Provider = "gemini" }},
-		{"bad duration", func(c *Config) { c.DefaultLookback = "7 days" }},
 		{"max_events zero", func(c *Config) { c.MaxEvents = 0 }},
 		{"max_events negative", func(c *Config) { c.MaxEvents = -1 }},
 	}
@@ -171,18 +162,6 @@ func TestValidate(t *testing.T) {
 				t.Errorf("expected an error, got nil (%+v)", c)
 			}
 		})
-	}
-}
-
-// TestLookback: parsed duration, and the zero value on garbage. Load +
-// Validate normally guarantee a parseable string; Lookback stays
-// total so a caller can't panic on a bad value.
-func TestLookback(t *testing.T) {
-	if got := (&Config{DefaultLookback: "720h"}).Lookback().Hours(); got != 720 {
-		t.Errorf("Lookback: got %v hours, want 720", got)
-	}
-	if got := (&Config{DefaultLookback: "not-a-duration"}).Lookback(); got != 0 {
-		t.Errorf("garbage duration should yield 0, got %v", got)
 	}
 }
 

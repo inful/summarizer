@@ -202,7 +202,6 @@ wins over config in every case.
 | `--discover-group G` | — | repeatable. One group's projects. |
 | `--discover-by-topic` | — | instance-wide, projects carrying `summarize*`. |
 | `--internal-only-project P` | — | repeatable. Forces team-only. Unions with the YAML block and the `summarize-team-only` topic. |
-| `--since D` | this ISO week so far | rolling window override, e.g. `168h` or `7d`. Only needed for a deliberate backfill; the default matches the week-numbered output directory. |
 | `--period-mode` | **removed** | week numbers replaced it; passing it is a usage error. |
 | `--dry-run` | off | no LLM call, no write. |
 | `--include-diffs` | off | adds per-MR `/changes` bodies to the team prompt. |
@@ -251,7 +250,7 @@ Cron drives cadence. Examples:
 0 9 * * 1  cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml >> /var/log/summarizer.log 2>&1
 
 # Daily for a busy team
-0 9 * * *  cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml --since 1d >> /var/log/summarizer.log 2>&1
+0 9 * * *  cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml >> /var/log/summarizer.log 2>&1
 ```
 
 ### Rotating tokens
@@ -280,15 +279,17 @@ Useful for:
 - Spot-checking whether there's any activity in the window before
   paying for LLM tokens
 - Reproducing an empty-window condition (no MRs + no issues + no
-  commits in 7 days → empty report)
+  commits at all this week → empty report)
 
 ### Empty-window conditions
 
 If the project had no activity in the window, the customer and team
 reports render as small "no notable activity in this period" stubs.
 This is intentional — a missing report confuses readers; an empty
-report makes the cron look healthy. Use `--since` to widen the
-window if you suspect a missed event.
+report makes the cron look healthy. If you suspect a missed event, check
+which week it landed in — the window is that week, and a Tuesday run
+cannot see Monday's later work. Re-run that week's cron line after the
+fact, or read the published branch.
 
 ## When CI fails
 

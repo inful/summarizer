@@ -65,7 +65,7 @@ func TestResolveProjects_SkipsThePublishTarget(t *testing.T) {
 	proj, _, _, err := resolveProjects(context.Background(), reportTargetClient(t), Options{
 		DiscoverActive: true,
 		PublishTarget:  "sfb/reports",
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -87,7 +87,7 @@ func TestResolveProjects_ExplicitPublishTargetStillRuns(t *testing.T) {
 		DiscoverActive: true,
 		PublishTarget:  "sfb/reports",
 		Projects:       []string{"sfb/reports"},
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -103,7 +103,7 @@ func TestResolveProjects_ExplicitPublishTargetStillRuns(t *testing.T) {
 func TestResolveProjects_NoPublishTargetSummarisesEverything(t *testing.T) {
 	proj, _, _, err := resolveProjects(context.Background(), reportTargetClient(t), Options{
 		DiscoverActive: true,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

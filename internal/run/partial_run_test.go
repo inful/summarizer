@@ -66,7 +66,7 @@ func twoProjectPipeline(t *testing.T, failOn string) (*Pipeline, *failingLLM) {
 		Guard:     safety.NoopGuard{},
 		Opts: Options{
 			Projects: []string{"group/aaa", "group/zzz"},
-			Since:    168 * time.Hour,
+			Since:    weekStart(),
 		},
 	}, stub
 }

@@ -76,7 +76,7 @@ func TestDiscoverActive_CapsProbingNotJustLLMCalls(t *testing.T) {
 	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
 		MaxProjects:    10,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -161,7 +161,7 @@ func TestDiscoverActive_CapCountsInclusionsNotCandidates(t *testing.T) {
 	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
 		MaxProjects:    5,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -191,7 +191,7 @@ func TestDiscoverActive_KeepsTheMostRecentlyActive(t *testing.T) {
 	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
 		MaxProjects:    5,
-		Since:          7 * 24 * time.Hour,
+		Since:          weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)

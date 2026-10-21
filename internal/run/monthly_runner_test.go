@@ -163,56 +163,6 @@ func weeklyFiles(weeks ...string) map[string]string {
 	return files
 }
 
-// TestMonthlyRunner_RefusesAmbiguousWindow: a weekly branch keeps every
-// file it ever received, and the window size is part of the filename.
-// Changing --since mid-week therefore leaves both a 1d and a 7d rollup
-// side by side. The old code tried 1d, 7d, 14d, 30d in order and took
-// the first hit, feeding a one-day rollup into the month summary
-// without a word. There is no modification time in the Files API, so
-// the honest answer is to name the conflict and skip the week.
-func TestMonthlyRunner_RefusesAmbiguousWindow(t *testing.T) {
-	weeks, err := weeksInMonth("2026-09")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bad := weeks[0]
-	files := weeklyFiles(weeks...)
-	// A stale run from earlier in the same week, at a different window.
-	files["summarizer/"+bad+"|reports/"+bad+"/combined--rollup--30d--customer.md"] =
-		"---\nuid: y\n---\n\nstale thirty-day body"
-	files["summarizer/"+bad+"|reports/"+bad+"/combined--rollup--30d--team.md"] =
-		"---\nuid: y\n---\n\nstale thirty-day body"
-
-	repo := &monthlyRepo{branches: append([]string{"main"}, prefixes(weeks...)...), files: files}
-	r, _ := newMonthlyRunner(t, repo)
-
-	res, err := r.Run(context.Background(), "2026-09")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if len(res.Weeks) != len(weeks)-1 {
-		t.Errorf("the ambiguous week should be skipped; got %d of %d: %v",
-			len(res.Weeks), len(weeks), res.Weeks)
-	}
-	var skipped bool
-	for _, s := range res.Skipped {
-		if strings.HasPrefix(s, bad) {
-			skipped = true
-			if !strings.Contains(s, "combined--rollup--30d") {
-				t.Errorf("the skip reason should name the conflicting files, got %q", s)
-			}
-		}
-	}
-	if !skipped {
-		t.Errorf("week %s should be listed as skipped, got %v", bad, res.Skipped)
-	}
-	for _, w := range res.Weeks {
-		if w == bad {
-			t.Errorf("week %s was ambiguous and must not be summarised", bad)
-		}
-	}
-}
-
 // TestMonthlyRunner_RollsUpEveryWeekOfTheMonth: the headline case. All
 // four September weeks are read, both audiences are written, and each
 // prompt carries every week's text and nothing from another month.

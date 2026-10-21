@@ -44,7 +44,7 @@ func TestRender_EpicGrouped(t *testing.T) {
 	}
 	epics := []*gitlab.Epic{epicA, epicB}
 
-	_, user, err := Render(AudienceCustomer, "group/proj", 7*24*time.Hour, evs, 200, epics)
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, epics)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestRender_FallsBackToFlatWhenNoEpics(t *testing.T) {
 		makeEvent(events.KindMR, "#1", "first PR", "alice", now.Add(-24*time.Hour)),
 		makeEvent(events.KindIssue, "#2", "weird bug", "bob", now.Add(-12*time.Hour)),
 	}
-	_, user, err := Render(AudienceCustomer, "group/proj", 7*24*time.Hour, evs, 200, nil)
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, nil)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestRender_EmptyEpicsSliceAlsoFlat(t *testing.T) {
 	evs := []events.NormalizedEvent{
 		makeEvent(events.KindMR, "#1", "first PR", "alice", now),
 	}
-	_, user, err := Render(AudienceCustomer, "group/proj", 7*24*time.Hour, evs, 200, []*gitlab.Epic{})
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, []*gitlab.Epic{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestRender_OnlyOrphansBecomesOtherActivity(t *testing.T) {
 		makeEvent(events.KindMR, "#1", "first PR", "alice", now),
 	}
 	epics := []*gitlab.Epic{epicRef(99, "Inert epic")}
-	_, user, err := Render(AudienceCustomer, "group/proj", 7*24*time.Hour, evs, 200, epics)
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, epics)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/prompt"
@@ -43,7 +42,7 @@ func TestEpicRollup_SplitsCustomerAudienceByOrgLabel(t *testing.T) {
 		}},
 	}
 
-	got := bucketEpicsByCustomer(projects, 0)
+	got := bucketEpicsByCustomer(projects)
 
 	var codes []string
 	for _, b := range got {
@@ -112,9 +111,9 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 	// is in the ACME file.
 	names := publishedNames(sp)
 	for _, want := range []string{
-		"combined--epics-acme--7d--customer.md",
-		"combined--epics-rollup--7d--customer.md",
-		"combined--epics-rollup--7d--team.md",
+		"combined--epics-acme--wk--customer.md",
+		"combined--epics-rollup--wk--customer.md",
+		"combined--epics-rollup--wk--team.md",
 	} {
 		if !slices.Contains(names, want) {
 			t.Errorf("missing file %q in %v", want, names)
@@ -171,9 +170,9 @@ func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
 	// The bucketing decision is in which files exist, not what
 	// they say. Check by filename.
 	wantNames := map[string]bool{
-		"combined--epics-acme--7d--customer.md":   false,
-		"combined--epics-globex--7d--customer.md": false,
-		"combined--epics-rollup--7d--team.md":     false,
+		"combined--epics-acme--wk--customer.md":   false,
+		"combined--epics-globex--wk--customer.md": false,
+		"combined--epics-rollup--wk--team.md":     false,
 	}
 	for _, w := range sp.pub.written {
 		name := strings.TrimPrefix(w.Name, "captured/")
@@ -221,7 +220,7 @@ func TestEpicRollup_UnlabelledIsLast(t *testing.T) {
 		epic(2, "z", "org::ZULU"),
 		epic(3, "a", "org::ALPHA"),
 	}}}
-	got := bucketEpicsByCustomer(projects, 0)
+	got := bucketEpicsByCustomer(projects)
 	if len(got) != 3 {
 		t.Fatalf("want 3 buckets, got %d", len(got))
 	}
@@ -287,7 +286,7 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 	}
 
 	names := publishedNames(sp)
-	wantNames := []string{"combined--epics-acme--7d--customer.md", "combined--epics-rollup--7d--customer.md", "combined--epics-rollup--7d--team.md"}
+	wantNames := []string{"combined--epics-acme--wk--customer.md", "combined--epics-rollup--wk--customer.md", "combined--epics-rollup--wk--team.md"}
 	for _, w := range wantNames {
 		if !slices.Contains(names, w) {
 			t.Errorf("missing %s; got %v", w, names)
@@ -353,8 +352,8 @@ func TestSlugCustomer(t *testing.T) {
 // TestEpicRollupFilename_ForCustomerCode: the exact file names an
 // operator will see in the period directory.
 func TestEpicRollupFilename_ForCustomerCode(t *testing.T) {
-	got := rollupFilename(false, 7*24*time.Hour, prompt.AudienceCustomer, "epics-acme")
-	want := "combined--epics-acme--7d--customer.md"
+	got := rollupFilename(prompt.AudienceCustomer, "epics-acme")
+	want := "combined--epics-acme--wk--customer.md"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

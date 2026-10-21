@@ -15,10 +15,10 @@ command looks three weeks into the past. The filename token is `wk`
 rather than a day count, so the file keeps its name as the week fills
 in instead of being renamed daily.
 
-`--since` and `default_lookback` still exist, for a deliberate
-backfill or a genuinely rolling window. The filename then records the
-length (`--7d--`, `--30d--`), so a `summarizer monthly` reading these
-weeks can tell the two apart — and refuses a week that carries both.
+There is no second window and no flag to ask for one. A rolling or
+multi-day window would only create a class of bug where the filename,
+the directory and the contents disagree, and `summarizer monthly` would
+have to guess which of two coexisting files was current.
 
 ## Data flow
 

@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,16 +29,6 @@ type Config struct {
 
 	// Output directory for the two reports. Default: ./summarizer-out.
 	OutputDir string `yaml:"output_dir"`
-
-	// Default lookback window when --since is not provided on the CLI.
-	// CLI flag overrides this. Format is a Go duration: "168h", "720h".
-	//
-	// Unset (the default) means the current ISO week so far, matching
-	// the week-numbered period directories. Set it only to deliberately
-	// run a window that disagrees with the directory the output lands
-	// in; the filename records the window so the monthly rollup can see
-	// the difference.
-	DefaultLookback string `yaml:"default_lookback"`
 
 	// Hard cap on events sent to the LLM. Default 200. Excess is dropped
 	// (most-recent-wins) and the truncation is disclosed in the prompt.
@@ -158,29 +147,10 @@ func (c *Config) Validate() error {
 	if c.Provider != "openai" && c.Provider != "anthropic" {
 		return fmt.Errorf("config: provider must be openai or anthropic, got %q", c.Provider)
 	}
-	if c.DefaultLookback != "" {
-		if _, err := time.ParseDuration(c.DefaultLookback); err != nil {
-			return fmt.Errorf("config: default_lookback %q is not a Go duration: %w", c.DefaultLookback, err)
-		}
-	}
 	if c.MaxEvents < 1 {
 		return fmt.Errorf("config: max_events must be ≥ 1, got %d", c.MaxEvents)
 	}
 	return nil
-}
-
-// Lookback returns DefaultLookback parsed as a Go duration, or 0 when it
-// is unset. Zero means "the current ISO week so far" — NOT an empty
-// window and NOT a rolling 7 days. Reports are filed under a week-number
-// directory, so a rolling window disagreed with its own directory: run
-// on a Monday and the file named 2026-W43 held nothing from W43 and a
-// full week of W42. See run.WeekWindow.
-func (c *Config) Lookback() time.Duration {
-	if c.DefaultLookback == "" {
-		return 0
-	}
-	d, _ := time.ParseDuration(c.DefaultLookback)
-	return d
 }
 
 // Load reads path (if it exists) and unmarshals into a fresh Config. A

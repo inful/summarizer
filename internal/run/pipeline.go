@@ -26,19 +26,18 @@ import (
 
 // Options are run-time parameters resolved at the CLI boundary.
 type Options struct {
-	Projects             []string      // required (unless DiscoveredGroups is set): one or more GitLab paths "group/subgroup/proj"
-	Since                time.Duration // window: now - Since < since
-	WeekScoped           bool          // Since was derived from the ISO week rather than set by the operator. Changes the filename token from "7d" to "wk" — see WeekWindow.
-	Provider             string        // "openai" or "anthropic" (overrides config)
-	Model                string        // overrides config
-	DryRun               bool          // fetch + print + exit; no LLM call, no file write
-	IncludeDiffs         bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
-	DiscoveredGroups     []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
-	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
-	DiscoverByTopic      bool          // --discover-by-topic: scan every project on the instance carrying a `summarize*` topic, across all groups the token can see. Composes with Projects and DiscoveredGroups.
-	DiscoverActive       bool          // --discover-active: include every project the token can see that had activity since the window opened. Set automatically when no other discovery input is given, which is the documented default: an active project runs unless it opts out.
-	MaxProjects          int           // --max-projects: hard cap on projects fed to the LLM, applied after discovery and opt-out but before any LLM call. Each project costs two completions, so a quarter where 200 repos were touched is ~400 calls; this bounds the bill. 0 = DefaultMaxProjects.
-	PublishTarget        string        // the reports project summarizer writes into; discovery skips it. See config.PublishTarget, which returns "" when there is nothing to skip.
+	Projects             []string  // required (unless DiscoveredGroups is set): one or more GitLab paths "group/subgroup/proj"
+	Since                time.Time // window start: Monday 00:00 UTC of the current ISO week
+	Provider             string    // "openai" or "anthropic" (overrides config)
+	Model                string    // overrides config
+	DryRun               bool      // fetch + print + exit; no LLM call, no file write
+	IncludeDiffs         bool      // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
+	DiscoveredGroups     []string  // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
+	InternalOnlyProjects []string  // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
+	DiscoverByTopic      bool      // --discover-by-topic: scan every project on the instance carrying a `summarize*` topic, across all groups the token can see. Composes with Projects and DiscoveredGroups.
+	DiscoverActive       bool      // --discover-active: include every project the token can see that had activity since the window opened. Set automatically when no other discovery input is given, which is the documented default: an active project runs unless it opts out.
+	MaxProjects          int       // --max-projects: hard cap on projects fed to the LLM, applied after discovery and opt-out but before any LLM call. Each project costs two completions, so a quarter where 200 repos were touched is ~400 calls; this bounds the bill. 0 = DefaultMaxProjects.
+	PublishTarget        string    // the reports project summarizer writes into; discovery skips it. See config.PublishTarget, which returns "" when there is nothing to skip.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -255,7 +254,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	res.TeamOnly = audience.TeamOnly
 	res.CustomerOn = audience.CustomerOn
 
-	since := time.Now().UTC().Add(-p.Opts.Since)
+	since := p.Opts.Since
 
 	mrs, err := p.GitLab.FetchMRs(ctx, project, since)
 	if err != nil {
@@ -346,7 +345,6 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		p.lastActiveEpics[project] = epics
 	}
 
-	window := p.Opts.Since
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
 		if aud == prompt.AudienceCustomer && !res.CustomerOn {
 			// Audience policy (D5) says team-only. Skip the
@@ -356,7 +354,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			continue
 		}
 
-		system, user, err := prompt.Render(aud, project, window, all, p.Cfg.MaxEvents, epics)
+		system, user, err := prompt.Render(aud, project, all, p.Cfg.MaxEvents, epics)
 		if err != nil {
 			return res, fmt.Errorf("render %s: %w", aud, err)
 		}
@@ -384,7 +382,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			res.TeamText = resp.Text
 		}
 
-		name := filename(p.Opts.WeekScoped, window, project, aud)
+		name := filename(project, aud)
 		period := periodSlug()
 		res2, err := p.Publisher.Publish(ctx, publisher.Request{
 			Name:     name,
@@ -478,7 +476,7 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				return files, fmt.Errorf("llm %s %s: %w", label, aud, err)
 			}
 			res, err := p.Publisher.Publish(ctx, publisher.Request{
-				Name:     rollupFilename(p.Opts.WeekScoped, p.Opts.Since, aud, part.name),
+				Name:     rollupFilename(aud, part.name),
 				Body:     []byte(resp.Text),
 				Kind:     publisher.KindRollup,
 				Period:   periodSlug(),
@@ -516,7 +514,7 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 				}
 				reports = append(reports, prompt.ProjectReport{Name: pr.Project, Body: body})
 			}
-			system, user, err := prompt.RenderRollup(aud, p.Opts.Since, reports)
+			system, user, err := prompt.RenderRollup(aud, reports)
 			if err != nil {
 				return nil, fmt.Errorf("render rollup %s: %w", aud, err)
 			}
@@ -569,7 +567,7 @@ type epicRollupPart struct {
 // Buckets come back sorted by customer code so two runs over the same
 // window produce the same file order on the branch. The unlabelled
 // bucket sorts last: it is the backlog, not a customer.
-func bucketEpicsByCustomer(projects []ProjectResult, window time.Duration) []epicRollupPart {
+func bucketEpicsByCustomer(projects []ProjectResult) []epicRollupPart {
 	byCode := make(map[string]*epicRollupPart)
 	// Touch the combined bucket first so it always exists and always
 	// appears last in the sorted output below.
@@ -672,7 +670,7 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 			// audience stays whole.
 			buckets := bucketAllEpics(eligibleProjects(aud, projects))
 			if aud == prompt.AudienceCustomer {
-				buckets = bucketEpicsByCustomer(eligibleProjects(aud, projects), p.Opts.Since)
+				buckets = bucketEpicsByCustomer(eligibleProjects(aud, projects))
 			}
 			if len(buckets) == 0 {
 				// Nothing to talk about for this audience — the caller
@@ -681,7 +679,7 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 			}
 			parts := make([]rollupPart, 0, len(buckets))
 			for _, b := range buckets {
-				system, user, err := prompt.RenderEpicRollup(aud, repProject, p.Opts.Since, b.Entries)
+				system, user, err := prompt.RenderEpicRollup(aud, repProject, b.Entries)
 				if err != nil {
 					return nil, fmt.Errorf("render epics rollup %s: %w", aud, err)
 				}
@@ -788,7 +786,7 @@ func weekSlugFor(now time.Time) string {
 // mondayAnchor returns the most-recent Monday at-or-before t. Calendar
 // math: Weekday() is Sunday=0..Saturday=6, so we want the offset
 // to be (Weekday() + 6) mod 7 (Monday=0). Subtract that many days.
-// WeekWindow returns how far back "this week so far" reaches, and true.
+// WeekStart returns Monday 00:00 UTC of the ISO week containing t.
 // Reports are filed under a week-number directory, so the window and the
 // directory have to agree. A rolling 7 days does not: run on a Monday
 // and the file named 2026-W43 holds nothing from W43 and a full week of
@@ -796,10 +794,9 @@ func weekSlugFor(now time.Time) string {
 // past. Monday 00:00 UTC is the ISO week's start, matching ISOWeek().
 //
 // The duration is evaluated once at start-up and then behaves like any
-// other window. --since and default_lookback still override it, for an
-// operator who wants a deliberate backfill.
-func WeekWindow(now time.Time) (time.Duration, bool) {
-	return now.Sub(mondayAnchor(now)), true
+// other window. There is no second window and no flag to ask for one.
+func WeekStart(now time.Time) time.Time {
+	return mondayAnchor(now).UTC()
 }
 
 func mondayAnchor(t time.Time) time.Time {
@@ -1119,7 +1116,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		return finalList, discoveredSet, excluded, nil
 	}
 
-	since := time.Now().UTC().Add(-opts.Since)
+	since := opts.Since
 
 	// Probe + classify + manifest one candidate. Shared by the group
 	// scan and the server-wide topic scan; both produce the same
@@ -1277,34 +1274,23 @@ func discoveryTopics() []string {
 }
 
 // windowDays renders the window as the "Nd" segment every report
-// filename carries. Sub-day windows round up to 1 so a --since 12h run
+// filename carries.
 // doesn't produce a file named "--0d--".
-func windowDays(window time.Duration) int {
-	return max(int(window/(24*time.Hour)), 1)
-}
-
-// windowToken is the middle segment of every filename. "wk" for the
-// week default, "<N>d" for an explicit duration. The default used to
-// render as whatever number of whole days had elapsed — "3d" on a
-// Thursday — so the same week's file was renamed daily and no two days
-// agreed on what it covered.
-func windowToken(weekScoped bool, window time.Duration) string {
-	if weekScoped {
-		return "wk"
-	}
-	return fmt.Sprintf("%dd", windowDays(window))
-}
-
-func filename(weekScoped bool, window time.Duration, project string, aud prompt.Audience) string {
-	return fmt.Sprintf("%s--%s--%s.md", sanitize(project), windowToken(weekScoped, window), aud)
+// filename and rollupFilename carry the constant "wk" window token.
+// There is only one window — the current ISO week — so the token
+// records nothing that the period directory does not already say. It
+// is kept because the filenames were designed around it and docbuilder
+// may key on it; a second window is not a thing this tool has.
+func filename(project string, aud prompt.Audience) string {
+	return fmt.Sprintf("%s--wk--%s.md", sanitize(project), aud)
 }
 
 // rollupFilename is the combined-report name. kind is "rollup" or
 // "epics-rollup"; the latter keeps its distinct prefix so a docbuilder
 // operator browsing the period directory can tell the two apart without
 // rendering either.
-func rollupFilename(weekScoped bool, window time.Duration, aud prompt.Audience, kind string) string {
-	return fmt.Sprintf("combined--%s--%s--%s.md", kind, windowToken(weekScoped, window), aud)
+func rollupFilename(aud prompt.Audience, kind string) string {
+	return fmt.Sprintf("combined--%s--wk--%s.md", kind, aud)
 }
 
 func sanitize(s string) string {

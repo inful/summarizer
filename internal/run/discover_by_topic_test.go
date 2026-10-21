@@ -69,7 +69,7 @@ func TestResolveProjects_DiscoverByTopic(t *testing.T) {
 
 	proj, disc, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverByTopic: true,
-		Since:           7 * 24 * time.Hour,
+		Since:           weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
@@ -108,7 +108,7 @@ func TestResolveProjects_DiscoverByTopicRespectsExplicit(t *testing.T) {
 	proj, disc, _, err := resolveProjects(context.Background(), gc, Options{
 		Projects:        []string{"team-a/api"},
 		DiscoverByTopic: true,
-		Since:           7 * 24 * time.Hour,
+		Since:           weekStart(),
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
