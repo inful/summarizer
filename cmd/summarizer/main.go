@@ -328,9 +328,12 @@ func printSummary(res run.Result, err error, dryRun bool, window time.Duration) 
 			totalEvents += p.EventsFetched
 			usedEvents += p.EventsUsed
 		}
-		fileCount := 2 * len(res.Projects)
-		if len(res.RollupFiles) > 0 {
-			fileCount += len(res.RollupFiles)
+		// Count what was actually published, not what a full two-audience
+		// run would produce: team-only projects write one file, and the
+		// epic rollups are separate.
+		fileCount := len(res.RollupFiles) + len(res.EpicRollupFiles)
+		for _, p := range res.Projects {
+			fileCount += len(p.FilesWritten)
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: ok — %d project(s), %d event(s) (%d used), %d file(s) written (window=%s)\n",
 			len(res.Projects), totalEvents, usedEvents, fileCount, window)
@@ -345,6 +348,9 @@ func printSummary(res run.Result, err error, dryRun bool, window time.Duration) 
 		}
 		for _, f := range res.RollupFiles {
 			fmt.Fprintf(os.Stderr, "  → %s (rollup)\n", f)
+		}
+		for _, f := range res.EpicRollupFiles {
+			fmt.Fprintf(os.Stderr, "  → %s (epics rollup)\n", f)
 		}
 		for aud, u := range res.TokensByAudience {
 			fmt.Fprintf(os.Stderr, "  tokens[rollup/%s]: prompt=%d completion=%d total=%d\n",
