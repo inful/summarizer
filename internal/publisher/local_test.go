@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,11 +17,11 @@ func TestLocal_OverwritesInPlace(t *testing.T) {
 	l := NewLocal(dir)
 	req := Request{Name: "a.md", Period: "2026-W42", Body: []byte("first")}
 
-	if _, err := l.Publish(req); err != nil {
+	if _, err := l.Publish(context.Background(), req); err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
 	req.Body = []byte("second")
-	res, err := l.Publish(req)
+	res, err := l.Publish(context.Background(), req)
 	if err != nil {
 		t.Fatalf("re-publish in the same period: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestLocal_OverwritesInPlace(t *testing.T) {
 func TestLocal_NoTempFilesLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	l := NewLocal(dir)
-	res, err := l.Publish(Request{Name: "a.md", Period: "2026-W42", Body: []byte("x")})
+	res, err := l.Publish(context.Background(), Request{Name: "a.md", Period: "2026-W42", Body: []byte("x")})
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestLocal_NoTempFilesLeftBehind(t *testing.T) {
 func TestLocal_CreatesMissingDirectories(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "out")
 	l := NewLocal(dir)
-	res, err := l.Publish(Request{Name: "a.md", Period: "2026-W42", Body: []byte("x")})
+	res, err := l.Publish(context.Background(), Request{Name: "a.md", Period: "2026-W42", Body: []byte("x")})
 	if err != nil {
 		t.Fatalf("publish: %v", err)
 	}

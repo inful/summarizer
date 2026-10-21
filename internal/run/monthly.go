@@ -17,8 +17,8 @@ import (
 // part of publisher.Publisher, because a local-disk publisher has no
 // remote repo to read and forcing it to stub these would hide that.
 type MonthlyReader interface {
-	ListPeriodBranches() ([]string, error)
-	ReadReportFile(branch, path string) (string, error)
+	ListPeriodBranches(ctx context.Context) ([]string, error)
+	ReadReportFile(ctx context.Context, branch, path string) (string, error)
 	PeriodBranch(period string) string
 }
 
@@ -79,7 +79,7 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 	// Which weekly branches actually exist in the target repo. A week
 	// with no branch means the cron didn't run (or its MR was never
 	// pushed); skip it rather than failing the whole month.
-	branches, err := r.Reader.ListPeriodBranches()
+	branches, err := r.Reader.ListPeriodBranches(ctx)
 	if err != nil {
 		return res, fmt.Errorf("list period branches: %w", err)
 	}
@@ -97,7 +97,7 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 		}
 		found := false
 		for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-			body, err := r.readWeeklyRollup(branch, aud)
+			body, err := r.readWeeklyRollup(ctx, branch, aud)
 			if err != nil {
 				return res, err
 			}
@@ -141,7 +141,7 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 		if err != nil {
 			return res, fmt.Errorf("llm monthly %s: %w", aud, err)
 		}
-		out, err := r.Publisher.Publish(publisher.Request{
+		out, err := r.Publisher.Publish(ctx, publisher.Request{
 			Name:    monthlyRollupFilename(month, aud),
 			Body:    []byte(resp.Text),
 			Force:   true,
@@ -172,10 +172,10 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 // are deliberately excluded: they are already split per customer, and
 // folding them into one monthly blob would mix customers together —
 // the opposite of what that split was built to prevent.
-func (r *MonthlyRunner) readWeeklyRollup(branch string, aud prompt.Audience) (string, error) {
+func (r *MonthlyRunner) readWeeklyRollup(ctx context.Context, branch string, aud prompt.Audience) (string, error) {
 	for _, days := range []int{1, 7, 14, 30} {
 		name := fmt.Sprintf("combined--%dd--%s.md", days, aud)
-		body, err := r.Reader.ReadReportFile(branch, r.pathFor(branch, name))
+		body, err := r.Reader.ReadReportFile(ctx, branch, r.pathFor(branch, name))
 		if err != nil {
 			return "", fmt.Errorf("read %s from %s: %w", name, branch, err)
 		}

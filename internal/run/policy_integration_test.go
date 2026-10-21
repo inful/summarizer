@@ -285,7 +285,7 @@ type capturePublisher struct {
 	written []publisher.Request
 }
 
-func (c *capturePublisher) Publish(req publisher.Request) (publisher.Result, error) {
+func (c *capturePublisher) Publish(_ context.Context, req publisher.Request) (publisher.Result, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.written = append(c.written, req)

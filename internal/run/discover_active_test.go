@@ -65,7 +65,7 @@ func TestResolveProjects_DiscoverActive_IncludesActiveExcludesOptOut(t *testing.
 	defer srv.Close()
 	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
 
-	proj, disc, err := resolveProjects(context.Background(), gc, Options{
+	proj, disc, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
 		Since:          7 * 24 * time.Hour,
 	})

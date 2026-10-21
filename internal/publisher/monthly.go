@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -24,13 +25,13 @@ import (
 // summarizer's weekly rollups.
 //
 // Used by `summarizer monthly`, which rolls up last month's weeks.
-func (g *GitLabPublisher) ListPeriodBranches() ([]string, error) {
+func (g *GitLabPublisher) ListPeriodBranches(ctx context.Context) ([]string, error) {
 	q := url.Values{}
 	q.Set("per_page", "100")
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches?%s",
 		g.Host, url.PathEscape(g.Project), q.Encode())
 
-	body, err := g.get(urlStr)
+	body, err := g.get(ctx, urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("list branches: %w", err)
 	}
@@ -94,11 +95,11 @@ func isWeekSlug(s string) bool {
 // Any other 4xx/5xx is a real error — the operator needs to know the
 // token can't read the repo, as opposed to the file simply not being
 // there.
-func (g *GitLabPublisher) ReadReportFile(branch, path string) (string, error) {
+func (g *GitLabPublisher) ReadReportFile(ctx context.Context, branch, path string) (string, error) {
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s?ref=%s",
 		g.Host, url.PathEscape(g.Project), pathEscape(path), url.QueryEscape(branch))
 
-	resp, err := g.getStatus(urlStr)
+	resp, err := g.getStatus(ctx, urlStr)
 	if err != nil {
 		return "", err
 	}
@@ -126,8 +127,8 @@ func (g *GitLabPublisher) ReadReportFile(branch, path string) (string, error) {
 
 // get / getStatus: authenticated GETs against the GitLab API. Split so
 // ReadReportFile can branch on 404 while the other callers don't care.
-func (g *GitLabPublisher) get(urlStr string) ([]byte, error) {
-	resp, err := g.getStatus(urlStr)
+func (g *GitLabPublisher) get(ctx context.Context, urlStr string) ([]byte, error) {
+	resp, err := g.getStatus(ctx, urlStr)
 	if err != nil {
 		return nil, err
 	}
@@ -142,8 +143,8 @@ type rawResponse struct {
 	body   []byte
 }
 
-func (g *GitLabPublisher) getStatus(urlStr string) (rawResponse, error) {
-	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+func (g *GitLabPublisher) getStatus(ctx context.Context, urlStr string) (rawResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return rawResponse{}, err
 	}
@@ -168,6 +169,6 @@ func (g *GitLabPublisher) getStatus(urlStr string) (rawResponse, error) {
 // has nothing to read, and forcing every implementation to stub an
 // unsupported method hides that. cmd/summarizer rejects a
 // local-disk publisher before it ever gets here.
-func (l *Local) ReadReportFile(_, _ string) (string, error) {
+func (l *Local) ReadReportFile(context.Context, string, string) (string, error) {
 	return "", errors.New("local-disk publisher has no reports to read; monthly rollups need publish.enabled with a GitLab target")
 }

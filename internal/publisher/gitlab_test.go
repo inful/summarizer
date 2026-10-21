@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -229,7 +230,7 @@ func TestGitLabPublisher_PutSendsLastCommitIDForExistingFiles(t *testing.T) {
 	defer srv.Close()
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
-	if _, err := p.Publish(Request{
+	if _, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("new body"), Period: "2026-10-19", Kind: KindPerProject,
 	}); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -283,7 +284,7 @@ func TestGitLabPublisher_PutOmitsLastCommitIDForNewFiles(t *testing.T) {
 	defer srv.Close()
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
-	if _, err := p.Publish(Request{
+	if _, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("new body"), Period: "2026-10-19", Kind: KindPerProject,
 	}); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -377,7 +378,7 @@ func TestGitLabPublisher_CreateOrUpdateDispatch(t *testing.T) {
 	// First publish: file does not exist. The publisher should
 	// POST, never PUT, because the read returned 404 → empty
 	// last_commit_id.
-	if _, err := p.Publish(Request{
+	if _, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("first body"), Period: "2026-10-19", Kind: KindPerProject,
 	}); err != nil {
 		t.Fatalf("first publish: %v", err)
@@ -385,7 +386,7 @@ func TestGitLabPublisher_CreateOrUpdateDispatch(t *testing.T) {
 	// Second publish: file exists with the SHA from the read.
 	// The publisher should PUT, never POST, because the read
 	// returned 200 with last_commit_id non-empty.
-	if _, err := p.Publish(Request{
+	if _, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("second body"), Period: "2026-10-19", Kind: KindPerProject,
 	}); err != nil {
 		t.Fatalf("second publish: %v", err)
@@ -476,7 +477,7 @@ func TestGitLabPublisher_EnsureBranchUsesRefField(t *testing.T) {
 	defer srv.Close()
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
-	if _, err := p.Publish(Request{
+	if _, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
 	}); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -507,7 +508,7 @@ func TestGitLabPublisher_PublishFlow(t *testing.T) {
 		"summarizer",    // source branch prefix
 	)
 
-	res, err := p.Publish(Request{
+	res, err := p.Publish(context.Background(), Request{
 		Name:   "group-proj--7d--customer.md",
 		Body:   []byte("# Customer weekly update\n\nShipped login.\n"),
 		Force:  false,
@@ -562,7 +563,7 @@ func TestGitLabPublisher_IdempotentSamePeriod(t *testing.T) {
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
 	f.branches.Store("summarizer/2026-10-19", true)
 
-	res, err := p.Publish(Request{
+	res, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
 	})
 	if err != nil {
@@ -596,7 +597,7 @@ func TestGitLabPublisher_MultipleFilesOneBranch(t *testing.T) {
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
 	for _, name := range []string{"a--7d--customer.md", "a--7d--team.md", "combined--7d--customer.md"} {
-		if _, err := p.Publish(Request{
+		if _, err := p.Publish(context.Background(), Request{
 			Name: name, Body: []byte("body " + name), Period: "2026-10-19", Kind: KindPerProject,
 		}); err != nil {
 			t.Fatalf("publish %s: %v", name, err)
@@ -624,7 +625,7 @@ func TestGitLabPublisher_RejectsMergedMR(t *testing.T) {
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
 
-	_, err := p.Publish(Request{
+	_, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
 	})
 	if err == nil {
@@ -678,7 +679,7 @@ old body`, existingUID, existingUID))
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
 
-	_, err := p.Publish(Request{
+	_, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("# new body"), Period: "2026-10-19",
 		Kind: KindPerProject, Title: "customer", Project: "group/proj", Public: true,
 	})
@@ -717,7 +718,7 @@ func TestGitLabPublisher_FreshFileMintsUUID(t *testing.T) {
 
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
 
-	_, err := p.Publish(Request{
+	_, err := p.Publish(context.Background(), Request{
 		Name: "fresh.md", Body: []byte("hello"), Period: "2026-10-19",
 		Kind: KindPerProject, Title: "team", Project: "group/proj",
 	})

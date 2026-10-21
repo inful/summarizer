@@ -69,10 +69,16 @@ type ProjectResult struct {
 	TeamOnly         bool           // true ⇒ no customer-facing content was produced for this project
 	CustomerOn       bool           // true ⇒ customer-facing content was produced (== !TeamOnly)
 	ActiveEpics      []*gitlab.Epic // active epics for this project (had issue activity in window); used by runEpicRollup
-	// AnnotatedEvents is the project's full event set after
-	// AttachEpics ran. Kept so the epic rollup can count each epic's
-	// events exactly instead of re-deriving them from rendered text.
-	AnnotatedEvents []events.NormalizedEvent
+	// EpicEventCounts maps epic IID to the number of events in this
+	// project that belong to it, counted from the real annotations
+	// AttachEpics produced.
+	//
+	// A map rather than the annotated event slice itself: the slice is
+	// every MR, issue and commit the project had (pre-cap, so it can be
+	// thousands), and holding one per project for the whole run to
+	// produce twenty integers is memory that only grows. This carries
+	// the same information in a fraction of the space.
+	EpicEventCounts map[int]int
 }
 
 // Result describes what the run produced. Used by main to write the stderr
@@ -101,6 +107,13 @@ type Pipeline struct {
 	// epic rollup without re-fetching. Cleared at the start of
 	// every Run.
 	lastActiveEpics map[string][]*gitlab.Epic
+
+	// Resolution totals from the last resolveProjects call, so the
+	// "nothing to run" line can report real numbers instead of the
+	// hardcoded zeros it used to print — which contradicted the
+	// per-project exclusion lines printed immediately above it.
+	lastIncluded int
+	lastExcluded int
 }
 
 // ErrInjection is returned (wrapped) when the safety guard classifies
@@ -133,6 +146,7 @@ func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Pu
 func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	res := Result{Projects: []ProjectResult{}, TokensByAudience: map[string]llm.Usage{}}
 	p.lastActiveEpics = make(map[string][]*gitlab.Epic)
+	p.lastIncluded, p.lastExcluded = 0, 0
 
 	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 && !p.Opts.DiscoverByTopic && !p.Opts.DiscoverActive {
 		return res, errors.New("at least one --project, --discover-group, --discover-by-topic or --discover-active is required")
@@ -143,10 +157,12 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 		return res, err
 	}
 	if len(finalList) == 0 {
-		// Discovery ran and found nothing active. Surface a
-		// stderr line so the operator can tell discovery ran vs
-		// crashed silently.
-		fmt.Fprintln(os.Stderr, "summarizer: no active projects after resolution (explicit=0, discovered=0); nothing to do")
+		// Discovery ran and found nothing runnable. The per-project
+		// lines above already say why each one was dropped, so this
+		// only needs to state the totals — and it must use the real
+		// ones, or it contradicts the lines immediately above it.
+		fmt.Fprintf(os.Stderr, "summarizer: nothing to run — %d candidate(s) excluded, 0 included; see the lines above\n",
+			p.lastExcluded)
 		return res, nil
 	}
 
@@ -255,7 +271,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		TokensByAudience: map[string]llm.Usage{},
 	}
 
-	inOverrideList := containsString(p.Opts.InternalOnlyProjects, project)
+	inOverrideList := slices.Contains(p.Opts.InternalOnlyProjects, project)
 	topics := p.projectTopics(ctx, project)
 	audience := policy.Classify(topics, inOverrideList)
 	res.TeamOnly = audience.TeamOnly
@@ -321,11 +337,11 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	events.AttachEpics(all, epics)
 	res.EventsFetched = len(all)
 	res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
-	// Carry the annotated slice so runEpicRollup can count each epic's
-	// events exactly. Only retained when the project actually has
-	// active epics; otherwise nothing downstream reads it.
+	// Count each epic's events now, while `all` is in scope, so the
+	// epic rollup gets exact numbers without the event slice having to
+	// outlive this function.
 	if len(epics) > 0 {
-		res.AnnotatedEvents = all
+		res.EpicEventCounts = epicEventCounts(all, epics)
 	}
 
 	// Record active epics for runEpicRollup (read by Run, not by the
@@ -375,10 +391,10 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 
 		name := filename(window, project, aud)
 		period := periodSlug()
-		res2, err := p.Publisher.Publish(publisher.Request{
+		res2, err := p.Publisher.Publish(ctx, publisher.Request{
 			Name:    name,
 			Body:    []byte(text),
-			Force:   p.Opts.forceOverwrite(),
+			Force:   true, // weekly buckets always overwrite in place
 			Kind:    publisher.KindPerProject,
 			Period:  period,
 			Title:   string(aud),
@@ -466,10 +482,10 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 			if err != nil {
 				return files, fmt.Errorf("llm %s %s: %w", label, aud, err)
 			}
-			res, err := p.Publisher.Publish(publisher.Request{
+			res, err := p.Publisher.Publish(ctx, publisher.Request{
 				Name:    rollupFilename(p.Opts.Since, aud, part.name),
 				Body:    []byte(resp.Text),
-				Force:   p.Opts.forceOverwrite(),
+				Force:   true, // weekly buckets always overwrite in place
 				Kind:    publisher.KindRollup,
 				Period:  periodSlug(),
 				Title:   part.title + " " + string(aud),
@@ -567,7 +583,7 @@ func bucketEpicsByCustomer(projects []ProjectResult, window time.Duration) []epi
 			codes := policy.EpicCustomerCodes(e)
 			// Counted once per epic, not once per customer bucket: it
 			// is a property of the epic, not of the attribution.
-			n := countEpicEvents(pr.AnnotatedEvents, e)
+			n := pr.EpicEventCounts[e.IID]
 			if len(codes) == 0 {
 				// No org:: anywhere → the unlabelled bucket. The
 				// combined file becomes the "not yet attributed"
@@ -625,7 +641,7 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 		for _, e := range pr.ActiveEpics {
 			summaries = append(summaries, prompt.EpicSummary{
 				Epic:       e,
-				EventCount: countEpicEvents(pr.AnnotatedEvents, e),
+				EventCount: pr.EpicEventCounts[e.IID],
 			})
 		}
 		entries = append(entries, prompt.EpicRollupEntry{Project: pr.Project, Epics: summaries})
@@ -680,29 +696,34 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 // no inputs, so no file should be published for it.
 var errSkipAudience = errors.New("no inputs for this audience")
 
-// countEpicEvents tallies how many events in the project's event set
-// belong to this epic. Exact: AttachEpics annotates every issue event
-// with the epic that contains it, so this counts real annotations
-// rather than searching rendered text.
+// epicEventCounts maps each epic IID to the number of events belonging
+// to it. Exact: AttachEpics annotates every issue event with the epic
+// that contains it, so this counts real annotations rather than
+// searching rendered text.
 //
-// The previous version counted occurrences of the epic's title in the
-// rendered report body, which double-counted two epics sharing a title
-// and could be inflated by the title appearing in prose — and the
+// The previous implementation counted occurrences of the epic's title in
+// the rendered report body, which double-counted two epics sharing a
+// title and could be inflated by the title appearing in prose — and the
 // number reached customer-facing documents.
 //
-// events is the project's full annotated event slice; counting a
-// subset (e.g. only the customer-audience events) would understate.
-func countEpicEvents(events []events.NormalizedEvent, e *gitlab.Epic) int {
-	if e == nil {
-		return 0
-	}
-	n := 0
-	for _, ev := range events {
-		if ev.Epic != nil && ev.Epic.IID == e.IID {
-			n++
+// One pass over the events serves every epic, where counting per epic
+// was O(epics x events).
+func epicEventCounts(evs []events.NormalizedEvent, epics []*gitlab.Epic) map[int]int {
+	counts := make(map[int]int, len(epics))
+	for _, e := range epics {
+		if e != nil {
+			counts[e.IID] = 0
 		}
 	}
-	return n
+	for _, ev := range evs {
+		if ev.Epic == nil {
+			continue
+		}
+		if _, tracked := counts[ev.Epic.IID]; tracked {
+			counts[ev.Epic.IID]++
+		}
+	}
+	return counts
 }
 
 // optOutReason reports why a project is excluded from the run, or ""
@@ -777,16 +798,6 @@ func (o Options) maxProjects() int {
 		return o.MaxProjects
 	}
 	return DefaultMaxProjects
-}
-
-// forceOverwrite is always true. Every run lands in the same weekly
-// bucket, so a refuse-first local publisher would fail the cron from
-// day 2 onward with "file exists". The GitLab publisher accumulates
-// onto the same branch regardless. Kept as a method rather than
-// deleted so the call sites read the same and so a future mode that
-// needs refuse-first has an obvious home.
-func (o Options) forceOverwrite() bool {
-	return true
 }
 
 // checkPrompt runs the rendered prompt through the safety guard.
@@ -899,7 +910,6 @@ func fillMRDetail(ctx context.Context, gc *gitlab.Client, project string, mrs []
 // returns (nil, nil) so the pipeline can skip the section without
 // surfacing an error. 401s and 5xxs DO hard-fail the project — those
 // are real problems the operator must see.
-// nolint:unused // wired via runOneProject
 func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since, until time.Time) ([]*gitlab.Epic, error) {
 	ns, err := p.GitLab.FetchProjectNamespace(ctx, project)
 	if err != nil {
@@ -917,30 +927,36 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	// Sort by IID before anything else. GitLab makes no promise about
-	// the order /epics returns, and this slice is rendered into the
-	// prompt in this order — so without sorting, two runs over identical
-	// input produce different documents and the fingerprint flags churn
-	// that is not a real content change.
-	sort.Slice(raw, func(i, j int) bool { return raw[i].IID < raw[j].IID })
-
-	// Each epic's issues are one HTTP round-trip, so ordering of
-	// operations matters more than it looks:
+	// Two different orders, for two different jobs.
 	//
-	//  1. Cap FIRST. Fetching issues for all N epics and then dropping
-	//     all but 20 made N sequential calls to produce a report that
-	//     uses 20 of them — the dominant cost of a run on a group with
-	//     many epics, and it grew every quarter.
-	//  2. Then filter by activity, which needs the issues we fetched.
+	// SELECTION, by recency. The cap below decides which epics get their
+	// issues fetched, and that fetch is what decides whether an epic is
+	// active. Sorting by IID meant the cap took the 20 OLDEST epics and
+	// then filtered those by activity — so a group whose recent epics all
+	// have high IIDs reported almost nothing, because the active ones
+	// were never fetched and so could not be reported at all.
+	// `updated_at` arrives free in this same response, so selecting by
+	// recency costs nothing.
 	//
-	// The cap trades coverage for wall time: the epics that survive are
-	// the 20 lowest IIDs rather than the 20 most recently active.
-	// maxActiveEpics sits far above the usual active count so this
-	// rarely bites, and the stderr line says so when it does.
+	// RENDERING, by IID. GitLab promises no order for /epics and the
+	// surviving slice goes into the prompt as-is, so a stable order is
+	// what keeps two runs over identical input producing identical
+	// documents, and therefore an identical fingerprint.
+	//
+	// IID is the tiebreak in both, so nothing depends on GitLab's
+	// response order.
+	sort.Slice(raw, func(i, j int) bool {
+		if !raw[i].UpdatedAt.Equal(raw[j].UpdatedAt) {
+			return raw[i].UpdatedAt.After(raw[j].UpdatedAt)
+		}
+		return raw[i].IID < raw[j].IID
+	})
 	if len(raw) > maxActiveEpics {
-		fmt.Fprintf(os.Stderr, "summarizer: %s: %d epics in group %s, considering the first %d by IID\n",
+		fmt.Fprintf(os.Stderr, "summarizer: %s: %d epics in group %s, considering the %d most recently updated\n",
 			project, len(raw), ns.FullPath, maxActiveEpics)
 		raw = raw[:maxActiveEpics]
+		// Back to a stable render order for the prompt.
+		sort.Slice(raw, func(i, j int) bool { return raw[i].IID < raw[j].IID })
 	}
 	for i := range raw {
 		rawIssues, err := p.GitLab.FetchEpicIssues(ctx, ns.FullPath, raw[i].IID)
@@ -987,12 +1003,14 @@ func (p *Pipeline) projectTopics(ctx context.Context, project string) []string {
 //     tags each ProjectResult with this so summaries can tell the
 //     operator which projects were auto-discovered.
 func (p *Pipeline) resolveProjects(ctx context.Context) ([]string, map[string]bool, error) {
-	return resolveProjects(ctx, p.GitLab, p.Opts)
+	list, discovered, excluded, err := resolveProjects(ctx, p.GitLab, p.Opts)
+	p.lastExcluded = excluded
+	return list, discovered, err
 }
 
 // resolveProjects merges explicit and discovered inputs. Takes the
 // Client directly so unit tests don't need a full Pipeline.
-func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]string, map[string]bool, error) {
+func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]string, map[string]bool, int, error) {
 	finalList := make([]string, 0, len(opts.Projects))
 	discoveredSet := make(map[string]bool)
 	included := 0
@@ -1008,7 +1026,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	for _, path := range opts.Projects {
 		summary, err := gc.FetchProjectSummary(ctx, path)
 		if err != nil {
-			return nil, nil, fmt.Errorf("fetch project %s: %w", path, err)
+			return nil, nil, excluded, fmt.Errorf("fetch project %s: %w", path, err)
 		}
 		var topics []string
 		if summary != nil {
@@ -1016,7 +1034,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		}
 		reason, err := optOutReason(ctx, gc, path, topics)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, excluded, err
 		}
 		if reason != "" {
 			excluded++
@@ -1028,7 +1046,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	}
 
 	if len(opts.DiscoveredGroups) == 0 && !opts.DiscoverByTopic && !opts.DiscoverActive {
-		return finalList, discoveredSet, nil
+		return finalList, discoveredSet, excluded, nil
 	}
 
 	since := time.Now().UTC().Add(-opts.Since)
@@ -1039,7 +1057,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	admit := func(proj gitlab.ProjectSummary) error {
 		// Skip projects already explicit-listed (dedupe wins to
 		// the explicit listing: FromDiscovery stays false).
-		if containsString(opts.Projects, proj.Path) {
+		if slices.Contains(opts.Projects, proj.Path) {
 			return nil
 		}
 		// Project-level opt-out. Checked before the activity probe so
@@ -1067,7 +1085,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		// config/CLI override still wins when set, and
 		// `summarize-team-only` continues to mean "team-only
 		// even if the project has `summarize`."
-		inOverride := containsString(opts.InternalOnlyProjects, proj.Path)
+		inOverride := slices.Contains(opts.InternalOnlyProjects, proj.Path)
 		aud := policy.Classify(proj.Topics, inOverride)
 		tnoTag := ""
 		if aud.TeamOnly {
@@ -1092,13 +1110,13 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		// for a future change; see FetchGroupProjects.
 		projects, err := gc.FetchGroupProjects(ctx, group, false)
 		if err != nil {
-			return nil, nil, fmt.Errorf("discover group %s: %w", group, err)
+			return nil, nil, excluded, fmt.Errorf("discover group %s: %w", group, err)
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: discovery from group=%s recursive=false; scanned=%d\n",
 			group, len(projects))
 		for _, proj := range projects {
 			if err := admit(proj); err != nil {
-				return nil, nil, err
+				return nil, nil, excluded, err
 			}
 		}
 	}
@@ -1108,13 +1126,13 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	if opts.DiscoverByTopic {
 		projects, err := gc.FetchProjectsByTopic(ctx, discoveryTopics())
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, excluded, err
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: discovery from topics=%v; scanned=%d\n",
 			discoveryTopics(), len(projects))
 		for _, proj := range projects {
 			if err := admit(proj); err != nil {
-				return nil, nil, err
+				return nil, nil, excluded, err
 			}
 		}
 	}
@@ -1127,19 +1145,45 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	if opts.DiscoverActive {
 		projects, err := gc.FetchActiveProjects(ctx, since)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, excluded, err
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: discovery by activity since=%s; scanned=%d\n",
 			since.UTC().Format(time.RFC3339), len(projects))
-		for _, proj := range projects {
-			if err := admit(proj); err != nil {
-				return nil, nil, err
+		// Admit is ~6 sequential round-trips per project (opt-out file
+		// read plus the activity probe). Doing that for every active
+		// project and then trimming to --max-projects in Run() meant
+		// the cap bounded only the LLM bill: on an instance with 200
+		// active projects, ~1200 requests were spent building a list
+		// that was immediately cut to 50. Rank by last_activity_at —
+		// free, already in this payload — and stop admitting once the
+		// cap is reached, so the discarded projects cost nothing.
+		admitActive := func(projects []gitlab.ProjectSummary) error {
+			sort.SliceStable(projects, func(i, j int) bool {
+				if !projects[i].LastActivityAt.Equal(projects[j].LastActivityAt) {
+					return projects[i].LastActivityAt.After(projects[j].LastActivityAt)
+				}
+				return projects[i].Path < projects[j].Path
+			})
+			limit := opts.maxProjects()
+			for n, proj := range projects {
+				if n >= limit {
+					fmt.Fprintf(os.Stderr, "summarizer: %d more active project(s) not considered (--max-projects %d); "+
+						"raise the flag to include them\n", len(projects)-limit, limit)
+					break
+				}
+				if err := admit(proj); err != nil {
+					return err
+				}
 			}
+			return nil
+		}
+		if err := admitActive(projects); err != nil {
+			return nil, nil, excluded, err
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "summarizer: discovery summary included=%d excluded=%d\n", included, excluded)
-	return finalList, discoveredSet, nil
+	return finalList, discoveredSet, excluded, nil
 }
 
 // discoveryTopics is the topic set the server-wide scan looks for.
@@ -1150,18 +1194,6 @@ func discoveryTopics() []string {
 	return []string{policy.TopicSummarize, policy.TopicSummarizeTeamOnly}
 }
 
-// containsString is a small helper used to skip already-explicit
-// projects during the discovery loop. Hand-rolled linear scan: the
-// project list is small and slices.Contains would add an import.
-func containsString(ss []string, target string) bool {
-	for _, s := range ss {
-		if s == target {
-			return true
-		}
-	}
-	return false
-}
-
 // windowDays renders the window as the "Nd" segment every report
 // filename carries. Sub-day windows round up to 1 so a --since 12h run
 // doesn't produce a file named "--0d--".
@@ -1169,9 +1201,6 @@ func windowDays(window time.Duration) int {
 	return max(int(window/(24*time.Hour)), 1)
 }
 
-// filename: <sanitized project>--<since-days>d--<audience>.md. The "since"
-// is encoded in the filename so re-runs land on different files; combined
-// with the refuse-first policy in writer, double-runs are safe.
 func filename(window time.Duration, project string, aud prompt.Audience) string {
 	return fmt.Sprintf("%s--%dd--%s.md", sanitize(project), windowDays(window), aud)
 }

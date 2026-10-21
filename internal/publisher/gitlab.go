@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -151,7 +152,7 @@ type mergeRequest struct {
 // (via the pipeline's own frontmatter build; here we accept it verbatim
 // — frontmatter generation lives in the pipeline so the publisher stays
 // filesystem-agnostic).
-func (g *GitLabPublisher) Publish(req Request) (Result, error) {
+func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, error) {
 	if g.Host == "" || g.Token == "" || g.Project == "" {
 		return Result{}, errors.New("gitlab publisher: host, token, and project are required")
 	}
@@ -170,7 +171,7 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 	// lastCommitID returned alongside is what the PUT body needs to
 	// authorise an update; for a new file it's "" and `omitempty`
 	// drops it.
-	existingUID, lastCommitID, err := g.readExistingUID(path, branch)
+	existingUID, lastCommitID, err := g.readExistingUID(ctx, path, branch)
 	if err != nil {
 		return Result{}, fmt.Errorf("read existing %s@%s: %w", path, branch, err)
 	}
@@ -187,7 +188,7 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 	encoded := base64.StdEncoding.EncodeToString(finalBody)
 
 	// 1. Ensure the per-period source branch exists.
-	if err := g.ensureBranch(branch); err != nil {
+	if err := g.ensureBranch(ctx, branch); err != nil {
 		return Result{}, fmt.Errorf("ensure branch %s: %w", branch, err)
 	}
 
@@ -226,7 +227,7 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 		Encoding:      "base64",
 		LastCommitID:  lastCommitID,
 	})
-	if err := g.api(urlStr, method, putBody, nil); err != nil {
+	if err := g.api(ctx, urlStr, method, putBody, nil); err != nil {
 		// The response body rarely tells you what's wrong with the
 		// request body. Echo the request fields so the next debug
 		// session doesn't need tcpdump.
@@ -235,7 +236,7 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 	}
 
 	// 3. Find or create the MR for this period.
-	mrURL, err := g.findOrCreateMR(branch, req)
+	mrURL, err := g.findOrCreateMR(ctx, branch, req)
 	if err != nil {
 		// File landed; an MR-side failure should still report the branch ref.
 		return Result{Ref: fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path), Branch: branch}, err
@@ -251,8 +252,8 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 // GET-first: GitLab 400s with "has already been taken" on a duplicate
 // branch name, and one run publishes many files into one period — so
 // the naive POST-every-time version died on the second report.
-func (g *GitLabPublisher) ensureBranch(branch string) error {
-	if g.branchExists(branch) {
+func (g *GitLabPublisher) ensureBranch(ctx context.Context, branch string) error {
+	if g.branchExists(ctx, branch) {
 		return nil
 	}
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches",
@@ -261,16 +262,16 @@ func (g *GitLabPublisher) ensureBranch(branch string) error {
 		Branch: branch,
 		Ref:    g.DefaultBranch,
 	})
-	return g.api(urlStr, "POST", body, nil)
+	return g.api(ctx, urlStr, "POST", body, nil)
 }
 
 // branchExists treats only 200 as "yes"; every other status (404, 403,
 // transport) falls through to the create attempt, which surfaces the
 // real error rather than swallowing it here.
-func (g *GitLabPublisher) branchExists(branch string) bool {
+func (g *GitLabPublisher) branchExists(ctx context.Context, branch string) bool {
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches/%s",
 		g.Host, url.PathEscape(g.Project), pathEscape(branch))
-	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return false
 	}
@@ -311,11 +312,11 @@ type fileResponse struct {
 // is non-deterministic (UUID v7). The SHA is what GitLab's PUT needs
 // to authorise an update on a file that already exists on the branch
 // — see fileReq.LastCommitID for why.
-func (g *GitLabPublisher) readExistingUID(path, branch string) (uid, lastCommitID string, err error) {
+func (g *GitLabPublisher) readExistingUID(ctx context.Context, path, branch string) (uid, lastCommitID string, err error) {
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s?ref=%s",
 		g.Host, url.PathEscape(g.Project), pathEscape(path), url.QueryEscape(branch))
 
-	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -384,11 +385,11 @@ func (g *GitLabPublisher) readExistingUID(path, branch string) (uid, lastCommitI
 
 // mergeRequests lists MRs; we use a wide state filter so we can detect
 // both "none" and "already merged/closed" cleanly.
-func (g *GitLabPublisher) mergeRequests(sourceBranch, state string) ([]mergeRequest, error) {
+func (g *GitLabPublisher) mergeRequests(ctx context.Context, sourceBranch, state string) ([]mergeRequest, error) {
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/merge_requests?source_branch=%s&state=%s",
 		g.Host, url.PathEscape(g.Project), url.QueryEscape(sourceBranch), url.QueryEscape(state))
 	var out []mergeRequest
-	if err := g.api(urlStr, "GET", nil, &out); err != nil {
+	if err := g.api(ctx, urlStr, "GET", nil, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -398,8 +399,8 @@ func (g *GitLabPublisher) mergeRequests(sourceBranch, state string) ([]mergeRequ
 // Returns the MR web URL. If an MR exists in merged / closed state we
 // decline to re-open it and return an error naming that state; the
 // caller surfaces it.
-func (g *GitLabPublisher) findOrCreateMR(branch string, req Request) (string, error) {
-	mrs, err := g.mergeRequests(branch, "opened")
+func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req Request) (string, error) {
+	mrs, err := g.mergeRequests(ctx, branch, "opened")
 	if err != nil {
 		return "", err
 	}
@@ -408,7 +409,7 @@ func (g *GitLabPublisher) findOrCreateMR(branch string, req Request) (string, er
 	}
 
 	// No open MR. Check merged/closed before creating a fresh one.
-	nonOpen, err := g.mergeRequests(branch, "merged")
+	nonOpen, err := g.mergeRequests(ctx, branch, "merged")
 	if err != nil {
 		return "", err
 	}
@@ -425,18 +426,28 @@ func (g *GitLabPublisher) findOrCreateMR(branch string, req Request) (string, er
 		Title:        fmt.Sprintf("Summarizer rollup %s", req.Period),
 		Description: fmt.Sprintf(
 			"Automated weekly rollup generated by summarizer.\n\n"+
-				"- **Period:** %s\n"+
-				"- **Project(s):** %s\n"+
+				"- **Period:** %s\n%s"+
 				"- **Audience:** %s\n\n"+
 				"Files in this branch have docbuilder-format frontmatter.\n\n"+
 				"Merge to publish.",
-			req.Period, req.Name, req.Kind),
+			req.Period, projectLine(req), req.Kind),
 	})
 	var mr mergeRequest
-	if err := g.api(createURL, "POST", body, &mr); err != nil {
+	if err := g.api(ctx, createURL, "POST", body, &mr); err != nil {
 		return "", err
 	}
 	return mr.WebURL, nil
+}
+
+// projectLine renders the "Project(s)" row of the MR body. A per-project
+// file names its project; a rollup does not — printing req.Name there
+// put "combined--epics-acme--7d--customer.md" under a heading that says
+// projects, which is what a reviewer reads before merging.
+func projectLine(req Request) string {
+	if req.Project != "" {
+		return "- **Project(s):** " + req.Project + "\n"
+	}
+	return ""
 }
 
 func commitMessage(req Request) string {
@@ -449,12 +460,12 @@ func commitMessage(req Request) string {
 // api issues method URL with body (or nil for GET) and decodes the
 // response into out (or discards). Handles auth + JSON content-type for
 // write paths.
-func (g *GitLabPublisher) api(urlStr, method string, body []byte, out any) error {
+func (g *GitLabPublisher) api(ctx context.Context, urlStr, method string, body []byte, out any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, urlStr, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
 	if err != nil {
 		return err
 	}

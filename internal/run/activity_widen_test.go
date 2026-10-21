@@ -62,7 +62,7 @@ func TestDiscovery_ProjectActiveByIssuesAlone(t *testing.T) {
 	defer srv.Close()
 	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
 
-	finalList, _, err := resolveProjects(context.Background(), gc, Options{
+	finalList, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoveredGroups: []string{"group"},
 		Since:            7 * 24 * time.Hour,
 	})
@@ -96,7 +96,7 @@ func TestDiscovery_ProjectInactiveWithoutMRsOrIssues(t *testing.T) {
 	defer srv.Close()
 	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
 
-	finalList, _, err := resolveProjects(context.Background(), gc, Options{
+	finalList, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoveredGroups: []string{"group"},
 		Since:            7 * 24 * time.Hour,
 	})

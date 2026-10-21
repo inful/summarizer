@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ func NewLocal(dir string) *Local { return &Local{Dir: dir} }
 
 // Publish conforms to Publisher. Returns the absolute path as Ref;
 // Branch and MRURL are empty.
-func (l *Local) Publish(req Request) (Result, error) {
+func (l *Local) Publish(ctx context.Context, req Request) (Result, error) {
 	dir := l.Dir
 	if req.Period != "" {
 		dir = filepath.Join(dir, req.Period)

@@ -11,6 +11,8 @@
 // See policy_test.go for the truth table.
 package policy
 
+import "slices"
+
 // Topic markers summarizer recognises on GitLab projects. Hyphen
 // format per the operator's convention; GitLab topic tokens allow
 // alphanumerics, hyphens, dots, underscores. Topics are case-
@@ -61,8 +63,8 @@ type ProjectPolicy struct {
 // One OR-gate drives TeamOnly:
 //
 //	teamOnly := inList
-//	            OR hasTopic(TopicSummarizeTeamOnly)   // team-only override topic
-//	            OR NOT hasTopic(TopicSummarize)        // default: no customer opt-in
+//	            OR slices.Contains(topics, TopicSummarizeTeamOnly)
+//	            OR NOT slices.Contains(topics, TopicSummarize)
 //
 // CustomerOn is the negation: !teamOnly. The default — no opt-in
 // topic and no operator override — is team-only. The
@@ -87,8 +89,8 @@ type ProjectPolicy struct {
 // Truth table lives in policy_test.go.
 func Classify(topics []string, inList bool) ProjectPolicy {
 	teamOnly := inList ||
-		hasTopic(topics, TopicSummarizeTeamOnly) ||
-		!hasTopic(topics, TopicSummarize)
+		slices.Contains(topics, TopicSummarizeTeamOnly) ||
+		!slices.Contains(topics, TopicSummarize)
 	return ProjectPolicy{
 		TeamOnly:   teamOnly,
 		CustomerOn: !teamOnly,
@@ -98,11 +100,3 @@ func Classify(topics []string, inList bool) ProjectPolicy {
 // hasTopic is an exact-token lookup. Empty input never matches.
 // Topic labels are tokens — substring or prefix matching would be
 // wrong (a topic "summarize-beta" should NOT match "summarize").
-func hasTopic(topics []string, want string) bool {
-	for _, t := range topics {
-		if t == want {
-			return true
-		}
-	}
-	return false
-}

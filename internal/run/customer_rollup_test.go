@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -115,7 +116,7 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 		"combined--epics-rollup--7d--customer.md",
 		"combined--epics-rollup--7d--team.md",
 	} {
-		if !containsString(names, want) {
+		if !slices.Contains(names, want) {
 			t.Errorf("missing file %q in %v", want, names)
 		}
 	}
@@ -288,7 +289,7 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 	names := publishedNames(sp)
 	wantNames := []string{"combined--epics-acme--7d--customer.md", "combined--epics-rollup--7d--customer.md", "combined--epics-rollup--7d--team.md"}
 	for _, w := range wantNames {
-		if !containsString(names, w) {
+		if !slices.Contains(names, w) {
 			t.Errorf("missing %s; got %v", w, names)
 		}
 	}

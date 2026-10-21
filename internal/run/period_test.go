@@ -103,12 +103,8 @@ func TestPeriodSlug_IsWeekNumber(t *testing.T) {
 	}
 }
 
-// TestOptions_ForceOverwrite: every run lands in the same weekly
-// bucket, so a refuse-first local publisher would fail the cron from
-// day 2 onward. Force is implied; --force is no longer needed to
-// overwrite within a week.
-func TestOptions_ForceOverwrite(t *testing.T) {
-	if (Options{}).forceOverwrite() != true {
-		t.Error("weekly buckets always imply overwrite; day 2 must not fail refuse-first")
-	}
-}
+// TestForceIsAlwaysOn: every run inside a week targets the same
+// (project, audience, period) path, so both publishers overwrite in
+// place. This used to be `Options.forceOverwrite()`, a function that
+// always returned true and whose only reason to exist was a
+// --period-mode flag that no longer exists.

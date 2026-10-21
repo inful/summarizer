@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // TestClassify: the truth table for the project-policy decision. Drives
 // runOneProject's audience loop, runRollup's customer filter, and
@@ -74,12 +77,12 @@ func TestClassify_TopicCaseSensitive(t *testing.T) {
 	}
 }
 
-// TestHasTopic is the small lookup the classifier depends on. Pins that
+// TestTopicLookup is the small lookup the classifier depends on. Pins that
 // the topic must appear as the whole token, not as a prefix or a
 // substring. (GitLab topics are tokens, so prefix-matching would be
 // wrong.) Catches a future refactor that swaps to a contains-based
 // check.
-func TestHasTopic(t *testing.T) {
+func TestTopicLookup(t *testing.T) {
 	cases := []struct {
 		topics []string
 		want   string
@@ -93,9 +96,9 @@ func TestHasTopic(t *testing.T) {
 		{[]string{}, "summarize", false},
 	}
 	for _, c := range cases {
-		got := hasTopic(c.topics, c.want)
+		got := slices.Contains(c.topics, c.want)
 		if got != c.out {
-			t.Errorf("hasTopic(%v, %q) = %v, want %v", c.topics, c.want, got, c.out)
+			t.Errorf("slices.Contains(%v, %q) = %v, want %v", c.topics, c.want, got, c.out)
 		}
 	}
 }

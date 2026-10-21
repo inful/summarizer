@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 	dir := t.TempDir()
 	lp := NewLocal(dir)
 
-	w1, err := lp.Publish(Request{
+	w1, err := lp.Publish(context.Background(), Request{
 		Name:   "group-proj--7d--customer.md",
 		Period: "2026-W42",
 		Body:   []byte("week 42"),
@@ -25,7 +26,7 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("publish W42: %v", err)
 	}
-	w2, err := lp.Publish(Request{
+	w2, err := lp.Publish(context.Background(), Request{
 		Name:   "group-proj--7d--customer.md",
 		Period: "2026-W43",
 		Body:   []byte("week 43"),
@@ -72,10 +73,10 @@ func TestLocalPublisher_SamePeriodOverwrites(t *testing.T) {
 	lp := NewLocal(dir)
 	req := Request{Name: "combined--rollup--7d--team.md", Period: "2026-W42", Force: true}
 
-	if _, err := lp.Publish(withBody(req, "first")); err != nil {
+	if _, err := lp.Publish(context.Background(), withBody(req, "first")); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := lp.Publish(withBody(req, "second"))
+	ref, err := lp.Publish(context.Background(), withBody(req, "second"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestLocalPublisher_SamePeriodOverwrites(t *testing.T) {
 func TestLocalPublisher_NoTempFilesLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	lp := NewLocal(dir)
-	ref, err := lp.Publish(Request{Name: "a--7d--team.md", Period: "2026-W42", Body: []byte("x"), Force: true})
+	ref, err := lp.Publish(context.Background(), Request{Name: "a--7d--team.md", Period: "2026-W42", Body: []byte("x"), Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestLocalPublisher_NoTempFilesLeftBehind(t *testing.T) {
 func TestLocalPublisher_EmptyPeriodIsFlat(t *testing.T) {
 	dir := t.TempDir()
 	lp := NewLocal(dir)
-	ref, err := lp.Publish(Request{Name: "x--7d--team.md", Body: []byte("x"), Force: true})
+	ref, err := lp.Publish(context.Background(), Request{Name: "x--7d--team.md", Body: []byte("x"), Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}

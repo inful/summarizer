@@ -9,6 +9,8 @@
 // source-branch for a given period so re-runs accumulate commits on one MR.
 package publisher
 
+import "context"
+
 // FileKind controls how the publisher treats the report. Future use:
 // distinguishes per-project vs rollup, or weekly vs monthly.
 type FileKind string
@@ -50,5 +52,5 @@ type Result struct {
 // per-project and rollup passes sequentially, but the per-audience
 // LLM-then-write pairs could run in parallel in the future).
 type Publisher interface {
-	Publish(req Request) (Result, error)
+	Publish(ctx context.Context, req Request) (Result, error)
 }

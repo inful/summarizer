@@ -1,6 +1,7 @@
 package publisher
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -116,7 +117,7 @@ func TestListPeriodBranches_OnlyWeeklyBranches(t *testing.T) {
 	}}
 	p := newMonthlyPublisher(t, ms)
 
-	got, err := p.ListPeriodBranches()
+	got, err := p.ListPeriodBranches(context.Background())
 	if err != nil {
 		t.Fatalf("ListPeriodBranches: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestListPeriodBranches_OnlyWeeklyBranches(t *testing.T) {
 // returns an empty slice, not an error.
 func TestListPeriodBranches_EmptyRepo(t *testing.T) {
 	p := newMonthlyPublisher(t, &monthlyServer{})
-	got, err := p.ListPeriodBranches()
+	got, err := p.ListPeriodBranches(context.Background())
 	if err != nil {
 		t.Fatalf("ListPeriodBranches: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestReadReportFile(t *testing.T) {
 	}
 	p := newMonthlyPublisher(t, ms)
 
-	got, err := p.ReadReportFile("summarizer/2026-W36", "reports/2026-W36/combined--7d--customer.md")
+	got, err := p.ReadReportFile(context.Background(), "summarizer/2026-W36", "reports/2026-W36/combined--7d--customer.md")
 	if err != nil {
 		t.Fatalf("ReadReportFile: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestReadReportFile(t *testing.T) {
 // week doesn't kill the whole monthly rollup.
 func TestReadReportFile_Missing(t *testing.T) {
 	p := newMonthlyPublisher(t, &monthlyServer{})
-	if _, err := p.ReadReportFile("summarizer/2026-W36", "reports/2026-W36/combined--7d--customer.md"); err != nil {
+	if _, err := p.ReadReportFile(context.Background(), "summarizer/2026-W36", "reports/2026-W36/combined--7d--customer.md"); err != nil {
 		t.Errorf("missing file should not error: %v", err)
 	}
 }
@@ -195,7 +196,7 @@ func TestReadReportFile_Base64(t *testing.T) {
 	defer srv.Close()
 	p := NewGitLab(srv.URL, "glpat-x", "group/reports", "reports", "main", "summarizer")
 
-	got, err := p.ReadReportFile("summarizer/2026-W36", "reports/2026-W36/combined--7d--customer.md")
+	got, err := p.ReadReportFile(context.Background(), "summarizer/2026-W36", "reports/2026-W36/combined--7d--customer.md")
 	if err != nil {
 		t.Fatalf("ReadReportFile: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestReadReportFile_Base64(t *testing.T) {
 // say so rather than silently producing an empty rollup.
 func TestLocalPublisher_ReadReportFileUnsupported(t *testing.T) {
 	lp := NewLocal(t.TempDir())
-	if _, err := lp.ReadReportFile("x", "y"); err == nil {
+	if _, err := lp.ReadReportFile(context.Background(), "x", "y"); err == nil {
 		t.Error("local publisher should reject ReadReportFile")
 	}
 }

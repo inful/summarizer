@@ -112,7 +112,7 @@ func TestNoSummarizeTopic_ExcludesDiscoveredProject(t *testing.T) {
 	}
 	gc := newOptOutClient(t, o)
 
-	projects, _, err := resolveProjects(context.Background(), gc, Options{
+	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
 		Since:          7 * 24 * time.Hour,
 	})
@@ -145,7 +145,7 @@ func TestNoSummarizeTopic_WinsOverSummarize(t *testing.T) {
 	}
 	gc := newOptOutClient(t, o)
 
-	projects, _, err := resolveProjects(context.Background(), gc, Options{
+	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
 		Since:          7 * 24 * time.Hour,
 	})
@@ -170,7 +170,7 @@ func TestOptOutOverridesExplicitProject(t *testing.T) {
 	}
 	gc := newOptOutClient(t, o)
 
-	projects, _, err := resolveProjects(context.Background(), gc, Options{
+	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		Projects: []string{"g/quiet", "g/filed", "g/wanted"},
 		Since:    7 * 24 * time.Hour,
 	})
@@ -229,7 +229,7 @@ func TestNoSummarizeTopic_CaseSensitive(t *testing.T) {
 	}
 	gc := newOptOutClient(t, o)
 
-	projects, _, err := resolveProjects(context.Background(), gc, Options{
+	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverActive: true,
 		Since:          7 * 24 * time.Hour,
 	})

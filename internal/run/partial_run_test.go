@@ -168,12 +168,12 @@ func TestRun_MaxProjectsDefaultsWhenUnset(t *testing.T) {
 	}
 }
 
-// TestCountEpicEvents_ExactNotTitleMatch: the count must come from
-// real epic annotations. The previous implementation counted the epic's
-// title inside the rendered report body, so two epics sharing a title
-// each reported the sum of both — and the number reached
-// customer-facing documents.
-func TestCountEpicEvents_ExactNotTitleMatch(t *testing.T) {
+// TestEpicEventCounts_ExactNotTitleMatch: the count must come from real
+// epic annotations. The previous implementation counted the epic's title
+// inside the rendered report body, so two epics sharing a title each
+// reported the sum of both — and the number reached customer-facing
+// documents.
+func TestEpicEventCounts_ExactNotTitleMatch(t *testing.T) {
 	epicA := &gitlab.Epic{IID: 1, Title: "Billing rewrite"}
 	epicB := &gitlab.Epic{IID: 2, Title: "Billing rewrite"} // same title, different epic
 
@@ -183,17 +183,22 @@ func TestCountEpicEvents_ExactNotTitleMatch(t *testing.T) {
 		{Kind: events.KindIssue, Epic: epicB},
 		{Kind: events.KindMR}, // no epic annotation
 	}
+	counts := epicEventCounts(evs, []*gitlab.Epic{epicA, epicB})
 
-	if got := countEpicEvents(evs, epicA); got != 2 {
-		t.Errorf("epic A: got %d, want 2", got)
+	if counts[1] != 2 {
+		t.Errorf("epic 1: got %d, want 2", counts[1])
 	}
-	if got := countEpicEvents(evs, epicB); got != 1 {
-		t.Errorf("epic B with the same title: got %d, want 1", got)
+	if counts[2] != 1 {
+		t.Errorf("epic 2 with the same title: got %d, want 1", counts[2])
 	}
-	if got := countEpicEvents(evs, &gitlab.Epic{IID: 99}); got != 0 {
-		t.Errorf("unknown epic: got %d, want 0", got)
+	// An epic with no annotated events is present with a zero, not absent
+	// — the rollup still lists it, with "0 events".
+	counts = epicEventCounts(evs, []*gitlab.Epic{epicA, epicB, {IID: 99}})
+	if got, ok := counts[99]; !ok || got != 0 {
+		t.Errorf("unrelated epic: got (%d, %v), want (0, true)", got, ok)
 	}
-	if got := countEpicEvents(evs, nil); got != 0 {
-		t.Errorf("nil epic: got %d, want 0", got)
+	// Nil epics in the slice must not panic.
+	if got := epicEventCounts(evs, []*gitlab.Epic{nil}); len(got) != 0 {
+		t.Errorf("nil epic: got %v, want empty", got)
 	}
 }
