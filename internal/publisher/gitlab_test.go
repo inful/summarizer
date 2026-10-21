@@ -107,7 +107,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			_, _ = fmt.Fprintf(w, `{"encoding":"text","content":%q}`, content)
 			return
 		}
-		if r.Method != http.MethodPut {
+		if r.Method != http.MethodPut && r.Method != http.MethodPost {
 			http.Error(w, "method", http.StatusMethodNotAllowed)
 			return
 		}
@@ -293,6 +293,125 @@ func TestGitLabPublisher_PutOmitsLastCommitIDForNewFiles(t *testing.T) {
 	}
 	if strings.Contains(putBodies[0], "last_commit_id") {
 		t.Errorf("PUT body must NOT include last_commit_id for a new file; got %s", putBodies[0])
+	}
+}
+
+// TestGitLabPublisher_CreateOrUpdateDispatch: the publisher must use
+// POST for the first publish (file doesn't exist on the branch) and
+// PUT for subsequent re-runs (file exists, last_commit_id is round-
+// tripped). The read signal is `last_commit_id` from the GET — empty
+// means POST, non-empty means PUT. This is the bug that surfaced as
+// `400 {"message":"A file with this name doesn't exist"}` on the
+// first publish of every run against GitLab versions that do not
+// auto-create on PUT.
+func TestGitLabPublisher_CreateOrUpdateDispatch(t *testing.T) {
+	// records every request the publisher makes, with method and path,
+	// so the test can assert POST-then-PUT-then-... order.
+	type req struct {
+		method string
+		path   string
+	}
+	var requests []req
+	var mu sync.Mutex
+
+	const lastCommitID = "frozen-sha-from-monday"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, req{method: r.Method, path: r.URL.Path})
+		mu.Unlock()
+
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/branches") && !strings.Contains(r.URL.Path, "/branches/"):
+			w.WriteHeader(http.StatusCreated)
+		case strings.Contains(r.URL.Path, "/branches/"):
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/repository/files/"):
+			if r.Method == http.MethodGet {
+				// The first publish: file doesn't exist (404).
+				// The second publish: file exists with last_commit_id.
+				if r.URL.Query().Get("ref") == "" {
+					http.Error(w, "missing ref", http.StatusBadRequest)
+					return
+				}
+				if !mu.TryLock() {
+					// Two readers can race; serialise them.
+					mu.Lock()
+				}
+				count := len(requests)
+				mu.Unlock()
+				if count <= 2 {
+					// First read (branch create probe) just happened.
+					// The 404 fires for this read.
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				// The second read: file exists, return content + SHA.
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"encoding": "text",
+					"content": "---\nuid: existing-uid\n---\n\nold body\n",
+					"last_commit_id": "` + lastCommitID + `"
+				}`))
+				return
+			}
+			// PUT or POST: both 200 OK on success.
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/merge_requests"):
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"iid":1,"web_url":"http://x","source_branch":"b","target_branch":"main","title":"t","state":"opened"}`))
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+
+	// First publish: file does not exist. The publisher should
+	// POST, never PUT, because the read returned 404 → empty
+	// last_commit_id.
+	if _, err := p.Publish(Request{
+		Name: "x.md", Body: []byte("first body"), Period: "2026-10-19", Kind: KindPerProject,
+	}); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	// Second publish: file exists with the SHA from the read.
+	// The publisher should PUT, never POST, because the read
+	// returned 200 with last_commit_id non-empty.
+	if _, err := p.Publish(Request{
+		Name: "x.md", Body: []byte("second body"), Period: "2026-10-19", Kind: KindPerProject,
+	}); err != nil {
+		t.Fatalf("second publish: %v", err)
+	}
+
+	// Inspect the order of file operations: GET (read), POST or PUT.
+	var files []string
+	mu.Lock()
+	for _, r := range requests {
+		if strings.Contains(r.path, "/repository/files/") {
+			files = append(files, r.method)
+		}
+	}
+	mu.Unlock()
+
+	// Each Publish triggers: GET (read), METHOD (create or update).
+	// First publish: GET + POST.
+	// Second publish: GET + PUT.
+	if len(files) != 4 {
+		t.Fatalf("want 4 file requests (2 GETs, 1 POST, 1 PUT); got %d: %v", len(files), files)
+	}
+	if files[0] != "GET" || files[1] != "POST" {
+		t.Errorf("first publish should be GET then POST; got %v", files[:2])
+	}
+	if files[2] != "GET" || files[3] != "PUT" {
+		t.Errorf("second publish should be GET then PUT; got %v", files[2:])
 	}
 }
 

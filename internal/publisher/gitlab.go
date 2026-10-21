@@ -190,8 +190,33 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 		return Result{}, fmt.Errorf("ensure branch %s: %w", branch, err)
 	}
 
-	// 2. PUT the file onto the branch.
-	putURL := fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s",
+	// 2. Create-or-update the file. GitLab's API has two endpoints
+	// with different semantics:
+	//   - POST /repository/files creates a new file. 400 with
+	//     "You are attempting to create a file that already exists"
+	//     if the path is taken.
+	//   - PUT  /repository/files updates an existing file. 400 with
+	//     "A file with this name doesn't exist" if the path is free
+	//     — and in older versions (e.g. before the UpdateService got
+	//     its create_commit! fallback) the same error fires for the
+	//     create case. Modern GitLab auto-creates on PUT, but
+	//     self-hosted instances running the older API code reject
+	//     with this message either way.
+	//
+	// The reliable signal is lastCommitID from the read: empty means
+	// the file does not exist on the branch, non-empty means it does.
+	// Use that to choose the right method instead of trying to
+	// decode the error.
+	//
+	// The body is the same for both; last_commit_id is `omitempty`,
+	// so it drops out of the POST body automatically.
+	var method, urlStr string
+	if lastCommitID == "" {
+		method = "POST"
+	} else {
+		method = "PUT"
+	}
+	urlStr = fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s",
 		g.Host, url.PathEscape(g.Project), pathEscape(path))
 	putBody, _ := json.Marshal(fileReq{
 		Branch:        branch,
@@ -200,15 +225,12 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 		Encoding:      "base64",
 		LastCommitID:  lastCommitID,
 	})
-	if err := g.api(putURL, "PUT", putBody, nil); err != nil {
+	if err := g.api(urlStr, method, putBody, nil); err != nil {
 		// The response body rarely tells you what's wrong with the
-		// request body; GitLab's "A file with this name doesn't
-		// exist" lands in both the wrong-last_commit_id and the
-		// post-PUT-but-shouldn't-have-PUT cases. Echo the fields
-		// that matter so the next debug session doesn't need
-		// tcpdump.
-		return Result{}, fmt.Errorf("put file %s@%s: %w (body: branch=%s last_commit_id=%q commit_message=%q encoding=%s content_bytes=%d)",
-			path, branch, err, branch, lastCommitID, commitMessage(req), "base64", len(encoded))
+		// request body. Echo the request fields so the next debug
+		// session doesn't need tcpdump.
+		return Result{}, fmt.Errorf("%s file %s@%s: %w (body: branch=%s last_commit_id=%q commit_message=%q encoding=%s content_bytes=%d)",
+			method, path, branch, err, branch, lastCommitID, commitMessage(req), "base64", len(encoded))
 	}
 
 	// 3. Find or create the MR for this period.
