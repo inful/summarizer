@@ -4,7 +4,13 @@ All notable changes to summarizer are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-21
+
+### Fixed
+- **Docs cited code that no longer existed.** `how-it-works.md` named `FetchMRChanges`, `fillMRChanges` and `resolveOptions`; the source has `FetchMRDetail`, `fillMRDetail` and `resolveProjects`. The same diagram omitted discovery entirely, and every doc showed the rollup filenames as `combined--<days>d--<aud>.md` / `combined--epics--<days>d--<aud>.md` when `rollupFilename` has always emitted an explicit kind segment (`combined--rollup--`, `combined--epics-rollup--`, `combined--epics-<customer-slug>--`). The filenames were wrong in v0.1.0 too. The publisher's package comment and the runbook also described a plain PUT; the publisher dispatches POST-on-404 / PUT-on-200.
+- **`docs/frontmatter-schema.md` documented a safety property the code no longer has.** It claimed the local publisher's refuse-first policy preserves UIDs across re-runs. `forceOverwrite()` has returned `true` since the week buckets landed, so refuse-first is unreachable and `--force` is a no-op. Corrected, and the runbook's "Refuse overwrite (exit 6)" scenario now describes the real recovery path (git history on the period branch).
+- **Seven registered flags were undocumented** — `--max-events`, `--gitlab-host`, `--gitlab-token`, `--openai-key`, `--anthropic-key`, `--safety-url`, `--safety-token`. A full flag reference now lives in the runbook, including the removed `--period-mode` and the no-op `--force`.
+- **`docs/deferred.md` was two entries out of date.** Q2 claimed `internal/run` had zero test files (it has 11) and described activity discovery as flag-gated when it is now the default. Q1 claimed `classify` was a pure string-match when it uses `errors.Is` for its two typed sentinels. `how-it-works.md` also listed "automatic enrollment of new projects" as out of scope; it shipped.
 
 ### Changed
 - **Period directories are ISO week numbers.** `summarizer/2026-10-19/` → `summarizer/2026-W43/`, via Go's `ISOWeek()` so the ISO year-boundary rules apply (2027-01-01 is `2026-W53`, not `2027-W01`). Weekly buckets were already what `--period-mode monday` selected; this makes them the only option and removes the flag. A day-granular bucket can't be expressed as a week number — seven runs would collide on one directory — so `daily` went with it rather than being left as a mode that lies about its output. `--force` is now implied: every run in a week targets the same path, so refuse-first would fail the cron from day 2.
@@ -16,7 +22,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **A week belongs to the month containing its Monday.** September 2026 collects W37–W40; the week of Aug 31 is a September-adjacent week that would otherwise be counted in both months. Covered by a 2026-12 case, since 2026 is a 53-week ISO year.
 
 ### Not changed
-- Per-customer epic rollups (`combined--epics-rollup--*`) are deliberately excluded from the monthly summary. They are already split per customer; folding them into one blob would mix customers together, which is the opposite of what that split exists to prevent.
+- Per-customer epic rollups (`combined--epics-<customer-slug>--*`) are deliberately excluded from the monthly summary. They are already split per customer; folding them into one blob would mix customers together, which is the opposite of what that split exists to prevent.
 
 ## [0.1.0] - 2026-10-21
 
