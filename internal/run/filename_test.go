@@ -17,13 +17,13 @@ func TestFilenames_Shape(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"per-project customer", filename(week, "group/sub/proj", prompt.AudienceCustomer),
+		{"per-project customer", filename(false, week, "group/sub/proj", prompt.AudienceCustomer),
 			"group_sub_proj--7d--customer.md"},
-		{"per-project team", filename(week, "group/sub/proj", prompt.AudienceTeam),
+		{"per-project team", filename(false, week, "group/sub/proj", prompt.AudienceTeam),
 			"group_sub_proj--7d--team.md"},
-		{"rollup customer", rollupFilename(week, prompt.AudienceCustomer, "rollup"),
+		{"rollup customer", rollupFilename(false, week, prompt.AudienceCustomer, "rollup"),
 			"combined--rollup--7d--customer.md"},
-		{"epic rollup customer", rollupFilename(week, prompt.AudienceCustomer, "epics-rollup"),
+		{"epic rollup customer", rollupFilename(false, week, prompt.AudienceCustomer, "epics-rollup"),
 			"combined--epics-rollup--7d--customer.md"},
 	}
 	for _, c := range cases {
@@ -37,12 +37,12 @@ func TestFilenames_Shape(t *testing.T) {
 // another on the same branch. All four shapes must be distinct.
 func TestFilenames_NoCollision(t *testing.T) {
 	names := map[string]string{
-		"project/customer": filename(week, "group/sub/proj", prompt.AudienceCustomer),
-		"project/team":     filename(week, "group/sub/proj", prompt.AudienceTeam),
-		"rollup/customer":  rollupFilename(week, prompt.AudienceCustomer, "rollup"),
-		"rollup/team":      rollupFilename(week, prompt.AudienceTeam, "rollup"),
-		"epics/customer":   rollupFilename(week, prompt.AudienceCustomer, "epics-rollup"),
-		"epics/team":       rollupFilename(week, prompt.AudienceTeam, "epics-rollup"),
+		"project/customer": filename(false, week, "group/sub/proj", prompt.AudienceCustomer),
+		"project/team":     filename(false, week, "group/sub/proj", prompt.AudienceTeam),
+		"rollup/customer":  rollupFilename(false, week, prompt.AudienceCustomer, "rollup"),
+		"rollup/team":      rollupFilename(false, week, prompt.AudienceTeam, "rollup"),
+		"epics/customer":   rollupFilename(false, week, prompt.AudienceCustomer, "epics-rollup"),
+		"epics/team":       rollupFilename(false, week, prompt.AudienceTeam, "epics-rollup"),
 	}
 	seen := make(map[string]string, len(names))
 	for label, n := range names {
@@ -61,8 +61,8 @@ func TestFilenames_FloorOneDay(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"2h project", filename(2*time.Hour, "g/p", prompt.AudienceTeam), "g_p--1d--team.md"},
-		{"2h epic rollup", rollupFilename(2*time.Hour, prompt.AudienceTeam, "epics-rollup"),
+		{"2h project", filename(false, 2*time.Hour, "g/p", prompt.AudienceTeam), "g_p--1d--team.md"},
+		{"2h epic rollup", rollupFilename(false, 2*time.Hour, prompt.AudienceTeam, "epics-rollup"),
 			"combined--epics-rollup--1d--team.md"},
 	}
 	for _, c := range cases {

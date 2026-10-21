@@ -89,7 +89,7 @@ func TestPrintSummary_CountsFilesActuallyWritten(t *testing.T) {
 		RollupFiles:     []string{"r1", "r2"},
 		EpicRollupFiles: []string{"e1"},
 	}
-	out := captureStderr(t, func() { printSummary(res, nil, false, 7*24*time.Hour) })
+	out := captureStderr(t, func() { printSummary(res, nil, false, 7*24*time.Hour, false) })
 	if !strings.Contains(out, "6 file(s) written") {
 		t.Errorf("want 6 files (3 per-project + 2 rollups + 1 epic rollup), got:\n%s", out)
 	}
@@ -105,7 +105,7 @@ func TestPrintSummary_CountsFilesActuallyWritten(t *testing.T) {
 // must not claim it did.
 func TestPrintSummary_NoFileClaimOnDryRun(t *testing.T) {
 	res := run.Result{Projects: []run.ProjectResult{{Project: "a", FilesWritten: []string{"a.md"}}}}
-	out := captureStderr(t, func() { printSummary(res, nil, true, 0) })
+	out := captureStderr(t, func() { printSummary(res, nil, true, 0, true) })
 	if strings.Contains(out, "file(s) written") {
 		t.Errorf("dry run must not claim writes:\n%s", out)
 	}
@@ -115,7 +115,7 @@ func TestPrintSummary_NoFileClaimOnDryRun(t *testing.T) {
 // place the operator sees what failed.
 func TestPrintSummary_SurfacesTheError(t *testing.T) {
 	out := captureStderr(t, func() {
-		printSummary(run.Result{}, errors.New("probe g/p: 403 forbidden"), false, 0)
+		printSummary(run.Result{}, errors.New("probe g/p: 403 forbidden"), false, 0, true)
 	})
 	if !strings.Contains(out, "403 forbidden") {
 		t.Errorf("error not surfaced:\n%s", out)

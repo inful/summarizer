@@ -5,6 +5,21 @@ normalises it, renders a prompt, calls an LLM, and writes two Markdown
 reports — one for customers, one for the team. This document maps
 the data flow and the components.
 
+## The window is the week
+
+Reports are filed under `<YYYY-Www>`, so the default window is that
+same ISO week — Monday 00:00 UTC to now. A rolling 7 days disagrees
+with its own directory: run on a Monday and `2026-W43` holds nothing
+from week 43 and a full week of week 42, while on a Thursday the same
+command looks three weeks into the past. The filename token is `wk`
+rather than a day count, so the file keeps its name as the week fills
+in instead of being renamed daily.
+
+`--since` and `default_lookback` still exist, for a deliberate
+backfill or a genuinely rolling window. The filename then records the
+length (`--7d--`, `--30d--`), so a `summarizer monthly` reading these
+weeks can tell the two apart — and refuses a week that carries both.
+
 ## Data flow
 
 ```

@@ -156,7 +156,7 @@ func weeklyFiles(weeks ...string) map[string]string {
 	files := map[string]string{}
 	for _, w := range weeks {
 		for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-			path := "reports/" + w + "/combined--7d--" + string(aud) + ".md"
+			path := "reports/" + w + "/combined--rollup--wk--" + string(aud) + ".md"
 			files["summarizer/"+w+"|"+path] = "---\nuid: x\n---\n\nweekly body for " + w + " " + string(aud)
 		}
 	}
@@ -178,10 +178,10 @@ func TestMonthlyRunner_RefusesAmbiguousWindow(t *testing.T) {
 	bad := weeks[0]
 	files := weeklyFiles(weeks...)
 	// A stale run from earlier in the same week, at a different window.
-	files["summarizer/"+bad+"|reports/"+bad+"/combined--1d--customer.md"] =
-		"---\nuid: y\n---\n\nstale one-day body"
-	files["summarizer/"+bad+"|reports/"+bad+"/combined--1d--team.md"] =
-		"---\nuid: y\n---\n\nstale one-day body"
+	files["summarizer/"+bad+"|reports/"+bad+"/combined--rollup--30d--customer.md"] =
+		"---\nuid: y\n---\n\nstale thirty-day body"
+	files["summarizer/"+bad+"|reports/"+bad+"/combined--rollup--30d--team.md"] =
+		"---\nuid: y\n---\n\nstale thirty-day body"
 
 	repo := &monthlyRepo{branches: append([]string{"main"}, prefixes(weeks...)...), files: files}
 	r, _ := newMonthlyRunner(t, repo)
@@ -198,7 +198,7 @@ func TestMonthlyRunner_RefusesAmbiguousWindow(t *testing.T) {
 	for _, s := range res.Skipped {
 		if strings.HasPrefix(s, bad) {
 			skipped = true
-			if !strings.Contains(s, "combined--1d") {
+			if !strings.Contains(s, "combined--rollup--30d") {
 				t.Errorf("the skip reason should name the conflicting files, got %q", s)
 			}
 		}
@@ -361,4 +361,49 @@ func prefixes(weeks ...string) []string {
 		out = append(out, "summarizer/"+w)
 	}
 	return out
+}
+
+// TestMonthlyRunner_IgnoresEpicRollupsOnTheSameWeek: the epic rollups
+// share the combined rollup's prefix and its audience suffix, with more
+// `--` between them. Matched on prefix and suffix — which is what the
+// ambiguity check did when it was written — every week carrying epics
+// looked like it had two window sizes, so the whole week was skipped and
+// the monthly summary silently lost it. The skip reason named the epic
+// files as if they were competing windows, which is the confusion that
+// should have made the collision obvious the first time.
+func TestMonthlyRunner_IgnoresEpicRollupsOnTheSameWeek(t *testing.T) {
+	weeks, err := weeksInMonth("2026-09")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := weeklyFiles(weeks...)
+	for _, w := range weeks {
+		for _, name := range []string{
+			"combined--epics-rollup--wk--customer.md",
+			"combined--epics-rollup--wk--team.md",
+			"combined--epics-acme--wk--customer.md",
+			"combined--epics-acme--wk--team.md",
+		} {
+			files["summarizer/"+w+"|reports/"+w+"/"+name] =
+				"---\nuid: z\n---\n\nepic rollup body"
+		}
+	}
+
+	repo := &monthlyRepo{branches: append([]string{"main"}, prefixes(weeks...)...), files: files}
+	r, llmStub := newMonthlyRunner(t, repo)
+
+	res, err := r.Run(context.Background(), "2026-09")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Weeks) != len(weeks) {
+		t.Errorf("epic rollups must not count as competing windows; read %d of %d weeks: skipped %v",
+			len(res.Weeks), len(weeks), res.Skipped)
+	}
+	// And the epic text must not reach the prompt.
+	for _, p := range llmStub.prompts {
+		if strings.Contains(p, "epic rollup body") {
+			t.Error("an epic rollup body leaked into the monthly prompt")
+		}
+	}
 }

@@ -353,7 +353,7 @@ func TestSlugCustomer(t *testing.T) {
 // TestEpicRollupFilename_ForCustomerCode: the exact file names an
 // operator will see in the period directory.
 func TestEpicRollupFilename_ForCustomerCode(t *testing.T) {
-	got := rollupFilename(7*24*time.Hour, prompt.AudienceCustomer, "epics-acme")
+	got := rollupFilename(false, 7*24*time.Hour, prompt.AudienceCustomer, "epics-acme")
 	want := "combined--epics-acme--7d--customer.md"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)

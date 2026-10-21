@@ -213,11 +213,31 @@ func (r *MonthlyRunner) readWeeklyRollup(ctx context.Context, branch string, aud
 	// tell which one is current. Ambiguity is therefore reported and
 	// the week skipped, rather than guessed at: a month-end summary
 	// built from the wrong window is worse than one missing a week.
+	//
+	// Matched on the kind segment, not on prefix and suffix. Both of
+	// those also match the epic rollups:
+	//
+	//	combined--rollup--wk--customer.md        ← wanted
+	//	combined--epics-rollup--wk--customer.md  ← same prefix, same suffix
+	//	combined--epics-acme--wk--customer.md    ← same again
+	//
+	// So every week carrying epics looked like it had two window sizes,
+	// and the whole week was skipped — the ambiguity check causing
+	// exactly the loss it exists to prevent, and naming the epic files
+	// in its own error as if they were competing windows. Segment count
+	// is not enough either: `epics-rollup` holds a single `-`, so it
+	// splits into the same four `--` segments as the file we want.
+	// Only parts[1] tells them apart.
 	var candidates []string
 	for _, n := range names {
-		if strings.HasPrefix(n, "combined--") && strings.HasSuffix(n, "--"+string(aud)+".md") {
-			candidates = append(candidates, n)
+		parts := strings.Split(n, "--")
+		if len(parts) != 4 || parts[0] != "combined" || parts[1] != "rollup" {
+			continue
 		}
+		if parts[3] != string(aud)+".md" {
+			continue
+		}
+		candidates = append(candidates, n)
 	}
 	if len(candidates) == 0 {
 		return "", nil

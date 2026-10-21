@@ -28,6 +28,7 @@ import (
 type Options struct {
 	Projects             []string      // required (unless DiscoveredGroups is set): one or more GitLab paths "group/subgroup/proj"
 	Since                time.Duration // window: now - Since < since
+	WeekScoped           bool          // Since was derived from the ISO week rather than set by the operator. Changes the filename token from "7d" to "wk" — see WeekWindow.
 	Provider             string        // "openai" or "anthropic" (overrides config)
 	Model                string        // overrides config
 	DryRun               bool          // fetch + print + exit; no LLM call, no file write
@@ -383,7 +384,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			res.TeamText = resp.Text
 		}
 
-		name := filename(window, project, aud)
+		name := filename(p.Opts.WeekScoped, window, project, aud)
 		period := periodSlug()
 		res2, err := p.Publisher.Publish(ctx, publisher.Request{
 			Name:     name,
@@ -477,7 +478,7 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				return files, fmt.Errorf("llm %s %s: %w", label, aud, err)
 			}
 			res, err := p.Publisher.Publish(ctx, publisher.Request{
-				Name:     rollupFilename(p.Opts.Since, aud, part.name),
+				Name:     rollupFilename(p.Opts.WeekScoped, p.Opts.Since, aud, part.name),
 				Body:     []byte(resp.Text),
 				Kind:     publisher.KindRollup,
 				Period:   periodSlug(),
@@ -787,6 +788,20 @@ func weekSlugFor(now time.Time) string {
 // mondayAnchor returns the most-recent Monday at-or-before t. Calendar
 // math: Weekday() is Sunday=0..Saturday=6, so we want the offset
 // to be (Weekday() + 6) mod 7 (Monday=0). Subtract that many days.
+// WeekWindow returns how far back "this week so far" reaches, and true.
+// Reports are filed under a week-number directory, so the window and the
+// directory have to agree. A rolling 7 days does not: run on a Monday
+// and the file named 2026-W43 holds nothing from W43 and a full week of
+// W42, while on a Thursday the same command looks three weeks into the
+// past. Monday 00:00 UTC is the ISO week's start, matching ISOWeek().
+//
+// The duration is evaluated once at start-up and then behaves like any
+// other window. --since and default_lookback still override it, for an
+// operator who wants a deliberate backfill.
+func WeekWindow(now time.Time) (time.Duration, bool) {
+	return now.Sub(mondayAnchor(now)), true
+}
+
 func mondayAnchor(t time.Time) time.Time {
 	weekday := int(t.Weekday())
 	daysSinceMonday := (weekday + 6) % 7
@@ -1268,16 +1283,28 @@ func windowDays(window time.Duration) int {
 	return max(int(window/(24*time.Hour)), 1)
 }
 
-func filename(window time.Duration, project string, aud prompt.Audience) string {
-	return fmt.Sprintf("%s--%dd--%s.md", sanitize(project), windowDays(window), aud)
+// windowToken is the middle segment of every filename. "wk" for the
+// week default, "<N>d" for an explicit duration. The default used to
+// render as whatever number of whole days had elapsed — "3d" on a
+// Thursday — so the same week's file was renamed daily and no two days
+// agreed on what it covered.
+func windowToken(weekScoped bool, window time.Duration) string {
+	if weekScoped {
+		return "wk"
+	}
+	return fmt.Sprintf("%dd", windowDays(window))
+}
+
+func filename(weekScoped bool, window time.Duration, project string, aud prompt.Audience) string {
+	return fmt.Sprintf("%s--%s--%s.md", sanitize(project), windowToken(weekScoped, window), aud)
 }
 
 // rollupFilename is the combined-report name. kind is "rollup" or
 // "epics-rollup"; the latter keeps its distinct prefix so a docbuilder
 // operator browsing the period directory can tell the two apart without
 // rendering either.
-func rollupFilename(window time.Duration, aud prompt.Audience, kind string) string {
-	return fmt.Sprintf("combined--%s--%dd--%s.md", kind, windowDays(window), aud)
+func rollupFilename(weekScoped bool, window time.Duration, aud prompt.Audience, kind string) string {
+	return fmt.Sprintf("combined--%s--%s--%s.md", kind, windowToken(weekScoped, window), aud)
 }
 
 func sanitize(s string) string {

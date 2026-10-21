@@ -23,7 +23,7 @@ docker run --rm \
   -e GITLAB_TOKEN=$GITLAB_TOKEN \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   ghcr.io/inful/summarizer:latest \
-    run --project group/sub/proj --since 7d --output-dir /out
+    run --project group/sub/proj --output-dir /out
 ```
 
 A `:debug` tag is published alongside each release with a busybox shell layered in (CI use, or `docker exec` for debugging):
@@ -126,12 +126,12 @@ Then:
 
 ```bash
 export GITLAB_REPORTS_TOKEN="glpat-..."   # separate from $GITLAB_TOKEN
-summarizer run --project group/proj --since 7d
+summarizer run --project group/proj
 ```
 
 What you get:
 
-1. For each run, a source branch is created (e.g. `summarizer/2026-W43`) from `<default_branch>` if it doesn't exist.
+1. For each run, a source branch is created (e.g. `summarizer/2026-W43`) from `<default_branch>` if it doesn't exist. The default window is **this ISO week so far**, so the branch named `2026-W43` holds Monday-to-now of week 43 and nothing else. Pass `--since 7d` only for a deliberate rolling-window backfill.
 2. Each rendered report (per project, per audience) is committed to that branch under `<prefix>/<period>/<filename>`, wrapped in **docbuilder-format frontmatter** (`uid`, `title`, `date`, `lastmod`, `fingerprint`, `tags`, `categories`, `aliases`, plus `public: true` for customer-audience reports). docbuilder in your `reports` project indexes them automatically.
 3. A single MR is opened against `<default_branch>` with body: "Summarizer rollup 2026-W43".
 4. Re-runs for the same period accumulate commits on the same MR — no branch/MR sprawl.
@@ -142,14 +142,14 @@ What you get:
 ```
 reports/
   2026-W42/
-    group-proj--7d--customer.md        # public: true → customer index
-    group-proj--7d--team.md            # no public key    → internal index
-    other-proj--7d--customer.md       # public: true
-    other-proj--7d--team.md
-    combined--rollup--7d--customer.md   # cross-project rollup (when ≥2 projects)
-    combined--rollup--7d--team.md
-    combined--epics-rollup--7d--customer.md   # cross-project epic rollup (when ≥1 active epic)
-    combined--epics-rollup--7d--team.md
+    group-proj--wk--customer.md        # public: true → customer index
+    group-proj--wk--team.md            # no public key    → internal index
+    other-proj--wk--customer.md       # public: true
+    other-proj--wk--team.md
+    combined--rollup--wk--customer.md   # cross-project rollup (when ≥2 projects)
+    combined--rollup--wk--team.md
+    combined--epics-rollup--wk--customer.md   # cross-project epic rollup (when ≥1 active epic)
+    combined--epics-rollup--wk--team.md
   2026-W43/
     ...
   2026-09/                             # `summarizer monthly` output
@@ -168,7 +168,7 @@ Each weekly run = one folder, named by ISO week. The GitLab UI and `git log` bot
 The same cron line that runs the local-disk variant runs the publishing variant:
 
 ```cron
-0 9 * * 1 summarizer run --config /etc/summarizer/subscriptions.yaml --project group/proj --since 7d
+0 9 * * 1 summarizer run --config /etc/summarizer/subscriptions.yaml --project group/proj
 ```
 
 When `publish.enabled: true`, the local disk write is skipped — every report file lives only in the GitLab target until a human merges the MR. Summarizer succeeds (exit 0) when the commits land; it does not wait for MR merge.
@@ -265,22 +265,22 @@ summarizer run --project group/a,group/b
 # the window. No topic, no config entry. This is what happens when no
 # discovery flag is passed at all, and it's what --discover-active
 # asks for explicitly.
-summarizer run --since 7d
-summarizer run --discover-active --since 7d
+summarizer run
+summarizer run --discover-active
 
 # Narrower: --discover-group scans one group's projects and runs the
 # pipeline on whichever had MR or issue activity in the window.
 # Composes with --project (explicit wins on duplicates; the discovery
 # pass skips already-explicit projects to spare the probe round-trip).
-summarizer run --discover-group group/team-a --since 7d
-summarizer run --discover-group group/team-a --project group/team-a/flagship --since 7d
+summarizer run --discover-group group/team-a
+summarizer run --discover-group group/team-a --project group/team-a/flagship
 
 # Server-wide by topic: --discover-by-topic picks up every project
 # on the instance carrying a `summarize` or `summarize-team-only`
 # topic, across all groups the token can see. Kept as an escape
 # hatch for instances where the active-project net is too wide.
-summarizer run --discover-by-topic --since 7d
-summarizer run --discover-by-topic --discover-group group/team-a --since 7d
+summarizer run --discover-by-topic
+summarizer run --discover-by-topic --discover-group group/team-a
 
 # Opting out: two project-owner signals, either sufficient.
 #
@@ -304,7 +304,7 @@ summarizer run --discover-by-topic --discover-group group/team-a --since 7d
 # together: --internal-only-project, summarizer.yaml's
 # internal_only_projects block, and the `summarize-team-only` topic.
 summarizer run --discover-group group/team-a \
-    --internal-only-project group/team-a/internal-tool --since 7d
+    --internal-only-project group/team-a/internal-tool
 
 # When more than one project runs (whether explicit or discovered),
 # summarizer also writes a combined rollup
@@ -314,11 +314,12 @@ summarizer run --discover-group group/team-a \
 # combined--epics-<customer-slug>--* when issues carry org::CODE
 # labels.
 
-# Period bucketing is by ISO week number. Every run inside the same
-# Mon-Sun week writes to <prefix>/<YYYY-Www>/, onto the same source
-# branch, updating the same MR — so a daily cron refines one week's
-# report instead of opening seven directories a week.
-summarizer run --discover-group group/team-a --since 7d
+# Period bucketing is by ISO week number, and the default window is
+# that same week. Every run inside one Mon-Sun week writes to
+# <prefix>/<YYYY-Www>/, onto the same source branch, updating the same
+# MR — so a daily cron refines one week's report instead of opening
+# seven directories a week, and each re-run covers Monday-to-now.
+summarizer run --discover-group group/team-a
 ```
 
 Output files are written under `--output-dir` (or `output_dir` from config),

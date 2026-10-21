@@ -58,7 +58,7 @@ a customer one.
 summarizer run --project group/subgroup/project --dry-run
 ```
 
-Fetches the last 7 days of activity from GitLab and prints a one-line
+Fetches this ISO week so far from GitLab and prints a one-line
 summary to stderr. No LLM call, no file write. Tells you whether the
 token works and the project path resolves.
 
@@ -73,22 +73,22 @@ summarizer run --dry-run
 ## Real run
 
 ```bash
-summarizer run --project group/subgroup/project --since 7d
+summarizer run --project group/subgroup/project
 ```
 
 Produces two Markdown files in `./summarizer-out/`:
 
 ```
-group_subgroup_project--7d--customer.md
-group_subgroup_project--7d--team.md
+group_subgroup_project--wk--customer.md
+group_subgroup_project--wk--team.md
 ```
 
 Both have a one-line run summary on stderr:
 
 ```
-summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=168h0m0s)
-  → ./summarizer-out/2026-W43/group_subgroup_project--7d--customer.md
-  → ./summarizer-out/2026-W43/group_subgroup_project--7d--team.md
+summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=this ISO week (since Monday 00:00 UTC, 60h0m0s elapsed))
+  → ./summarizer-out/2026-W43/group_subgroup_project--wk--customer.md
+  → ./summarizer-out/2026-W43/group_subgroup_project--wk--team.md
   tokens[group/subgroup/project/customer]: prompt=2103 completion=812 total=2915
   tokens[group/subgroup/project/team]:     prompt=2478 completion=901 total=3379
 ```

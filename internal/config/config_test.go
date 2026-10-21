@@ -118,8 +118,12 @@ func TestDefaults(t *testing.T) {
 	if cfg.OutputDir != "./summarizer-out" {
 		t.Errorf("OutputDir: got %q", cfg.OutputDir)
 	}
-	if cfg.DefaultLookback != "168h" {
-		t.Errorf("DefaultLookback: got %q", cfg.DefaultLookback)
+	if cfg.DefaultLookback != "" {
+		// Empty means "the current ISO week", resolved in run.WeekWindow.
+		// A concrete default here would silently disagree with the
+		// week-numbered period directories — a rolling 168h run on a
+		// Monday files a week of W42's work under 2026-W43.
+		t.Errorf("DefaultLookback: got %q, want empty", cfg.DefaultLookback)
 	}
 	if cfg.MaxEvents != 200 {
 		t.Errorf("MaxEvents: got %d", cfg.MaxEvents)

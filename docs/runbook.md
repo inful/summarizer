@@ -16,9 +16,9 @@ The run emits two kinds of output:
 The most useful stderr line is the trailing summary:
 
 ```
-summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=168h0m0s)
-  → ./summarizer-out/2026-W43/group_subgroup_project--7d--customer.md
-  → ./summarizer-out/2026-W43/group_subgroup_project--7d--team.md
+summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=this ISO week (since Monday 00:00 UTC, 60h0m0s elapsed))
+  → ./summarizer-out/2026-W43/group_subgroup_project--wk--customer.md
+  → ./summarizer-out/2026-W43/group_subgroup_project--wk--team.md
   tokens[group/subgroup/project/customer]: prompt=2103 completion=812 total=2915
   tokens[group/subgroup/project/team]:     prompt=2478 completion=901 total=3379
 ```
@@ -202,7 +202,7 @@ wins over config in every case.
 | `--discover-group G` | — | repeatable. One group's projects. |
 | `--discover-by-topic` | — | instance-wide, projects carrying `summarize*`. |
 | `--internal-only-project P` | — | repeatable. Forces team-only. Unions with the YAML block and the `summarize-team-only` topic. |
-| `--since D` | from config | rolling window, e.g. `168h` or `7d`. |
+| `--since D` | this ISO week so far | rolling window override, e.g. `168h` or `7d`. Only needed for a deliberate backfill; the default matches the week-numbered output directory. |
 | `--period-mode` | **removed** | week numbers replaced it; passing it is a usage error. |
 | `--dry-run` | off | no LLM call, no write. |
 | `--include-diffs` | off | adds per-MR `/changes` bodies to the team prompt. |

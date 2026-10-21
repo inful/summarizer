@@ -227,7 +227,7 @@ Env:
 	}
 
 	var (
-		since          = fs.Duration("since", 0, "rolling window: '168h' for 7d, '720h' for 30d. Default from config.")
+		since          = fs.Duration("since", 0, "override the window: '168h' for a rolling 7d, '720h' for 30d. Default: the current ISO week so far (or config default_lookback).")
 		provider       = fs.String("provider", "", "LLM provider: openai or anthropic (default from config)")
 		model          = fs.String("model", "", "LLM model id (default from config)")
 		outputDir      = fs.String("output-dir", "", "output directory (default from config)")
@@ -333,10 +333,18 @@ Env:
 		return code
 	}
 
+	// The report lands in a week-numbered directory, so the window has
+	// to be that week unless the operator deliberately said otherwise.
+	window, weekScoped := cfg.Lookback(), false
+	if window == 0 {
+		window, weekScoped = run.WeekWindow(time.Now())
+	}
+
 	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
 		Projects:             projects,
 		DiscoveredGroups:     discoverGroups,
-		Since:                cfg.Lookback(),
+		Since:                window,
+		WeekScoped:           weekScoped,
 		Provider:             cfg.Provider,
 		Model:                cfg.Model,
 		DryRun:               *dryRun,
@@ -352,14 +360,24 @@ Env:
 	defer cancel()
 
 	res, err := pipe.Run(ctx)
-	printSummary(res, err, *dryRun, cfg.Lookback())
+	printSummary(res, err, *dryRun, window, weekScoped)
 	if err != nil {
 		return classify(err)
 	}
 	return exitOK
 }
 
-func printSummary(res run.Result, err error, dryRun bool, window time.Duration) {
+// windowLabel names the window in the summary line. "this ISO week" is
+// the default; a bare duration reads as though it were always a rolling
+// window, which was exactly the confusion the week default removes.
+func windowLabel(weekScoped bool, window time.Duration) string {
+	if weekScoped {
+		return fmt.Sprintf("this ISO week (since Monday 00:00 UTC, %s elapsed)", window)
+	}
+	return fmt.Sprintf("rolling %s", window)
+}
+
+func printSummary(res run.Result, err error, dryRun bool, window time.Duration, weekScoped bool) {
 	// Print what was published whenever anything was, even when the run
 	// ended in an error. A partial run that published 24 of 25 projects
 	// is not a run that published nothing, and this summary line is what
@@ -382,7 +400,7 @@ func printSummary(res run.Result, err error, dryRun bool, window time.Duration) 
 			fileCount += len(p.FilesWritten)
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: ok — %d project(s), %d event(s) (%d used), %d file(s) written (window=%s)\n",
-			len(res.Projects), totalEvents, usedEvents, fileCount, window)
+			len(res.Projects), totalEvents, usedEvents, fileCount, windowLabel(weekScoped, window))
 		for _, p := range res.Projects {
 			for _, f := range p.FilesWritten {
 				fmt.Fprintf(os.Stderr, "  → %s\n", f)
