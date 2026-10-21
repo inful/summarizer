@@ -78,7 +78,70 @@ func TestEpicRollup_SplitsCustomerAudienceByOrgLabel(t *testing.T) {
 	}
 }
 
-// TestEpicRollup_MultiCustomerEpicLandsInAllBuckets: an epic with
+// TestEpicRollup_IssueLabelInheritsToEpic: the inheritance rule.
+// An unlabelled epic whose child issues carry org::ACME is an
+// ACME epic — it lands in ACME's bucket and NOT in the unlabelled
+// backlog. This is the case the per-issue labelling convention
+// produces: the operator tags customer-named work at the issue
+// level, and the rollup has to follow.
+func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
+	sp := newSourcePipeline(t, nil, nil)
+	// Epic has NO org:: label. Its two issues do.
+	epicShared := epic(1, "shared-work")
+	epicShared.Issues = []gitlab.Issue{
+		{IID: 10, Labels: []string{"org::ACME"}},
+		{IID: 11, Labels: []string{"org::ACME", "priority::high"}},
+	}
+	epicBacklog := epic(2, "backlog")
+	epicBacklog.Issues = []gitlab.Issue{
+		{IID: 20, Labels: []string{"ruby"}}, // no org::
+	}
+	projects := []ProjectResult{
+		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{epicShared, epicBacklog}},
+	}
+
+	_, err := sp.p.runEpicRollup(context.Background(), projects)
+	if err != nil {
+		t.Fatalf("runEpicRollup: %v", err)
+	}
+
+	// Files published: ACME, customer combined, team combined.
+	// The customer combined holds ONLY the unlabelled epic
+	// (the one whose issues have no org:: label). shared-work
+	// is in the ACME file.
+	names := publishedNames(sp)
+	for _, want := range []string{
+		"combined--epics-acme--7d--customer.md",
+		"combined--epics-rollup--7d--customer.md",
+		"combined--epics-rollup--7d--team.md",
+	} {
+		if !containsString(names, want) {
+			t.Errorf("missing file %q in %v", want, names)
+		}
+	}
+
+	// The first LLM call is for the ACME bucket. The shared-work
+	// epic should appear in the ACME prompt, the backlog epic should
+	// not.
+	acme := sp.llm.promptAt(0)
+	if !strings.Contains(acme, "shared-work") {
+		t.Errorf("ACME prompt should include the unlabelled epic with org::ACME child issues:\n%s", acme)
+	}
+	if strings.Contains(acme, "backlog") {
+		t.Errorf("ACME prompt must NOT include the truly-unlabelled backlog epic:\n%s", acme)
+	}
+
+	// The customer combined is for the backlog file. shared-work
+	// must not appear there — it's in ACME's file.
+	for _, w := range sp.pub.written {
+		if strings.HasSuffix(w.Name, "--customer.md") && strings.Contains(w.Name, "epics-rollup") {
+			if strings.Contains(string(w.Body), "shared-work") {
+				t.Errorf("ACME-attributed epic leaked into the customer combined file:\n%s", w.Body)
+			}
+		}
+	}
+}
+
 // two org:: labels surfaces in both customer files — the whole
 // point of one epic spanning two customers. The assertion is
 // bucket → file, not bucket → file content (the LLM stub is opaque

@@ -1,6 +1,10 @@
 package policy
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/inful/summarizer/internal/gitlab"
+)
 
 // CustomerLabelPrefix marks which customer an epic belongs to. A label
 // of the form `org::ACME` attributes the epic to customer ACME.
@@ -37,6 +41,44 @@ func CustomerCodes(labels []string) []string {
 		}
 		seen[code] = true
 		out = append(out, code)
+	}
+	return out
+}
+
+// EpicCustomerCodes returns the union of every customer code that
+// names this epic. The epic's own org::* labels are the strongest
+// signal, but the org::* labels on its child issues count too —
+// the operator may tag customer-named work at the issue level when
+// the parent epic spans more than one customer or when the epic
+// itself predates the customer-attribution convention. The result
+// is the union, deduped, in stable order (epic labels first, then
+// issues in IID order).
+//
+// Returns nil when neither the epic nor any of its child issues
+// carries an org:: label — the caller uses that to decide whether
+// the epic belongs in a customer bucket or in the unlabelled
+// backlog. nil is distinct from an empty slice so the test pinning
+// the contract is honest.
+func EpicCustomerCodes(epic *gitlab.Epic) []string {
+	if epic == nil {
+		return nil
+	}
+	seen := make(map[string]bool, 2)
+	var out []string
+	add := func(labels []string) {
+		for _, code := range CustomerCodes(labels) {
+			if seen[code] {
+				continue
+			}
+			seen[code] = true
+			out = append(out, code)
+		}
+	}
+	// Epic's own labels come first so a tag on the parent wins the
+	// sort order over a tag on a child.
+	add(epic.Labels)
+	for _, iss := range epic.Issues {
+		add(iss.Labels)
 	}
 	return out
 }

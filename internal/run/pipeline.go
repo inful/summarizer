@@ -514,9 +514,13 @@ func bucketEpicsByCustomer(projects []ProjectResult, window time.Duration) []epi
 		body := pr.CustomerText + pr.TeamText
 		perCode := make(map[string][]prompt.EpicSummary)
 		for _, e := range pr.ActiveEpics {
-			codes := policy.CustomerCodes(e.Labels)
+			// Inheritance: org::* labels on the epic OR on its
+			// child issues both attribute the epic to a customer.
+			// An unlabelled epic with one child issue labelled
+			// org::ACME is still an ACME epic.
+			codes := policy.EpicCustomerCodes(e)
 			if len(codes) == 0 {
-				// No org:: label → the unlabelled bucket. The
+				// No org:: anywhere → the unlabelled bucket. The
 				// combined file becomes the "not yet attributed"
 				// report rather than a silent miss.
 				perCode[""] = append(perCode[""], prompt.EpicSummary{
@@ -525,9 +529,6 @@ func bucketEpicsByCustomer(projects []ProjectResult, window time.Duration) []epi
 				})
 				continue
 			}
-			// An epic with two org:: labels lands in BOTH buckets;
-			// the same event count applies to both because the count
-			// is a property of the epic, not of the customer.
 			for _, code := range codes {
 				perCode[code] = append(perCode[code], prompt.EpicSummary{
 					Epic:       e,
