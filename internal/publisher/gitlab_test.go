@@ -176,6 +176,84 @@ func (f *fakeGitLab) handler() http.Handler {
 	return mux
 }
 
+// TestGitLabPublisher_EnsureBranchUsesRefField: GitLab's modern
+// POST /repository/branches expects the start-point as `ref` (the
+// legacy name `start_point` was renamed in GitLab 12.2 and modern
+// instances 400 with "ref is missing, ref is empty" if the body
+// uses the old name). The publisher must send the right field or
+// the very first run against a real instance fails.
+//
+// This test reads the raw request body — not a struct decode —
+// so the test fails the moment the JSON tag is wrong, even if
+// the test's own branchReq stays in sync by accident.
+func TestGitLabPublisher_EnsureBranchUsesRefField(t *testing.T) {
+	var captured atomic.Value // raw request body
+	captured.Store("")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/branches") && !strings.Contains(r.URL.Path, "/branches/") {
+			body, _ := io.ReadAll(r.Body)
+			captured.Store(string(body))
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/branches/") {
+			// ensureBranch's existence probe. The path contains
+			// "/branches/<name>" for a GET, distinguishing it
+			// from the POST to /branches (no trailing slash).
+			// 404 = branch missing, so the publisher will POST to
+			// create it.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/merge_requests") {
+			if r.Method == http.MethodGet {
+				// findOrCreateMR: GET returns the list (empty = no open MR).
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+			} else {
+				// POST: create a new MR, return the object.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"iid":1,"web_url":"http://x","source_branch":"summarizer/2026-10-19","target_branch":"main","title":"t","state":"opened"}`))
+			}
+			return
+		}
+		if strings.Contains(r.URL.Path, "/repository/files/") {
+			switch r.Method {
+			case http.MethodGet:
+				// readExistingUID: 404 = no existing file, proceed.
+				w.WriteHeader(http.StatusNotFound)
+			case http.MethodPut:
+				// file create/update: 200 = committed.
+				w.WriteHeader(http.StatusOK)
+			default:
+				w.WriteHeader(http.StatusOK)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	if _, err := p.Publish(Request{
+		Name: "x.md", Body: []byte("x"), Period: "2026-10-19", Kind: KindPerProject,
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	body := captured.Load().(string)
+	if !strings.Contains(body, `"ref":"main"`) {
+		t.Errorf("request body must use GitLab's modern field name \"ref\"; got %s", body)
+	}
+	if strings.Contains(body, "start_point") {
+		t.Errorf("request body must NOT use the legacy \"start_point\" field; got %s", body)
+	}
+	if !strings.Contains(body, `"branch":"summarizer/2026-10-19"`) {
+		t.Errorf("request body must name the new branch; got %s", body)
+	}
+}
+
 func TestGitLabPublisher_PublishFlow(t *testing.T) {
 	f := &fakeGitLab{}
 	srv := httptest.NewServer(f.handler())

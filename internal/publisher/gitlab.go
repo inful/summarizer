@@ -104,8 +104,14 @@ func pathPrefix(s string) string {
 // API request/response shapes.
 
 type branchReq struct {
-	Branch     string `json:"branch"`
-	StartPoint string `json:"start_point,omitempty"`
+	// Branch is the new branch name; Ref is the branch name or
+	// commit SHA to fork from. GitLab's POST /repository/branches
+	// expects both as required fields; the field is `ref`, not
+	// `start_point` (which was the legacy name before GitLab 12.2 —
+	// modern instances 400 with "ref is missing, ref is empty"
+	// when the body uses the old name).
+	Branch string `json:"branch"`
+	Ref    string `json:"ref"`
 }
 
 type fileReq struct {
@@ -210,8 +216,8 @@ func (g *GitLabPublisher) ensureBranch(branch string) error {
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches",
 		g.Host, url.PathEscape(g.Project))
 	body, _ := json.Marshal(branchReq{
-		Branch:     branch,
-		StartPoint: g.DefaultBranch,
+		Branch: branch,
+		Ref:    g.DefaultBranch,
 	})
 	return g.api(urlStr, "POST", body, nil)
 }
