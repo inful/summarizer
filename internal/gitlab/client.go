@@ -295,29 +295,45 @@ func (c *Client) FetchProjectsByTopic(ctx context.Context, topics []string) ([]P
 	return out, nil
 }
 
-// ProbeProjectActivity asks a single cheap question: did this project
-// have any MR with updated_after ≥ since? Returns (true, nil) when
-// at least one MR matches, (false, nil) when none. 404 (project moved,
-// renamed, or never existed) also degrades to (false, nil) so the
-// discovery loop skips it without surfacing transport noise. 403
-// (token wrong, or the project is confidential/hidden from the
-// caller's PAT) is a real auth/permissions issue and DOES hard-error
-// — soft-degrading would silently hide a project from the report
-// and the operator would never know.
+// ProbeProjectActivity asks one cheap question per project: did this
+// project have any MR or any issue updated in [since, now]? Returns
+// (true, nil) when either endpoint returns at least one row, (false,
+// nil) when both come back empty.
 //
-// MRs are the probe signal (not commits, not issues, not pipelines)
-// because MRs are gitlab's primary "engineering work landed" signal:
-// a code change on its own doesn't mean anything merged; an issue
-// update can be a label flip; a pipeline is plumbing. An MR update
-// (any of opened/closed/merged/commented-on) is what we mean by
-// "the project had engineering activity this period".
+// 404 on either endpoint (project moved, renamed, never existed, or
+// just confidential) soft-degrades to (false, nil) so the discovery
+// loop skips it without surfacing transport noise. 403, 429 and 5xx
+// are real problems and hard-error: a 403 is a token or permissions
+// issue the operator must see, a 429 is a rate-limit, a 5xx is
+// infrastructure. Soft-degrading any of these would silently hide a
+// project from the report.
+//
+// Why MRs AND issues:
+//   - MRs are gitlab's "engineering work landed" signal.
+//   - Issues are the "this team is alive" signal: a triage week
+//     produces no MRs but a project with five closed issues is not
+//     quiet.
+//   - Cost is one extra /issues?per_page=1 call per discovered
+//     project. The MR probe runs first because it answers most of
+//     the time; the issue probe is skipped on the first hit.
 //
 // (Inlined HTTP loop rather than reusing doJSON: we need a 404
 // soft-degrade path, and doJSON's 4xx switch returns a hard error
 // before the decode callback runs. A future refactor could add a
 // soft-fail mode to doJSON itself, but the surface area is small.)
 func (c *Client) ProbeProjectActivity(ctx context.Context, projectPath string, since time.Time) (bool, error) {
-	u := c.baseURL + fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)) +
+	active, err := c.probeHasAny(ctx, projectPath, "merge_requests", since)
+	if err != nil || active {
+		return active, err
+	}
+	return c.probeHasAny(ctx, projectPath, "issues", since)
+}
+
+// probeHasAny is one side of the activity gate: did the project have
+// any record of the given kind updated in [since, now]? The shared
+// shape lets ProbeProjectActivity compose two of them cheaply.
+func (c *Client) probeHasAny(ctx context.Context, projectPath, kind string, since time.Time) (bool, error) {
+	u := c.baseURL + fmt.Sprintf("/projects/%s/%s", url.PathEscape(projectPath), kind) +
 		"?updated_after=" + url.QueryEscape(since.UTC().Format(time.RFC3339)) +
 		"&scope=all&per_page=1"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -343,11 +359,15 @@ func (c *Client) ProbeProjectActivity(ctx context.Context, projectPath string, s
 		return false, fmt.Errorf("gitlab %s: %d %s",
 			http.MethodGet, resp.StatusCode, truncate(string(body), 200))
 	}
-	var batch []MergeRequest
+	var batch json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil {
 		return false, err
 	}
-	return len(batch) > 0, nil
+	// Both endpoints return an array. We don't need the fields,
+	// only the count — decoding into RawMessage and trimming the
+	// outer brackets avoids per-field allocation.
+	raw := string(batch)
+	return strings.HasPrefix(raw, "[") && strings.TrimSpace(raw) != "[]", nil
 }
 
 // FetchMRs returns MRs updated within [since, now]. updated_after is the

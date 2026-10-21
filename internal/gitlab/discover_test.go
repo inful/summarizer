@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -139,44 +138,6 @@ func TestProbeProjectActivity_NoMRs(t *testing.T) {
 	}
 }
 
-// TestProbeProjectActivity_404DegradesToFalse: the project was moved
-// or doesn't exist on this GitLab instance. Surfacing (false, nil)
-// lets the caller skip it from discovery rather than reporting a
-// confusing transport error. Distinct from 403 (auth issue, which
-// IS a hard error).
-func TestProbeProjectActivity_404DegradesToFalse(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "404", http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	c := New(srv.URL, "glpat-test", 5*time.Second)
-	active, err := c.ProbeProjectActivity(context.Background(), "group/missing", time.Now())
-	if err != nil {
-		t.Fatalf("404 should NOT error: %v", err)
-	}
-	if active {
-		t.Errorf("missing project should not appear active")
-	}
-}
-
-// TestProbeProjectActivity_403HardErrors: 403 means the token is
-// wrong or the project is confidential/hidden from the caller.
-// That's an auth / permissions question the operator must answer —
-// soft-degrading to "inactive" would silently hide a whole project
-// from the report and the operator would never know.
-func TestProbeProjectActivity_403HardErrors(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "403", http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	c := New(srv.URL, "glpat-test", 5*time.Second)
-	_, err := c.ProbeProjectActivity(context.Background(), "group/private", time.Now())
-	if err == nil {
-		t.Fatal("403 should hard-error")
-	}
-	if err != nil && !strings.Contains(err.Error(), "403") {
-		t.Errorf("403 error should mention status code: %v", err)
-	}
-}
+// Activity-gate tests live in activity_test.go: the gate is now
+// "MRs OR issues" rather than MRs only, and the old single-probe
+// test fixtures were replaced with a per-project matrix fake.
