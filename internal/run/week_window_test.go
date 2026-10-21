@@ -1,6 +1,7 @@
 package run
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -104,6 +105,60 @@ func TestFilenames_UseTheWeekToken(t *testing.T) {
 		}
 		if dayCount.MatchString(n) {
 			t.Errorf("%q still carries a day count", n)
+		}
+	}
+}
+
+// TestWeekStart_SundayNightCoversTheWholeWeek: the documented cron is
+// Sunday 23:00 UTC, the last day of the ISO week. One run then covers
+// Monday-to-Sunday and reports on the week it is closing. A Monday run
+// covers hours, not days, and reports on the week that is only starting
+// — six days summarised by nothing, with no error anywhere.
+func TestWeekStart_SundayNightCoversTheWholeWeek(t *testing.T) {
+	for _, w := range []struct {
+		name string
+		run  time.Time
+		days float64
+	}{
+		{"Sun 18 Oct 23:00", time.Date(2026, 10, 18, 23, 0, 0, 0, time.UTC), 6.958},
+		{"Sun 25 Oct 23:00", time.Date(2026, 10, 25, 23, 0, 0, 0, time.UTC), 6.958},
+		{"Sun 01 Nov 23:00", time.Date(2026, 11, 1, 23, 0, 0, 0, time.UTC), 6.958},
+	} {
+		t.Run(w.name, func(t *testing.T) {
+			got := w.run.Sub(WeekStart(w.run)).Hours()
+			if got < w.days {
+				t.Errorf("window = %.1fh, want ~%.1fh — a Sunday-night run must cover the week",
+					got, w.days)
+			}
+		})
+	}
+
+	// And the trap, spelled out so nobody reinstates it.
+	monday := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	if h := monday.Sub(WeekStart(monday)).Hours(); h > 24 {
+		t.Errorf("a Monday 09:00 run should cover hours, got %.0fh", h)
+	}
+}
+
+// TestWeekSlug_NamesTheWeekTheWindowOpensIn: main.go captures one
+// `now` and derives BOTH the window and the slug from it. That is the
+// whole reason a Sunday 23:50 run that finishes after midnight still
+// files under the week it summarised — periodSlug() used to be called
+// per publish and recomputed from a fresh clock. This pins the pairing
+// the two functions have to keep.
+func TestWeekSlug_NamesTheWeekTheWindowOpensIn(t *testing.T) {
+	for _, now := range []time.Time{
+		time.Date(2026, 10, 18, 23, 50, 0, 0, time.UTC), // crosses midnight
+		time.Date(2026, 11, 1, 23, 0, 0, 0, time.UTC),
+		time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC),  // ISO week 53 of 2026
+		time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC), // the Monday trap
+	} {
+		slug := WeekSlug(now)
+		start := WeekStart(now)
+		y, w := start.ISOWeek()
+		if want := fmt.Sprintf("%04d-W%02d", y, w); slug != want {
+			t.Errorf("%s: report filed under %s but its window opens in %s",
+				now.Format(time.RFC3339), slug, want)
 		}
 	}
 }

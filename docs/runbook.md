@@ -246,12 +246,25 @@ currently).
 Cron drives cadence. Examples:
 
 ```cron
-# Weekly Monday morning, 09:00 UTC
-0 9 * * 1  cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml >> /var/log/summarizer.log 2>&1
-
-# Daily for a busy team
-0 9 * * *  cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml >> /var/log/summarizer.log 2>&1
+# Sunday 23:00 UTC
+0 23 * * 0  cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml >> /var/log/summarizer.log 2>&1
 ```
+
+**Sunday, not Monday.** The window is the ISO week — Monday 00:00 UTC
+to now — and the output directory is that same week. A Sunday 23:00 run
+covers 167 hours and reports on the week ending that day. A Monday run
+covers three hours and reports on the week that is only starting, so
+the six days before it are summarised by nothing. There is no flag to
+widen the window; one run per week is the intended cadence.
+
+A daily cron also works and refines each week across seven runs, at
+seven times the LLM cost. It costs nothing in correctness, and it is
+the better choice if a missed Sunday run would be unacceptable — a
+weekly schedule loses the whole week if the machine is off at 23:00.
+
+All of this is UTC. `WeekStart` and the period slug both use UTC, so a
+cron that fires in local time will not land where the filename says.
+Set `CRON_TZ=UTC` or run the scheduler in UTC.
 
 ### Rotating tokens
 

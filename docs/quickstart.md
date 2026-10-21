@@ -96,10 +96,12 @@ summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (windo
 ## Cron
 
 ```cron
-0 9 * * 1 cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml
+0 23 * * 0 cd /path/to/summarizer && ./bin/summarizer run --config ./summarizer.yaml
 ```
 
-(Monday morning, 09:00 UTC.)
+(Sunday 23:00 UTC — the last day of the ISO week, so a single run
+covers the whole week. A Monday run would summarise the new week
+instead of the one that just ended. See `docs/runbook.md`.)
 
 Reports land under a week-numbered directory — `./summarizer-out/2026-W43/`
 locally, `<prefix>/2026-W43/` in the target repo. Every run inside the

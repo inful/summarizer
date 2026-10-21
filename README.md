@@ -170,7 +170,7 @@ Each weekly run = one folder, named by ISO week. The GitLab UI and `git log` bot
 The same cron line that runs the local-disk variant runs the publishing variant:
 
 ```cron
-0 9 * * 1 summarizer run --config /etc/summarizer/subscriptions.yaml --project group/proj
+0 23 * * 0 summarizer run --config /etc/summarizer/subscriptions.yaml --project group/proj
 ```
 
 When `publish.enabled: true`, the local disk write is skipped — every report file lives only in the GitLab target until a human merges the MR. Summarizer succeeds (exit 0) when the commits land; it does not wait for MR merge.
@@ -320,7 +320,8 @@ summarizer run --discover-group group/team-a \
 # that same week. Every run inside one Mon-Sun week writes to
 # <prefix>/<YYYY-Www>/, onto the same source branch, updating the same
 # MR — so a daily cron refines one week's report instead of opening
-# seven directories a week, and each re-run covers Monday-to-now.
+# seven directories a week. A single Sunday-night run covers the week
+# in one go, which is what the cron examples above do.
 summarizer run --discover-group group/team-a
 ```
 
@@ -360,6 +361,16 @@ summarizer monthly --month 2026-09    # a specific month, re-runnable
 summarizer monthly --dry-run          # print the prompt, spend nothing
 ```
 
+Schedule it for the 1st of the month, after the last Sunday-night
+weekly run. A month always has a trailing partial week — September
+2026 owns W37–W40, and W40 runs to 4 October — and on the 1st that
+branch does not exist yet, so **the last three days of every month are
+in the weekly reports but in no monthly rollup**. Running it on the
+5th instead closes the gap, at the cost of also folding 1–4 October
+into September's summary. For a customer-facing document, a missing
+week reads better than the wrong one, so the 1st is the default; the
+trade is yours to make either way.
+
 It reads the weekly files back out of the **target repo**, not from
 local disk and not by re-running the pipeline — September's weekly
 rollups already exist as text, so this is one LLM call per audience
@@ -388,8 +399,9 @@ both subcommands.
 ## Schedule
 
 ```cron
-# Every Monday at 09:00, refresh last week's reports.
-0 9 * * 1 cd /path/to/summarizer && ./summarizer run --project group/subgroup/project >> /var/log/summarizer.log 2>&1
+# Sunday 23:00 UTC — the last day of the ISO week, so one run covers
+# Monday-to-Sunday and reports on the week it is closing.
+0 23 * * 0 cd /path/to/summarizer && ./summarizer run --project group/subgroup/project >> /var/log/summarizer.log 2>&1
 
 # First of each month at 10:00, roll up the month that just closed.
 0 10 1 * * cd /path/to/summarizer && ./summarizer monthly >> /var/log/summarizer.log 2>&1

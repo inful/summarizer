@@ -386,9 +386,17 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 		for _, p := range res.Projects {
 			fileCount += len(p.FilesWritten)
 		}
+		// The elapsed hours matter more than the dates. A cron on
+		// Monday produces a correct-looking two-day range covering three
+		// hours of work; "167h elapsed" next to "3h elapsed" is what
+		// makes the difference visible on the one line an operator
+		// reads after a run.
+		now := time.Now().UTC()
 		fmt.Fprintf(os.Stderr, "summarizer: ok — %d project(s), %d event(s) (%d used), %d file(s) written (window=%s)\n",
 			len(res.Projects), totalEvents, usedEvents, fileCount,
-			fmt.Sprintf("this ISO week, %s → %s", weekStart.Format("2006-01-02"), time.Now().UTC().Format("2006-01-02 15:04")))
+			fmt.Sprintf("this ISO week %s → %s (%s elapsed)",
+				weekStart.Format("2006-01-02"), now.Format("2006-01-02 15:04"),
+				now.Sub(weekStart).Truncate(time.Minute)))
 		for _, p := range res.Projects {
 			for _, f := range p.FilesWritten {
 				fmt.Fprintf(os.Stderr, "  → %s\n", f)
