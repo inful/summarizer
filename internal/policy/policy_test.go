@@ -1,13 +1,23 @@
 package policy
 
-import (
-	"testing"
-)
+import "testing"
 
-// TestClassify: the nine-row truth table for the summarizer audit-policy
-// decision. Drives runOneProject's audience loop, runRollup's customer
-// filter, and runEpicRollup's customer filter. Truth table copied from
-// docs/deferred.md once that's flipped to "shipped".
+// TestClassify: the truth table for the project-policy decision. Drives
+// runOneProject's audience loop, runRollup's customer filter, and
+// runEpicRollup's customer filter.
+//
+// The model inverts from "opt in to summarizer" to "opt out of
+// summarizer." Every active project runs by default and produces a
+// team-only report; the only way to surface customer-facing content
+// is to add the `summarize` topic. The project-owner signal that
+// removes the project entirely lives in a different place (the
+// .summaryignore file at the repo root, checked at the pipeline
+// layer rather than here).
+//
+// The `source` argument still exists in the signature because
+// callers already pass it; the classifier itself no longer reads it
+// because the default is the same regardless of how the project
+// surfaced in the run.
 func TestClassify(t *testing.T) {
 	type tc struct {
 		name         string
@@ -18,24 +28,30 @@ func TestClassify(t *testing.T) {
 		wantCustomer bool
 	}
 	cases := []tc{
-		// Explicit-listed: operator's "I trust this" default.
-		{"explicit, no topics, no override", SourceExplicit, nil, false, false, true},
-		{"explicit, summarizer topic, no override", SourceExplicit, []string{"summarize"}, false, false, true},
-		{"explicit, summarizer-team-only, no override", SourceExplicit, []string{"summarize-team-only"}, false, true, false},
-		{"explicit, both topics", SourceExplicit, []string{"summarize", "summarize-team-only"}, false, true, false},
-		{"explicit, irrelevant topic", SourceExplicit, []string{"ruby", "kubernetes"}, false, false, true},
+		// The only way to opt in to customer output is the
+		// `summarize` topic. Source does not matter.
+		{"summarize topic, explicit", SourceExplicit, []string{"summarize"}, false, false, true},
+		{"summarize topic, discovered", SourceDiscovered, []string{"summarize"}, false, false, true},
 
-		// Discovered: default safe (team-only unless summarizer).
-		{"discovered, summarizer topic", SourceDiscovered, []string{"summarize"}, false, false, true},
-		{"discovered, summarizer-team-only", SourceDiscovered, []string{"summarize-team-only"}, false, true, false},
-		{"discovered, both topics", SourceDiscovered, []string{"summarize", "summarize-team-only"}, false, true, false},
-		{"discovered, no topics", SourceDiscovered, nil, false, true, false},
-		{"discovered, irrelevant topic", SourceDiscovered, []string{"ruby"}, false, true, false},
+		// summarize-team-only wins over summarize (sticky override).
+		{"team-only topic, explicit", SourceExplicit, []string{"summarize-team-only"}, false, true, false},
+		{"team-only topic, discovered", SourceDiscovered, []string{"summarize-team-only"}, false, true, false},
+		{"both topics, team-only wins", SourceExplicit, []string{"summarize", "summarize-team-only"}, false, true, false},
 
-		// Override (config / CLI) — always wins.
-		{"explicit + override", SourceExplicit, []string{"summarize"}, true, true, false},
-		{"discovered + override, no topics", SourceDiscovered, nil, true, true, false},
-		{"discovered + override, summarizer topic", SourceDiscovered, []string{"summarize"}, true, true, false},
+		// The new default: any project with no `summarize` topic
+		// gets a team-only report, regardless of source. This is
+		// the behaviour change the operator asked for — the
+		// friction of "every project needs a topic to be summarised"
+		// is replaced by "every project is summarised unless told
+		// otherwise."
+		{"no topics, explicit — was customer, now team-only", SourceExplicit, nil, false, true, false},
+		{"no topics, discovered", SourceDiscovered, nil, false, true, false},
+		{"unrelated topics, explicit", SourceExplicit, []string{"ruby", "kubernetes"}, false, true, false},
+		{"unrelated topics, discovered", SourceDiscovered, []string{"ruby"}, false, true, false},
+
+		// Operator-level override (config / CLI): always wins.
+		{"summarize topic, but operator override", SourceExplicit, []string{"summarize"}, true, true, false},
+		{"no topics, operator override", SourceDiscovered, nil, true, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -46,7 +62,6 @@ func TestClassify(t *testing.T) {
 			if p.CustomerOn != c.wantCustomer {
 				t.Errorf("CustomerOn: got %v, want %v", p.CustomerOn, c.wantCustomer)
 			}
-			// Both policies must always run in v1 (no per-project skip).
 			if !p.Run {
 				t.Errorf("Run should always be true in v1; got false")
 			}
@@ -57,16 +72,16 @@ func TestClassify(t *testing.T) {
 // TestClassify_TopicCaseSensitive: GitLab topics are case-sensitive but the
 // way the API returns them is consistent. We follow exactly the case
 // the operator sets in GitLab. This pins that case-insensitive matching
-// is NOT a feature — operators who write `Summarizer` get a different
+// is NOT a feature — operators who write `Summarize` get a different
 // result from `summarizer`.
 func TestClassify_TopicCaseSensitive(t *testing.T) {
 	lowercase := Classify(SourceDiscovered, []string{"summarize"}, false)
-	mixedcase := Classify(SourceDiscovered, []string{"Summarizer"}, false)
+	mixedcase := Classify(SourceDiscovered, []string{"Summarize"}, false)
 	if lowercase.CustomerOn != true {
 		t.Errorf("lowercase 'summarize' should opt-in to customer")
 	}
 	if mixedcase.CustomerOn != false {
-		t.Errorf("'Summarizer' (capitalized) should NOT opt-in; topics are case-sensitive")
+		t.Errorf("'Summarize' (capitalized) should NOT opt-in; topics are case-sensitive")
 	}
 }
 

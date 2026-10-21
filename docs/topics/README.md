@@ -2,10 +2,12 @@
 
 `docs/topics/` ships SVG source and a 192×192 PNG render for each of the two GitLab project topics summarizer recognises.
 
+Topics now only decide **audience**, not **whether the project runs**. Any active project runs by default and produces a team-only report; to skip a project entirely, add a `.summaryignore` or `.docignore` file to its repo root.
+
 | Topic | SVG (source) | PNG (192×192) | Meaning |
 |---|---|---|---|
-| `summarize` | [`summarize.svg`](summarize.svg) | [`summarize-192.png`](summarize-192.png) | Run the project through summarizer; produce both customer-facing and team-facing reports. |
-| `summarize-team-only` | [`summarize-team-only.svg`](summarize-team-only.svg) | [`summarize-team-only-192.png`](summarize-team-only-192.png) | Run the project; produce only the team-facing report. Customer rollup is suppressed (D5 audience policy). |
+| `summarize` | [`summarize.svg`](summarize.svg) | [`summarize-192.png`](summarize-192.png) | Produce a customer-facing report in addition to the team one. The only opt-in to customer output. |
+| `summarize-team-only` | [`summarize-team-only.svg`](summarize-team-only.svg) | [`summarize-team-only-192.png`](summarize-team-only-192.png) | Team-only even if the project also carries `summarize`. Redundant with the default; kept so an existing project can pin the intent explicitly. |
 
 ## How to use
 

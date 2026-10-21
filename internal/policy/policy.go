@@ -16,33 +16,30 @@ package policy
 // alphanumerics, hyphens, dots, underscores. Topics are case-
 // sensitive — see TestClassify_TopicCaseSensitive.
 const (
-	// TopicSummarize is the base opt-in. On a discovered project,
-	// it flips the default from team-only to full output (customer +
-	// team). On an explicit-listed project, it's a no-op (those
-	// default to full output already).
+	// TopicSummarize opts the project in to customer-facing output.
+	// It is the only way to produce a non-team-only report.
 	TopicSummarize = "summarize"
 
-	// TopicSummarizeTeamOnly is the override. Wherever it appears,
-	// the project produces team output only. It's sticky across all
-	// sources (config + CLI + topic): if any of them says "team only",
-	// team only wins.
+	// TopicSummarizeTeamOnly is the team-only override. Wherever it
+	// appears, the project produces team output only. Sticky across
+	// all signals: if any of them says "team only", team only wins.
 	TopicSummarizeTeamOnly = "summarize-team-only"
 )
 
-// ProjectSource identifies how the project entered the run. Used by
-// the classifier to apply the right default (discovered = safe team
-// only; explicit-listed = trust operator's choice).
+// ProjectSource identifies how the project entered the run. The
+// classifier itself no longer reads this value (the audience
+// decision is uniform regardless of source), but the type is kept
+// in the signature for caller readability and for any future
+// source-specific branching.
 type ProjectSource int
 
 const (
 	// SourceExplicit is a project named on the CLI via --project or
-	// in summarizer.yaml's projects list. Operator has explicitly
-	// chosen to include this project; default is to trust that choice.
+	// in summarizer.yaml's projects list.
 	SourceExplicit ProjectSource = iota
 
-	// SourceDiscovered is a project surfaced by --discover-group. The
-	// operator hasn't chosen it by name; default is team-only to keep
-	// the safety property (we don't know what's customer-shareable).
+	// SourceDiscovered is a project surfaced by --discover-group,
+	// --discover-by-topic, or the default-by-activity discovery.
 	SourceDiscovered
 )
 
@@ -53,35 +50,46 @@ const (
 type ProjectPolicy struct {
 	Run        bool // always true in v1; reserved for future per-project skip
 	TeamOnly   bool // true ⇒ never produce a customer-facing report
-	CustomerOn bool // true ⇒ customer-facing report is produced (== !TeamOnly AND source != discovered-without-summarizer)
+	CustomerOn bool // true ⇒ customer-facing report is produced
 }
 
 // Classify returns the policy for one project. inList is true when
-// the project is listed in summarizer.yaml's internal_only_projects or
-// passed via --internal-only-project on the CLI — the union is
+// the project is listed in summarizer.yaml's internal_only_projects
+// or passed via --internal-only-project on the CLI — the union is
 // computed at the call site (caller passes one boolean capturing
 // whether either source flagged the project).
 //
-// Two OR-gates drive TeamOnly:
+// One OR-gate drives TeamOnly:
 //
-//	explicitTeamOnly         := inList OR hasTopic(TopicSummarizeTeamOnly)
-//	discoveredWithoutOptIn   := source == SourceDiscovered AND
-//	                              NOT hasTopic(TopicSummarize)
-//	teamOnly                  := explicitTeamOnly OR discoveredWithoutOptIn
+//	teamOnly := inList
+//	            OR hasTopic(TopicSummarizeTeamOnly)   // team-only override topic
+//	            OR NOT hasTopic(TopicSummarize)        // default: no customer opt-in
 //
-// CustomerOn is the negation: !teamOnly.
+// CustomerOn is the negation: !teamOnly. The default — no opt-in
+// topic and no operator override — is team-only. The
+// `summarize` topic is the only way to produce a customer-facing
+// report.
 //
-// The second gate is the default-safe default: a project discovered
-// via --discover-group without the `summarizer` opt-in lands as
-// team-only. The operator must either add the `summarizer` topic
-// (project-owner signal) or list the project explicitly via --project
-// (operator signal) to get a customer-facing version.
+// The previous model distinguished discovered from explicit at this
+// level (discovered defaulting to team-only, explicit defaulting to
+// customer-on). That distinguished was removed when the operator
+// inverted the discovery model from "opt in to summarizer" to
+// "opt out of summarizer": every active project now runs by
+// default, and the audience default is uniformly team-only. The
+// operator's opt-in to customer is a single bit — the
+// `summarize` topic — for every project regardless of source.
+//
+// The project-level opt-out (file `.summaryignore` or `.docignore`
+// at the repo root) is NOT modelled here. It is checked at the
+// pipeline layer because it requires a Files API call; if the file
+// is present the project is excluded from the run entirely before
+// this function is even called.
 //
 // Truth table lives in policy_test.go.
 func Classify(source ProjectSource, topics []string, inList bool) ProjectPolicy {
-	explicitTeamOnly := inList || hasTopic(topics, TopicSummarizeTeamOnly)
-	discoveredWithoutOptIn := source == SourceDiscovered && !hasTopic(topics, TopicSummarize)
-	teamOnly := explicitTeamOnly || discoveredWithoutOptIn
+	teamOnly := inList ||
+		hasTopic(topics, TopicSummarizeTeamOnly) ||
+		!hasTopic(topics, TopicSummarize)
 	return ProjectPolicy{
 		Run:        true,
 		TeamOnly:   teamOnly,

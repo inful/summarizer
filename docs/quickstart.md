@@ -32,9 +32,10 @@ A minimal config:
 gitlab_host: "https://gitlab.example.com"
 ```
 
-The project set is a CLI flag, not a config key — `--project`,
-`--discover-group` or `--discover-by-topic`. See the README for all
-three.
+The project set is a CLI flag, not a config key. With no discovery
+flag, summarizer runs every project the token can see that had
+activity in the window; `--project`, `--discover-group` and
+`--discover-by-topic` narrow or redirect that. See the README.
 
 ## First run — dry
 

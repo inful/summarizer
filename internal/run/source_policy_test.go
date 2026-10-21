@@ -202,17 +202,19 @@ func TestRunOneProject_DiscoveredWithOptInIsCustomerOn(t *testing.T) {
 	}
 }
 
-// TestRunOneProject_ExplicitNoTopicsStaysCustomerOn: an operator naming
-// a project by hand is trusted — no topic required.
-func TestRunOneProject_ExplicitNoTopicsStaysCustomerOn(t *testing.T) {
+// TestRunOneProject_ExplicitNoTopicsIsTeamOnly: naming a project by
+// hand is no longer enough to unlock customer-facing output. The
+// default is team-only for every project regardless of how it entered
+// the run; only the `summarize` topic promotes it.
+func TestRunOneProject_ExplicitNoTopicsIsTeamOnly(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
 
 	pr, err := sp.p.runOneProject(context.Background(), "group/public", policy.SourceExplicit)
 	if err != nil {
 		t.Fatalf("runOneProject: %v", err)
 	}
-	if pr.TeamOnly || !pr.CustomerOn {
-		t.Errorf("explicit project must be customer-on; TeamOnly=%v CustomerOn=%v", pr.TeamOnly, pr.CustomerOn)
+	if !pr.TeamOnly || pr.CustomerOn {
+		t.Errorf("explicit project with no topics must be team-only; TeamOnly=%v CustomerOn=%v", pr.TeamOnly, pr.CustomerOn)
 	}
 }
 
@@ -274,8 +276,5 @@ func TestPipelineRun_ExplicitProjectIsNotMarkedDiscovered(t *testing.T) {
 	}
 	if res.Projects[0].FromDiscovery {
 		t.Error("an explicit --project must not be marked as discovered")
-	}
-	if !res.Projects[0].CustomerOn {
-		t.Error("an explicit project with no topics must still be customer-on")
 	}
 }

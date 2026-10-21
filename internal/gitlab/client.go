@@ -209,6 +209,13 @@ type ProjectSummary struct {
 	// decide audience policy (see internal/policy.Classify). Free-
 	// tier compatible.
 	Topics []string `json:"topics"`
+	// DefaultBranch is the project's HEAD ref (typically "main" or
+	// "master"). Used by HasOptOutFile to read the project's
+	// .summaryignore at the right ref. Empty when the API didn't
+	// return the field on this payload shape — caller treats that
+	// as "can't read opt-out file" and falls through to the
+	// default.
+	DefaultBranch string `json:"default_branch"`
 }
 
 // FetchGroupProjects lists projects in a single group. recursive=false
@@ -260,6 +267,30 @@ func (c *Client) FetchGroupProjects(ctx context.Context, groupPath string, recur
 //
 // Results are stable: order follows the order of `topics`, with
 // first-seen projects keeping their position across the union.
+// FetchActiveProjects returns every project the token can see that had
+// any activity at or after `since`. This is summarizer's default
+// discovery: a project that was worked on runs without needing a topic
+// or an entry in the config file.
+//
+// `last_activity_after` is the cheap server-side filter, so the result
+// set is bounded by the period rather than by instance size. The
+// caller still applies the per-project activity gate (MRs or issues in
+// the window) because `last_activity_at` also moves for pushes, issue
+// comments, and wiki edits that summarizer doesn't report on.
+//
+// Scope is bounded by the PAT, exactly as FetchProjectsByTopic is.
+func (c *Client) FetchActiveProjects(ctx context.Context, since time.Time) ([]ProjectSummary, error) {
+	q := url.Values{}
+	q.Set("last_activity_after", since.UTC().Format(time.RFC3339))
+	q.Set("order_by", "last_activity_at")
+	q.Set("per_page", "100")
+	projs, err := getAll[ProjectSummary](ctx, c, "/projects", q)
+	if err != nil {
+		return nil, fmt.Errorf("discover active: %w", err)
+	}
+	return projs, nil
+}
+
 func (c *Client) FetchProjectsByTopic(ctx context.Context, topics []string) ([]ProjectSummary, error) {
 	seen := make(map[int]bool)
 	out := make([]ProjectSummary, 0)
@@ -580,6 +611,122 @@ func (c *Client) FetchProjectSummary(ctx context.Context, projectPath string) (*
 			return nil, fmt.Errorf("decode /projects/%s: %w", projectPath, err)
 		}
 		return &ps, nil
+	}
+}
+
+// HasOptOutFile reports whether the project carries either of the
+// "summariser must skip me" sentinel files at its repo root:
+//
+//	.summaryignore    — summariser-specific opt-out
+//	.docignore        — docbuilder convention, also honoured here
+//
+// Either file's presence is sufficient to opt the project out of the
+// run entirely. The project-owner's opt-out is checked at the
+// pipeline layer (not the policy classifier) because the file is
+// content of a specific ref, and the policy classifier stays a pure
+// function over topics + override list.
+//
+// Returns:
+//
+//	(true,  nil) — at least one of the sentinel files exists on the
+//	              default branch; exclude the project.
+//	(false, nil) — neither file exists; include the project.
+//	(_, err)     — transport / auth / 5xx; surface to the caller.
+//
+// The contract matches FetchProjectSummary's 404/403 handling:
+// missing or inaccessible files do NOT error out the run, they
+// simply don't opt the project out. A 401, 429 or 5xx DOES error,
+// because that's an auth/rate/infra problem the operator must see.
+func (c *Client) HasOptOutFile(ctx context.Context, projectPath string) (bool, error) {
+	for _, name := range optOutFileNames {
+		exists, err := c.hasRepoRootFile(ctx, projectPath, name)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// optOutFileNames is the list of sentinel files that opt a project out
+// of the run. The order is "summariser's own first, docbuilder alias
+// second" — HasOptOutFile short-circuits on the first match, so the
+// summariser's own file is checked first and the public alias second.
+var optOutFileNames = []string{".summaryignore", ".docignore"}
+
+// hasRepoRootFile GETs the project's default-branch tree at a file
+// name and reports whether the file exists. 200 ⇒ exists, 404 ⇒
+// doesn't, 401/429/5xx ⇒ real error. Anything else (e.g. 403 for
+// confidential projects the PAT can't read) is treated as "doesn't
+// exist" so a project that can't be read is treated as opted-in
+// rather than crashing the run — same call we make elsewhere.
+func (c *Client) hasRepoRootFile(ctx context.Context, projectPath, name string) (bool, error) {
+	// Read default branch + project path in one call (cheap), then
+	// hit the Files API. We need the default branch name to query
+	// the file; the Files endpoint requires ?ref=<ref>.
+	summary, err := c.FetchProjectSummary(ctx, projectPath)
+	if err != nil {
+		return false, err
+	}
+	if summary == nil {
+		// 404 from /projects/:id — treat as "no opt-out file" so the
+		// caller doesn't fail the run on a moved/renamed project.
+		return false, nil
+	}
+	ref := summary.DefaultBranch
+	if ref == "" {
+		// Old GitLab versions may not return default_branch on every
+		// payload shape. Without a ref we can't query the file;
+		// fall back to "no opt-out".
+		return false, nil
+	}
+
+	u := c.baseURL + fmt.Sprintf("/projects/%s/repository/files/%s?ref=%s",
+		url.PathEscape(projectPath), url.PathEscape(name), url.QueryEscape(ref))
+	var attempt int
+	for {
+		attempt++
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return false, err
+		}
+		req.Header.Set("PRIVATE-TOKEN", c.token)
+		req.Header.Set("Accept", "application/json")
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return false, err
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		switch {
+		case resp.StatusCode == http.StatusNotFound:
+			return false, nil
+		case resp.StatusCode == http.StatusOK:
+			return true, nil
+		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
+			if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
+				return false, err
+			}
+			continue
+		case resp.StatusCode >= 500 && attempt <= maxRetries:
+			if err := sleep(ctx, backoff(attempt)); err != nil {
+				return false, err
+			}
+			continue
+		case resp.StatusCode == http.StatusForbidden:
+			// Confidential project or a PAT the operator can read
+			// the topic/metadata of but not the file. The
+			// project-owner signal can't reach us, so fall through
+			// to "no opt-out" — the run continues, and if the
+			// file truly exists the operator will see the
+			// published report and can iterate.
+			return false, nil
+		case resp.StatusCode >= 400:
+			return false, fmt.Errorf("gitlab %s /repository/files/%s: %d %s",
+				http.MethodGet, name, resp.StatusCode, truncate(string(body), 200))
+		}
 	}
 }
 

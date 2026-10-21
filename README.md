@@ -248,30 +248,38 @@ summarizer run --project group/subgroup/project --force
 summarizer run --project group/a --project group/b
 summarizer run --project group/a,group/b
 
-# Wide net: --discover-group scans a group's projects and runs the
-# pipeline on whichever had MR activity in the window. Composes with
-# --project (explicit wins on duplicates; the discovery pass skips
-# already-explicit projects to spare the probe round-trip).
+# Default: run every project the token can see that had activity in
+# the window. No topic, no config entry. This is what happens when no
+# discovery flag is passed at all, and it's what --discover-active
+# asks for explicitly.
+summarizer run --since 7d
+summarizer run --discover-active --since 7d
+
+# Narrower: --discover-group scans one group's projects and runs the
+# pipeline on whichever had MR or issue activity in the window.
+# Composes with --project (explicit wins on duplicates; the discovery
+# pass skips already-explicit projects to spare the probe round-trip).
 summarizer run --discover-group group/team-a --since 7d
 summarizer run --discover-group group/team-a --project group/team-a/flagship --since 7d
 
-# Server-wide: --discover-by-topic ignores group boundaries entirely
-# and picks up EVERY project on the instance carrying a `summarize`
-# or `summarize-team-only` topic, across all groups the token can
-# see. Use this when the operator can't enumerate their groups, or
-# when groups come and go. Same activity gate + audience policy as
-# --discover-group; composes with it and with --project.
+# Server-wide by topic: --discover-by-topic picks up every project
+# on the instance carrying a `summarize` or `summarize-team-only`
+# topic, across all groups the token can see. Kept as an escape
+# hatch for instances where the active-project net is too wide.
 summarizer run --discover-by-topic --since 7d
 summarizer run --discover-by-topic --discover-group group/team-a --since 7d
 
-# Audience policy: which projects produce customer-facing output?
-# Three sources union together: --internal-only-project flag,
-# summarizer.yaml's internal_only_projects block, and the GitLab-side
-# `summarize-team-only` topic on the project. Discovered projects
-# default to team-only unless the project carries the `summarize`
-# topic (opt-in to customer output). The auditor-friendly rule:
-# absence of any topic = team only for discovered, both audiences
-# for explicit-listed.
+# Opting out: drop a `.summaryignore` or `.docignore` file in the
+# project repository root and summarizer skips it, whatever the
+# discovery mode. This is the project owner's signal and it wins
+# over an explicit --project listing.
+#   touch .summaryignore && git add .summaryignore && git commit -m "skip summarizer"
+
+# Audience policy: every project that runs produces a team-only
+# report. Customer-facing output needs the `summarize` topic on the
+# project. Three sources can force team-only and they union
+# together: --internal-only-project, summarizer.yaml's
+# internal_only_projects block, and the `summarize-team-only` topic.
 summarizer run --discover-group group/team-a \
     --internal-only-project group/team-a/internal-tool --since 7d
 

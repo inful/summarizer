@@ -6,6 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Discovery is opt-out, not opt-in.** Running with no discovery flag now runs every project the token can see that had activity in the window (`--discover-active`, using GitLab's server-side `last_activity_after` filter). Previously an operator with ~25 projects had to add a topic to each one before anything was summarised. Three changes ship together:
+  - **Default audience is team-only for every project**, explicit or discovered. An operator naming a project with `--project` no longer unlocks customer-facing output by itself; only the `summarize` topic does. `summarize-team-only` and the `internal_only_projects` block keep working as team-only overrides.
+  - **`.summaryignore` or `.docignore` in the repo root opts a project out of the run entirely.** Checked on the project's default branch before the activity probe, so an opted-out project costs two API calls and nothing else. The file wins over an explicit `--project` listing: the project owner's signal is more authoritative than the cron config. A 404 or 403 (confidential project) is not an error and does not opt out — the project runs on its defaults.
+  - **`--discover-by-topic` is kept** as an escape hatch for instances where the activity net is too wide.
+
+  Migration: projects that already carry `summarize` are unaffected. Projects with no topic that were previously only listed explicitly drop from customer-facing to team-only output. Projects nobody named and that had no topic start producing team-only reports — add `.summaryignore` to any of those you don't want.
+
 ### Fixed
 - **Discovered projects were publishing customer-facing reports.** `runOneProject` classified with a hardcoded `policy.SourceExplicit`; `Run()` carried a comment claiming it overrode the field to `SourceDiscovered`, but only set `FromDiscovery`, and nothing else ever wrote `Source`. Every project surfaced by `--discover-group` or `--discover-by-topic` therefore classified as operator-named: a project with **no topics** returned `CustomerOn=true`, made a customer LLM call, and published a file with `public: true` — while the discovery manifest printed `(team-only)` from a separate, correct classification. D5's safe default was inverted; nobody had to set `summarize-team-only` to leak a project. The project origin now flows into the classifier, and `ProjectResult.Source` is gone so the two can no longer disagree.
 - **`gitlab_host:` in the YAML config was silently ignored.** The field had no `yaml:` tag, so yaml.v3 looked for `gitlabhost`. `examples/summarizer.yaml` and the README both used `gitlab_host:`, and the resulting error said "set gitlab_host in config" — pointing at the key that did nothing. The entire config-file path was unusable without `--gitlab-host`.

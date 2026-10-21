@@ -36,6 +36,7 @@ type Options struct {
 	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
 	PeriodMode           PeriodMode    // --period-mode daily|monday; controls whether daily runs produce a new directory each (daily) or anchor to the week's Monday (monday). Default: daily (matches v0.1.0).
 	DiscoverByTopic      bool          // --discover-by-topic: scan every project on the instance carrying a `summarize*` topic, across all groups the token can see. Composes with Projects and DiscoveredGroups.
+	DiscoverActive       bool          // --discover-active: include every project the token can see that had activity since the window opened. Set automatically when no other discovery input is given, which is the documented default: an active project runs unless it opts out.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -122,8 +123,8 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	res := Result{Projects: []ProjectResult{}, TokensByAudience: map[string]llm.Usage{}}
 	p.lastActiveEpics = make(map[string][]*gitlab.Epic)
 
-	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 && !p.Opts.DiscoverByTopic {
-		return res, errors.New("at least one --project, --discover-group or --discover-by-topic is required")
+	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 && !p.Opts.DiscoverByTopic && !p.Opts.DiscoverActive {
+		return res, errors.New("at least one --project, --discover-group, --discover-by-topic or --discover-active is required")
 	}
 
 	finalList, discoveredSet, err := p.resolveProjects(ctx)
@@ -910,7 +911,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	// Explicit projects always pass through.
 	finalList = append(finalList, opts.Projects...)
 
-	if len(opts.DiscoveredGroups) == 0 && !opts.DiscoverByTopic {
+	if len(opts.DiscoveredGroups) == 0 && !opts.DiscoverByTopic && !opts.DiscoverActive {
 		return finalList, discoveredSet, nil
 	}
 
@@ -927,6 +928,26 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		if containsString(opts.Projects, proj.Path) {
 			return nil
 		}
+		// Project-level opt-out: .summaryignore or .docignore at
+		// the repo root. The project-owner signal trumps discovery
+		// and trumps explicit-listing: the file says "do not
+		// summarise me", and we honour that. The check is
+		// cheapest here (before the activity probe) so an opted-out
+		// project doesn't even count against the discovery
+		// summary's excluded count.
+		optedOut, err := gc.HasOptOutFile(ctx, proj.Path)
+		if err != nil {
+			// 5xx/401/429 — real errors, fail the run.
+			// 404/403 — soft-degrade inside HasOptOutFile to
+			// (false, nil) so moved/confidential projects are
+			// included by default.
+			return fmt.Errorf("opt-out check %s: %w", proj.Path, err)
+		}
+		if optedOut {
+			excluded++
+			fmt.Fprintf(os.Stderr, "  excluded (.summaryignore): %s\n", proj.Path)
+			return nil
+		}
 		active, err := gc.ProbeProjectActivity(ctx, proj.Path, since)
 		if err != nil {
 			// 4xx (other than 404 already softened) and 5xx fail
@@ -935,12 +956,12 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 			// transport / auth issue that's worth surfacing.
 			return fmt.Errorf("probe %s: %w", proj.Path, err)
 		}
-		// Audience classification (D5): discovered projects
-		// need either the `summarize` opt-in topic to be
-		// customer-eligible, or they default to team-only (the
-		// default-safe behaviour). Config/CLI overrides apply
-		// here too. Annotate the manifest line so the operator
-		// can audit classifications at a glance.
+		// Audience classification (D5): the default is team-only
+		// for every project; `summarize` on the project is the
+		// only way to produce customer-facing content. The
+		// config/CLI override still wins when set, and
+		// `summarize-team-only` continues to mean "team-only
+		// even if the project has `summarize`."
 		inOverride := containsString(opts.InternalOnlyProjects, proj.Path)
 		aud := policy.Classify(policy.SourceDiscovered, proj.Topics, inOverride)
 		tnoTag := ""
@@ -986,6 +1007,25 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: discovery from topics=%v; scanned=%d\n",
 			discoveryTopics(), len(projects))
+		for _, proj := range projects {
+			if err := admit(proj); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+
+	// Default discovery: every project the token can see with
+	// activity in the window. No topic, no config entry. A project
+	// that was worked on gets a report; the ways out are the
+	// .summaryignore / .docignore file or an explicit audience
+	// override.
+	if opts.DiscoverActive {
+		projects, err := gc.FetchActiveProjects(ctx, since)
+		if err != nil {
+			return nil, nil, err
+		}
+		fmt.Fprintf(os.Stderr, "summarizer: discovery by activity since=%s; scanned=%d\n",
+			since.UTC().Format(time.RFC3339), len(projects))
 		for _, proj := range projects {
 			if err := admit(proj); err != nil {
 				return nil, nil, err

@@ -41,12 +41,27 @@ func TestResolveProjects_DiscoverByTopic(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "team-b/quiet") {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[]`))
+		path := r.URL.Path
+		// Repo-root sentinel files: no project opts out here.
+		if strings.Contains(path, "/repository/files/") {
+			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		active(w, r)
+		// Project metadata (object) vs sub-resource lists (array).
+		// FetchProjectSummary wants an object; the activity probe
+		// wants an array.
+		switch {
+		case strings.Contains(path, "/merge_requests"), strings.Contains(path, "/issues"):
+			if strings.Contains(path, "team-b/quiet") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			active(w, r)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"default_branch":"main","topics":["summarize"]}`))
+		}
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

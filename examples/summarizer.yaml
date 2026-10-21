@@ -41,9 +41,11 @@ max_events: 200
 # per audience. Per-project reports stay the same.
 #
 # There is no `projects:` list here on purpose. The project set comes
-# from --project (repeatable, comma-separated), --discover-group, or
-# --discover-by-topic. Pick one; a config-file project list would be a
-# second way to say the same thing that nothing reads.
+# from the CLI: with no discovery flag, summarizer runs every project
+# the token can see that had activity in the window. --project
+# (repeatable, comma-separated), --discover-group and
+# --discover-by-topic narrow or redirect that. A config-file project
+# list would be a second way to say the same thing that nothing reads.
 
 # Optional: publish to a GitLab project as MRs for review instead of
 # writing Markdown locally. Reports are committed per-period on a branch
