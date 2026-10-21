@@ -119,6 +119,14 @@ type fileReq struct {
 	CommitMessage string `json:"commit_message"`
 	Content       string `json:"content"`  // base64
 	Encoding      string `json:"encoding"` // "base64"
+	// LastCommitID is the SHA of the commit that last touched the file
+	// on the target branch. Omitted on first publish (file doesn't
+	// exist yet, so no SHA to round-trip). When the file already
+	// exists on the branch — every re-run in monday-bucket mode —
+	// GitLab's PUT returns 400 "A file with this name doesn't
+	// exist" if the field is absent. The misleading message
+	// actually means "this is an update, you must authorise it".
+	LastCommitID string `json:"last_commit_id,omitempty"`
 }
 
 type mrReq struct {
@@ -157,8 +165,11 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 	// file is already on this branch from an earlier run) so the
 	// cross-project link identity (the docbuilder invariant) survives
 	// re-runs. When the file is absent — fresh period or first publish —
-	// existingUID is "" and NewFrontmatter will mint via mdid.
-	existingUID, err := g.readExistingUID(path, branch)
+	// existingUID is "" and NewFrontmatter will mint via mdid. The
+	// lastCommitID returned alongside is what the PUT body needs to
+	// authorise an update; for a new file it's "" and `omitempty`
+	// drops it.
+	existingUID, lastCommitID, err := g.readExistingUID(path, branch)
 	if err != nil {
 		return Result{}, fmt.Errorf("read existing %s@%s: %w", path, branch, err)
 	}
@@ -187,6 +198,7 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 		CommitMessage: commitMessage(req),
 		Content:       encoded,
 		Encoding:      "base64",
+		LastCommitID:  lastCommitID,
 	})
 	if err := g.api(putURL, "PUT", putBody, nil); err != nil {
 		return Result{}, fmt.Errorf("put file %s@%s: %w", path, branch, err)
@@ -247,49 +259,59 @@ func (g *GitLabPublisher) branchExists(branch string) bool {
 // GitLab 404s when the file doesn't exist on that ref — that's our
 // "first publish for this period" signal.
 type fileResponse struct {
-	Encoding string `json:"encoding"` // "text" or "base64"
-	Content  string `json:"content"`
+	Encoding     string `json:"encoding"` // "text" or "base64"
+	Content      string `json:"content"`
+	LastCommitID string `json:"last_commit_id"` // SHA of the commit that last touched this file; required for the round-trip PUT
 }
 
 // readExistingUID GETs the file at (path, branch) and parses out the
-// docbuilder `uid` frontmatter key. Three returns:
+// docbuilder `uid` frontmatter key, plus the commit SHA of the file
+// on that branch. The two are returned together because they're
+// populated by the same GET response and used by the same PUT —
+// splitting them across two methods would mean two round-trips to
+// the Files API for no reason.
 //
-//   - ("", nil) when the file is absent (first publish for this period).
-//   - (uid, nil) when the file exists and carries a uid.
-//   - ("", err) on transport / parse failure — the caller surfaces it.
+// Three returns:
+//
+//   - ("", "", nil) when the file is absent (first publish for this period).
+//   - (uid, sha, nil) when the file exists and carries a uid.
+//   - ("", "", err) on transport / parse failure — the caller surfaces it.
 //
 // Cross-run stability of the UID comes from this read; the mint itself
-// is non-deterministic (UUID v7). See Frontmatter docs.
-func (g *GitLabPublisher) readExistingUID(path, branch string) (string, error) {
+// is non-deterministic (UUID v7). The SHA is what GitLab's PUT needs
+// to authorise an update on a file that already exists on the branch
+// — see fileReq.LastCommitID for why.
+func (g *GitLabPublisher) readExistingUID(path, branch string) (uid, lastCommitID string, err error) {
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/files/%s?ref=%s",
 		g.Host, url.PathEscape(g.Project), pathEscape(path), url.QueryEscape(branch))
 
 	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set("PRIVATE-TOKEN", g.Token)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := g.HTTP.Do(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		// First publish for this file → caller will mint a fresh uid.
-		return "", nil
+		// First publish for this file → caller will mint a fresh uid
+		// and the PUT will create the file (no last_commit_id needed).
+		return "", "", nil
 	case resp.StatusCode >= 400:
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("%s %s: %d %s",
+		return "", "", fmt.Errorf("%s %s: %d %s",
 			http.MethodGet, urlStr, resp.StatusCode, truncate(string(body), 300))
 	}
 
 	var fr fileResponse
 	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
-		return "", fmt.Errorf("decode %s: %w", urlStr, err)
+		return "", "", fmt.Errorf("decode %s: %w", urlStr, err)
 	}
 	// GitLab returns text files with encoding="text" verbatim and
 	// binary-ish files with encoding="base64". Frontmatter is text, so
@@ -298,7 +320,7 @@ func (g *GitLabPublisher) readExistingUID(path, branch string) (string, error) {
 	if strings.EqualFold(fr.Encoding, "base64") {
 		decoded, err := base64.StdEncoding.DecodeString(content)
 		if err != nil {
-			return "", fmt.Errorf("decode base64 content: %w", err)
+			return "", "", fmt.Errorf("decode base64 content: %w", err)
 		}
 		content = string(decoded)
 	}
@@ -309,24 +331,25 @@ func (g *GitLabPublisher) readExistingUID(path, branch string) (string, error) {
 		// copy or the YAML isn't a mapping). Surface the parse error so
 		// the operator notices on stderr; the upstream caller treats
 		// empty-uid as "mint fresh".
-		return "", fmt.Errorf("parse existing %s: %w", path, err)
+		return "", "", fmt.Errorf("parse existing %s: %w", path, err)
 	}
 	if !doc.HasFrontmatter() {
-		return "", nil
+		return "", fr.LastCommitID, nil
 	}
-	uid, found, err := doc.GetString("uid")
+	parsedUID, found, err := doc.GetString("uid")
 	if err != nil {
-		return "", fmt.Errorf("extract uid from %s: %w", path, err)
+		return "", "", fmt.Errorf("extract uid from %s: %w", path, err)
 	}
 	if !found {
 		// An existing summarizer-written file should always carry a uid
 		// (NewFrontmatter renders one on every Publish). Absence means
 		// either a manual edit, a corrupted clone, or a file from a
 		// tool other than summarizer — all rare and recoverable. Treat
-		// as "no usable uid" so the next publish mints fresh.
-		return "", nil
+		// as "no usable uid" so the next publish mints fresh; the
+		// last_commit_id still flows so the PUT authorises the update.
+		return "", fr.LastCommitID, nil
 	}
-	return uid, nil
+	return parsedUID, fr.LastCommitID, nil
 }
 
 // mergeRequests lists MRs; we use a wide state filter so we can detect

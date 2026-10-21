@@ -176,6 +176,126 @@ func (f *fakeGitLab) handler() http.Handler {
 	return mux
 }
 
+// TestGitLabPublisher_PutSendsLastCommitIDForExistingFiles: GitLab
+// 400s on PUT /repository/files with the misleading message "A
+// file with this name doesn't exist" when the file is already on
+// the branch and the body doesn't include the file's current
+// `last_commit_id`. The publisher must round-trip the SHA from the
+// GET (read-before-write) into the PUT body, or every re-run in
+// monday-bucket mode 400s on the second file.
+//
+// Like the ref-field test, this inspects the raw PUT body rather
+// than a struct decode so the test cannot pass by accident.
+func TestGitLabPublisher_PutSendsLastCommitIDForExistingFiles(t *testing.T) {
+	const lastCommitID = "abc1234567890abcdef1234567890abcdef12345"
+	putBodies := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/branches") && !strings.Contains(r.URL.Path, "/branches/"):
+			w.WriteHeader(http.StatusCreated)
+		case strings.Contains(r.URL.Path, "/branches/"):
+			// Branch exists.
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/repository/files/"):
+			if r.Method == http.MethodGet {
+				// read-before-write: file exists, return its content
+				// and last_commit_id. The body has the docbuilder
+				// frontmatter with a uid; the publisher preserves it.
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"encoding": "text",
+					"content": "---\nuid: existing-uid\n---\n\nold body\n",
+					"last_commit_id": "` + lastCommitID + `"
+				}`))
+				return
+			}
+			// PUT: capture the body so the test can assert on it.
+			body, _ := io.ReadAll(r.Body)
+			putBodies = append(putBodies, string(body))
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/merge_requests"):
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"iid":1,"web_url":"http://x","source_branch":"b","target_branch":"main","title":"t","state":"opened"}`))
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	if _, err := p.Publish(Request{
+		Name: "x.md", Body: []byte("new body"), Period: "2026-10-19", Kind: KindPerProject,
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(putBodies) != 1 {
+		t.Fatalf("want 1 PUT, got %d", len(putBodies))
+	}
+	wantSub := `"last_commit_id":"` + lastCommitID + `"`
+	if !strings.Contains(putBodies[0], wantSub) {
+		t.Errorf("PUT body must include last_commit_id %q; got %s", wantSub, putBodies[0])
+	}
+}
+
+// TestGitLabPublisher_PutOmitsLastCommitIDForNewFiles: when the file
+// doesn't exist on the branch (first publish of a period), the
+// publisher must NOT include last_commit_id. Sending it for a
+// non-existent file is the inverse of the previous bug — GitLab
+// 400s on the wrong-shape body. omitempty does this correctly only
+// if the field is left empty.
+func TestGitLabPublisher_PutOmitsLastCommitIDForNewFiles(t *testing.T) {
+	putBodies := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/branches") && !strings.Contains(r.URL.Path, "/branches/"):
+			w.WriteHeader(http.StatusCreated)
+		case strings.Contains(r.URL.Path, "/branches/"):
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/repository/files/"):
+			if r.Method == http.MethodGet {
+				// 404: file doesn't exist yet. This is the "create"
+				// path; the publisher must NOT include last_commit_id.
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			body, _ := io.ReadAll(r.Body)
+			putBodies = append(putBodies, string(body))
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/merge_requests"):
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+			} else {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"iid":1,"web_url":"http://x","source_branch":"b","target_branch":"main","title":"t","state":"opened"}`))
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	if _, err := p.Publish(Request{
+		Name: "x.md", Body: []byte("new body"), Period: "2026-10-19", Kind: KindPerProject,
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if len(putBodies) != 1 {
+		t.Fatalf("want 1 PUT, got %d", len(putBodies))
+	}
+	if strings.Contains(putBodies[0], "last_commit_id") {
+		t.Errorf("PUT body must NOT include last_commit_id for a new file; got %s", putBodies[0])
+	}
+}
+
 // TestGitLabPublisher_EnsureBranchUsesRefField: GitLab's modern
 // POST /repository/branches expects the start-point as `ref` (the
 // legacy name `start_point` was renamed in GitLab 12.2 and modern
