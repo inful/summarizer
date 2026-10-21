@@ -166,29 +166,6 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 		return res, nil
 	}
 
-	// Bound the bill before the first LLM call. Each project costs two
-	// completions, so the activity-default discovery can produce an
-	// unbounded bill on an instance where everything was touched. The
-	// cap lands after discovery and opt-out (so it does not count
-	// projects that would never have run) and before any LLM call.
-	//
-	// Sort by path first. finalList is explicit --project entries in
-	// argument order, then discovered projects in API response order, so
-	// truncating it as-is keeps a fixed cohort that never varies —
-	// permanently summarising the same N projects and never the rest.
-	// Sorting makes the kept set reproducible and reviewable. It does
-	// NOT rotate; that is a policy decision, not a default.
-	if cap := p.Opts.maxProjects(); len(finalList) > cap {
-		sort.Strings(finalList)
-		dropped := finalList[cap:]
-		finalList = finalList[:cap]
-		fmt.Fprintf(os.Stderr, "summarizer: --max-projects %d — dropping %d project(s) that would have cost %d more LLM call(s):\n",
-			cap, len(dropped), 2*len(dropped))
-		for _, p := range dropped {
-			fmt.Fprintf(os.Stderr, "  dropped: %s\n", p)
-		}
-	}
-
 	// Per-project loop. Each project produces two files (customer +
 	// team); the rollup step (below) adds two more when there's more
 	// than one project.
@@ -945,19 +922,42 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 	//
 	// IID is the tiebreak in both, so nothing depends on GitLab's
 	// response order.
-	sort.Slice(raw, func(i, j int) bool {
+	byRecency := func(i, j int) bool {
 		if !raw[i].UpdatedAt.Equal(raw[j].UpdatedAt) {
 			return raw[i].UpdatedAt.After(raw[j].UpdatedAt)
 		}
 		return raw[i].IID < raw[j].IID
-	})
-	if len(raw) > maxActiveEpics {
-		fmt.Fprintf(os.Stderr, "summarizer: %s: %d epics in group %s, considering the %d most recently updated\n",
-			project, len(raw), ns.FullPath, maxActiveEpics)
-		raw = raw[:maxActiveEpics]
-		// Back to a stable render order for the prompt.
-		sort.Slice(raw, func(i, j int) bool { return raw[i].IID < raw[j].IID })
 	}
+	// If the API omits updated_at every timestamp is the zero time,
+	// every comparison ties, and the IID tiebreak hands back the OLDEST
+	// epics — silently reintroducing the bug the recency sort exists to
+	// fix, while the log line below still claims "most recently
+	// updated". Fall back to the highest IIDs, which are newer by
+	// construction, and say what happened.
+	zeroTimestamps := true
+	for _, e := range raw {
+		if !e.UpdatedAt.IsZero() {
+			zeroTimestamps = false
+			break
+		}
+	}
+	if zeroTimestamps {
+		if len(raw) > maxActiveEpics {
+			fmt.Fprintf(os.Stderr, "summarizer: %s: group %s reported no updated_at for any epic; "+
+				"considering the %d highest-numbered instead\n", project, ns.FullPath, maxActiveEpics)
+			raw = raw[len(raw)-maxActiveEpics:]
+		}
+	} else {
+		sort.Slice(raw, byRecency)
+		if len(raw) > maxActiveEpics {
+			fmt.Fprintf(os.Stderr, "summarizer: %s: %d epics in group %s, considering the %d most recently updated\n",
+				project, len(raw), ns.FullPath, maxActiveEpics)
+			raw = raw[:maxActiveEpics]
+		}
+	}
+	// Back to a stable render order for the prompt.
+	sort.Slice(raw, func(i, j int) bool { return raw[i].IID < raw[j].IID })
+
 	for i := range raw {
 		rawIssues, err := p.GitLab.FetchEpicIssues(ctx, ns.FullPath, raw[i].IID)
 		if err != nil {
@@ -973,16 +973,14 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 }
 
 // projectTopics fetches the project's GitLab topic list, used by
-// D5's audience classifier (see policy.Classify). One extra
-// /projects/:id fetch per project per run; the result feeds a
-// pure-function classifier so we don't carry the topics around
-// past Classify.
+// policy.Classify.
 //
-// On any error (transport, parse, missing field on older GitLab),
-// returns nil and lets the classifier default to "no topics" — the
-// same behavior as a project whose operator never set topics. The
-// err-on-everything alternative would surface a network blip as a
-// customer-output suppression failure; not useful.
+// shortcut: resolveProjects already holds these topics from the
+// discovery scan, so this is one redundant GET per project (~50 on a
+// capped run). Carrying them through would mean a fifth return value
+// on resolveProjects plus plumbing into runOneProject. Revisit if the
+// scan ever grows to hundreds of projects or the topic list becomes
+// dynamic.
 func (p *Pipeline) projectTopics(ctx context.Context, project string) []string {
 	summary, err := p.GitLab.FetchProjectSummary(ctx, project)
 	if err != nil || summary == nil {
@@ -1045,6 +1043,16 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		finalList = append(finalList, path)
 	}
 
+	if len(opts.Projects) > opts.maxProjects() {
+		// An explicit --project is a statement of intent; the cap is a
+		// cost guard for a wide discovery sweep. They must not compete
+		// in one alphabetical pool, or sorting would silently evict the
+		// project someone named deliberately. Exceed the cap instead,
+		// and say so.
+		fmt.Fprintf(os.Stderr, "summarizer: %d explicit project(s) exceed --max-projects %d; "+
+			"running all of them — raise the flag to change this\n", len(opts.Projects), opts.maxProjects())
+	}
+
 	if len(opts.DiscoveredGroups) == 0 && !opts.DiscoverByTopic && !opts.DiscoverActive {
 		return finalList, discoveredSet, excluded, nil
 	}
@@ -1105,6 +1113,39 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		return nil
 	}
 
+	// admitUpTo is the shared admission budget for every discovery
+	// loop. Admit is ~6 sequential round-trips per project (opt-out file
+	// read plus the activity probe), so stopping early is what keeps a
+	// wide instance affordable.
+	//
+	// The budget counts INCLUSIONS, not candidates. Counting candidates
+	// meant an instance whose most-recently-active projects were all
+	// opted out or quiet examined `maxProjects` of them, included none,
+	// and published nothing — while the log reported the rest as "not
+	// considered", as though the cap were working as intended.
+	admitUpTo := func(projects []gitlab.ProjectSummary, why string) error {
+		// Most-recently-active first. last_activity_at is already in
+		// this payload, so ranking is free.
+		sort.SliceStable(projects, func(i, j int) bool {
+			if !projects[i].LastActivityAt.Equal(projects[j].LastActivityAt) {
+				return projects[i].LastActivityAt.After(projects[j].LastActivityAt)
+			}
+			return projects[i].Path < projects[j].Path
+		})
+		limit := opts.maxProjects()
+		for n, proj := range projects {
+			if len(finalList) >= limit {
+				fmt.Fprintf(os.Stderr, "summarizer: %s budget reached (--max-projects %d, %d in the run); "+
+					"%d further candidate(s) not examined\n", why, limit, len(finalList), len(projects)-n)
+				return nil
+			}
+			if err := admit(proj); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	for _, group := range opts.DiscoveredGroups {
 		// v1: recursive=false. The recursive branch is reserved
 		// for a future change; see FetchGroupProjects.
@@ -1114,10 +1155,8 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: discovery from group=%s recursive=false; scanned=%d\n",
 			group, len(projects))
-		for _, proj := range projects {
-			if err := admit(proj); err != nil {
-				return nil, nil, excluded, err
-			}
+		if err := admitUpTo(projects, "group "+group); err != nil {
+			return nil, nil, excluded, err
 		}
 	}
 
@@ -1130,10 +1169,8 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: discovery from topics=%v; scanned=%d\n",
 			discoveryTopics(), len(projects))
-		for _, proj := range projects {
-			if err := admit(proj); err != nil {
-				return nil, nil, excluded, err
-			}
+		if err := admitUpTo(projects, "topic scan"); err != nil {
+			return nil, nil, excluded, err
 		}
 	}
 
@@ -1149,35 +1186,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		}
 		fmt.Fprintf(os.Stderr, "summarizer: discovery by activity since=%s; scanned=%d\n",
 			since.UTC().Format(time.RFC3339), len(projects))
-		// Admit is ~6 sequential round-trips per project (opt-out file
-		// read plus the activity probe). Doing that for every active
-		// project and then trimming to --max-projects in Run() meant
-		// the cap bounded only the LLM bill: on an instance with 200
-		// active projects, ~1200 requests were spent building a list
-		// that was immediately cut to 50. Rank by last_activity_at —
-		// free, already in this payload — and stop admitting once the
-		// cap is reached, so the discarded projects cost nothing.
-		admitActive := func(projects []gitlab.ProjectSummary) error {
-			sort.SliceStable(projects, func(i, j int) bool {
-				if !projects[i].LastActivityAt.Equal(projects[j].LastActivityAt) {
-					return projects[i].LastActivityAt.After(projects[j].LastActivityAt)
-				}
-				return projects[i].Path < projects[j].Path
-			})
-			limit := opts.maxProjects()
-			for n, proj := range projects {
-				if n >= limit {
-					fmt.Fprintf(os.Stderr, "summarizer: %d more active project(s) not considered (--max-projects %d); "+
-						"raise the flag to include them\n", len(projects)-limit, limit)
-					break
-				}
-				if err := admit(proj); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		if err := admitActive(projects); err != nil {
+		if err := admitUpTo(projects, "activity scan"); err != nil {
 			return nil, nil, excluded, err
 		}
 	}

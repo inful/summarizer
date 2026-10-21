@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,89 @@ func TestDiscoverActive_CapsProbingNotJustLLMCalls(t *testing.T) {
 	if srv.fileReads > 20 {
 		t.Errorf("read %d opt-out files for 10 projects (expected 20); "+
 			"projects past the cap were still being read", srv.fileReads)
+	}
+}
+
+// quietScanServer models an instance whose most recently active
+// projects are all silent: the MR list is empty, so none of them would
+// be included, and the real work sits further down the ranking.
+type quietScanServer struct{ n int }
+
+func (q *quietScanServer) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("X-Next-Page", "")
+		rw.Header().Set("Content-Type", "application/json")
+		var list []map[string]any
+		for i := 0; i < q.n; i++ {
+			at := time.Now().AddDate(0, 0, -i).UTC().Format(time.RFC3339)
+			list = append(list, map[string]any{
+				"id": i + 1, "path_with_namespace": fmt.Sprintf("g/p%03d", i),
+				"last_activity_at": at, "topics": []string{},
+			})
+		}
+		_ = json.NewEncoder(rw).Encode(list)
+	})
+	mux.HandleFunc("/api/v4/projects/", func(rw http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		rw.Header().Set("X-Next-Page", "")
+		rw.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(p, "/repository/files/"):
+			rw.WriteHeader(http.StatusNotFound)
+		case strings.Contains(p, "/merge_requests"):
+			// The 20 newest projects have no MRs in the window; only
+			// p020 and later do. URL.Path has already decoded the %2F
+			// in the escaped project path, so the fixture's own name
+			// is the last segment before /merge_requests.
+			seg := strings.TrimSuffix(
+				strings.TrimPrefix(p, "/api/v4/projects/"), "/merge_requests")
+			if _, name, ok := strings.Cut(seg[strings.LastIndex(seg, "/")+1:], "p"); ok {
+				n, _ := strconv.Atoi(name)
+				if n < 20 {
+					_, _ = rw.Write([]byte(`[]`))
+					return
+				}
+			}
+			_, _ = rw.Write([]byte(`[{"iid":1}]`))
+		case strings.Contains(p, "/issues"),
+			strings.Contains(p, "/repository/commits"):
+			_, _ = rw.Write([]byte(`[]`))
+		default:
+			_, _ = rw.Write([]byte(`{"id":1,"default_branch":"main","topics":[]}`))
+		}
+	})
+	return mux
+}
+
+// TestDiscoverActive_CapCountsInclusionsNotCandidates: the budget used
+// to stop after maxProjects *candidates*. An instance whose most recent
+// projects are all opted out or quiet therefore examined the cap, kept
+// none, and published nothing — while logging that the rest were "not
+// considered", as though that were the cap working. The budget is on
+// projects that made it into the run.
+func TestDiscoverActive_CapCountsInclusionsNotCandidates(t *testing.T) {
+	hs := httptest.NewServer((&quietScanServer{n: 200}).handler())
+	defer hs.Close()
+	gc := gitlab.New(hs.URL, "glpat-x", 5*time.Second)
+
+	projects, _, _, err := resolveProjects(context.Background(), gc, Options{
+		DiscoverActive: true,
+		MaxProjects:    5,
+		Since:          7 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(projects) != 5 {
+		t.Fatalf("want 5 included projects, got %d (%v); "+
+			"the budget counted examined candidates, so 20 quiet projects ate the whole cap",
+			len(projects), projects)
+	}
+	for _, p := range projects {
+		if p < "g/p020" {
+			t.Errorf("included %q, which has no activity in the window", p)
+		}
 	}
 }
 

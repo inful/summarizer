@@ -120,10 +120,12 @@ func TestRun_SkipsRollupsOnPartialFailure(t *testing.T) {
 	}
 }
 
-// TestRun_MaxProjectsCapsBeforeAnyLLMCall: the cost cap lands after
-// discovery and opt-out but before the first completion, so dropping
-// projects actually saves money rather than just hiding output.
-func TestRun_MaxProjectsCapsBeforeAnyLLMCall(t *testing.T) {
+// TestRun_ExplicitProjectsOutrankTheCap: --max-projects is a cost guard
+// for a wide discovery sweep, not a filter on what the operator typed.
+// The old code sorted explicit and discovered entries into one pool and
+// cut it, so `--project group/zzz` was silently dropped whenever a
+// discovered project sorted ahead of it.
+func TestRun_ExplicitProjectsOutrankTheCap(t *testing.T) {
 	p, stub := twoProjectPipeline(t, "")
 	p.Opts.MaxProjects = 1
 
@@ -131,15 +133,17 @@ func TestRun_MaxProjectsCapsBeforeAnyLLMCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(res.Projects) != 1 {
-		t.Fatalf("--max-projects 1 should leave 1 project, got %d", len(res.Projects))
+	if len(res.Projects) != 2 {
+		t.Fatalf("explicit listings must all run even over the cap, got %d", len(res.Projects))
 	}
-	if res.Projects[0].Project != "group/aaa" {
-		t.Errorf("cap should keep the first project in list order, got %q", res.Projects[0].Project)
+	for _, pr := range res.Projects {
+		if pr.Project != "group/aaa" && pr.Project != "group/zzz" {
+			t.Errorf("unexpected project %q", pr.Project)
+		}
 	}
-	// One team-only project = one completion (no customer report).
-	if stub.calls > 2 {
-		t.Errorf("expected at most 2 completions for one project, got %d", stub.calls)
+	// Two team-only projects plus the cross-project team rollup.
+	if stub.calls != 3 {
+		t.Errorf("expected 3 completions (2 projects + 1 rollup), got %d", stub.calls)
 	}
 }
 

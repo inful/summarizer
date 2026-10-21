@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -284,12 +285,48 @@ func (c *Client) FetchActiveProjects(ctx context.Context, since time.Time) ([]Pr
 	q.Set("last_activity_after", since.UTC().Format(time.RFC3339))
 	q.Set("order_by", "last_activity_at")
 	q.Set("per_page", "100")
-	projs, err := getAll[ProjectSummary](ctx, c, "/projects", q)
+	projs, truncated, err := c.pagedProjects(ctx, "/projects", q, maxActiveScanPages)
 	if err != nil {
 		return nil, fmt.Errorf("discover active: %w", err)
 	}
+	if truncated {
+		fmt.Fprintf(os.Stderr, "summarizer: activity scan stopped after %d pages (%d projects); "+
+			"more active projects exist and were not examined\n", maxActiveScanPages, len(projs))
+	}
 	return projs, nil
 }
+
+// pagedProjects is getAll with a page ceiling. Returns what it found
+// plus whether there was more, so the caller can say so rather than
+// silently presenting a truncated scan as complete.
+func (c *Client) pagedProjects(ctx context.Context, path string, q url.Values, maxPages int) ([]ProjectSummary, bool, error) {
+	var out []ProjectSummary
+	for page := 1; page <= maxPages; page++ {
+		q.Set("page", strconv.Itoa(page))
+		batch, next, err := getPage[ProjectSummary](ctx, c, path, q)
+		if err != nil {
+			return out, false, err
+		}
+		out = append(out, batch...)
+		if !next || len(batch) == 0 {
+			return out, false, nil
+		}
+	}
+	return out, true, nil
+}
+
+// maxActiveScanPages bounds how far FetchActiveProjects will page.
+// The endpoint has no server-side limit, so on an instance where the
+// token can see thousands of projects this would walk every page and
+// hold every ProjectSummary in memory before the caller ranked and
+// capped them — and the first page is already the most recently active
+// hundred, because we ask for order_by=last_activity_at.
+//
+// shortcut: a run that hits this has not seen every active project.
+// Raising it costs one page per 100 projects; the caller logs how many
+// candidates were examined, so a truncation is visible in the run
+// output.
+const maxActiveScanPages = 10
 
 func (c *Client) FetchProjectsByTopic(ctx context.Context, topics []string) ([]ProjectSummary, error) {
 	seen := make(map[int]bool)

@@ -2,8 +2,11 @@ package gitlab
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -260,5 +263,43 @@ func TestProbeProjectActivity_429Surfaces(t *testing.T) {
 	_, err := c.ProbeProjectActivity(context.Background(), "g/rate", time.Now())
 	if err == nil {
 		t.Fatal("429 should surface an error so the operator notices")
+	}
+}
+
+// TestFetchActiveProjects_StopsAtPageCeiling: the endpoint has no
+// server-side limit, so on an instance where the token can see
+// thousands of projects the old code walked every page and held every
+// ProjectSummary in memory — to then rank them and keep at most
+// maxProjects. The scan must stop at a fixed number of pages and say
+// that it did, so a truncated scan is never presented as complete.
+func TestFetchActiveProjects_StopsAtPageCeiling(t *testing.T) {
+	var pages int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		w.Header().Set("Content-Type", "application/json")
+		// Always report a next page, forever.
+		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		list := make([]map[string]any, 0, 100)
+		for i := 0; i < 100; i++ {
+			list = append(list, map[string]any{
+				"id": page*100 + i + 1, "path_with_namespace": fmt.Sprintf("g/p%d", page*100+i+1),
+			})
+		}
+		_ = json.NewEncoder(w).Encode(list)
+	}))
+	defer srv.Close()
+
+	projs, err := New(srv.URL, "glpat-x", 5*time.Second).
+		FetchActiveProjects(context.Background(), time.Now().Add(-7*24*time.Hour))
+	if err != nil {
+		t.Fatalf("FetchActiveProjects: %v", err)
+	}
+	if pages > maxActiveScanPages {
+		t.Errorf("walked %d pages, want at most %d", pages, maxActiveScanPages)
+	}
+	if want := maxActiveScanPages * 100; len(projs) != want {
+		t.Errorf("got %d projects, want %d (%d pages of 100)",
+			len(projs), want, maxActiveScanPages)
 	}
 }

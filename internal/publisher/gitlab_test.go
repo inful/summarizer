@@ -29,6 +29,7 @@ type fakeGitLab struct {
 	fileReads     atomic.Int64
 	mergeRequests []mergeRequest
 	mrCreateCount atomic.Int64
+	lastMRDesc    string
 
 	// files pre-populates "branch -> path -> content" so read-before-write
 	// tests can put a file on the branch before the publisher's
@@ -162,6 +163,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			http.Error(w, "missing mr fields", http.StatusBadRequest)
 			return
 		}
+		f.lastMRDesc = mr.Description
 		f.mrCreateCount.Add(1)
 		f.mergeRequests = append(f.mergeRequests, mergeRequest{
 			IID:          42,
@@ -543,6 +545,46 @@ func TestGitLabPublisher_PublishFlow(t *testing.T) {
 	// shows up in the Ref (the web URL encodes the path).
 	if !strings.Contains(res.Ref, "reports/2026-10-19/") {
 		t.Errorf("Ref should include prefix/period subdirectory: %q", res.Ref)
+	}
+}
+
+// TestGitLabPublisher_MRBodyNamesVisibilityNotKind: the row was headed
+// "- **Audience:**" and filled with req.Kind, so every merge request
+// read "Audience: rollup" — a file category under a label that means
+// who the document is for. The MR is what a human reads before
+// merging, so the wrong label is worse than no label.
+func TestGitLabPublisher_MRBodyNamesVisibilityNotKind(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		req     Request
+		want    string
+		notWant string
+	}{
+		{"customer file", Request{Name: "g-p--7d--customer.md", Kind: KindPerProject,
+			Public: true}, "customer-facing", "per-project"},
+		{"team rollup", Request{Name: "combined--7d--team.md", Kind: KindRollup,
+			Public: false}, "internal", "rollup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeGitLab{}
+			srv := httptest.NewServer(f.handler())
+			defer srv.Close()
+			p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+			tc.req.Body, tc.req.Period, tc.req.Title = []byte("x"), "2026-10-19", tc.name
+			if _, err := p.Publish(context.Background(), tc.req); err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+			if !strings.Contains(f.lastMRDesc, tc.want) {
+				t.Errorf("MR body should state %q, got:\n%s", tc.want, f.lastMRDesc)
+			}
+			if strings.Contains(f.lastMRDesc, "**Audience:**") {
+				t.Errorf("the Audience row should be gone; got:\n%s", f.lastMRDesc)
+			}
+			if strings.Contains(f.lastMRDesc, "**Visibility:** "+tc.notWant) {
+				t.Errorf("visibility %q should not be the file kind %q; got:\n%s",
+					tc.want, tc.notWant, f.lastMRDesc)
+			}
+		})
 	}
 }
 

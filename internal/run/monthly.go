@@ -2,7 +2,11 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 // remote repo to read and forcing it to stub these would hide that.
 type MonthlyReader interface {
 	ListPeriodBranches(ctx context.Context) ([]string, error)
+	ListReportFiles(ctx context.Context, branch, period string) ([]string, error)
 	ReadReportFile(ctx context.Context, branch, path string) (string, error)
 	PeriodBranch(period string) string
 }
@@ -95,10 +100,23 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 			res.Skipped = append(res.Skipped, week+" (no branch)")
 			continue
 		}
+		names, err := r.Reader.ListReportFiles(ctx, branch, week)
+		if err != nil {
+			return res, err
+		}
 		found := false
+		// A week with rollups for more than one window size is
+		// reported as skipped rather than guessed at. One bad week
+		// must not cost the operator the other three.
+		var conflicts []string
 		for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-			body, err := r.readWeeklyRollup(ctx, branch, aud)
+			body, err := r.readWeeklyRollup(ctx, branch, aud, names)
 			if err != nil {
+				var ambiguous *ambiguousWindowError
+				if errors.As(err, &ambiguous) {
+					conflicts = append(conflicts, ambiguous.Found...)
+					continue
+				}
 				return res, err
 			}
 			if body == "" {
@@ -107,10 +125,22 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 			byWeek[aud] = append(byWeek[aud], prompt.ProjectReport{Name: week, Body: body})
 			found = true
 		}
+		if len(conflicts) > 0 {
+			sort.Strings(conflicts)
+			fmt.Fprintf(os.Stderr, "summarizer: %s skipped from the monthly rollup; "+
+				"delete the stale file from branch %s, or re-run the week with a consistent --since\n",
+				week, branch)
+			for _, f := range conflicts {
+				fmt.Fprintf(os.Stderr, "  %s\n", f)
+			}
+			res.Skipped = append(res.Skipped, week+
+				" (more than one window: "+strings.Join(dedupe(conflicts), ", ")+")")
+			continue
+		}
 		if found {
 			res.Weeks = append(res.Weeks, week)
 		} else {
-			res.Skipped = append(res.Skipped, week+" (no rollup file)")
+			res.Skipped = append(res.Skipped, week+" (no unambiguous rollup file)")
 		}
 	}
 
@@ -172,18 +202,57 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 // are deliberately excluded: they are already split per customer, and
 // folding them into one monthly blob would mix customers together —
 // the opposite of what that split was built to prevent.
-func (r *MonthlyRunner) readWeeklyRollup(ctx context.Context, branch string, aud prompt.Audience) (string, error) {
-	for _, days := range []int{1, 7, 14, 30} {
-		name := fmt.Sprintf("combined--%dd--%s.md", days, aud)
-		body, err := r.Reader.ReadReportFile(ctx, branch, r.pathFor(branch, name))
-		if err != nil {
-			return "", fmt.Errorf("read %s from %s: %w", name, branch, err)
-		}
-		if body != "" {
-			return body, nil
+func (r *MonthlyRunner) readWeeklyRollup(ctx context.Context, branch string, aud prompt.Audience, names []string) (string, error) {
+	// Collect every window size present for this audience. A weekly
+	// branch accumulates one file per distinct filename for the whole
+	// week, so changing --since mid-week leaves both behind — and the
+	// old code tried 1d, 7d, 14d, 30d in order and took the first hit,
+	// which silently presented a one-day rollup as the week's input.
+	//
+	// The Files API carries no modification time, so there is no way to
+	// tell which one is current. Ambiguity is therefore reported and
+	// the week skipped, rather than guessed at: a month-end summary
+	// built from the wrong window is worse than one missing a week.
+	var candidates []string
+	for _, n := range names {
+		if strings.HasPrefix(n, "combined--") && strings.HasSuffix(n, "--"+string(aud)+".md") {
+			candidates = append(candidates, n)
 		}
 	}
-	return "", nil
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	if len(candidates) > 1 {
+		sort.Strings(candidates)
+		return "", &ambiguousWindowError{Week: path.Base(branch), Found: candidates}
+	}
+	return r.Reader.ReadReportFile(ctx, branch, r.pathFor(branch, candidates[0]))
+}
+
+// ambiguousWindowError reports a week whose branch carries rollups for
+// more than one window size. The Files API returns no modification
+// time, so there is no honest way to pick one; Run skips the week and
+// names the files.
+type ambiguousWindowError struct {
+	Week  string
+	Found []string
+}
+
+func (e *ambiguousWindowError) Error() string {
+	return fmt.Sprintf("week %s has rollups for more than one window (%s)",
+		e.Week, strings.Join(e.Found, ", "))
+}
+
+// dedupe drops repeats while preserving order. Both audiences report
+// the same conflicting filenames, so the skip reason lists each once.
+func dedupe(in []string) []string {
+	out := in[:0:0]
+	for i, s := range in {
+		if i == 0 || s != in[i-1] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // pathFor rebuilds the repo-relative path the publisher writes to.

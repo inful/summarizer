@@ -55,9 +55,15 @@ type Config struct {
 	// --internal-only-project CLI flag — the three sources union
 	// together. See internal/policy for the classifier.
 	//
+	// This is an audience switch, not an opt-out: a listed project
+	// still runs and still gets a team report. To skip a project
+	// entirely, use its `no-summarize` topic or a .summaryignore file
+	// in the project itself.
+	//
 	// There is deliberately no `projects:` list here: the project set
-	// comes from --project, --discover-group or --discover-by-topic.
-	// A config-file project list would be a second, silently-ignored
+	// comes from --project or, by default, --discover-active.
+	// --discover-group and --discover-by-topic narrow that. A
+	// config-file project list would be a second, silently-ignored
 	// way to say the same thing.
 	InternalOnlyProjects []string `yaml:"internal_only_projects"`
 

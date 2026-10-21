@@ -82,6 +82,36 @@ func newEpicPipeline(t *testing.T, epics int) (*Pipeline, *epicCountingServer) {
 	}, srv
 }
 
+// TestFetchProjectEpics_MissingUpdatedAtKeepsHighestIIDs: the recency
+// sort is what stops the cap from returning the group's oldest epics.
+// If the API omits updated_at — an older self-hosted GitLab, a
+// permissions-filtered response — every timestamp is the zero time,
+// every comparison ties, and the IID tiebreak hands back the OLDEST
+// epics. That silently reintroduces the exact bug the sort exists to
+// prevent, while the log still claims "most recently updated". The
+// fixture below sends no updated_at at all.
+func TestFetchProjectEpics_MissingUpdatedAtKeepsHighestIIDs(t *testing.T) {
+	p, _ := newEpicPipeline(t, 60)
+
+	epics, err := p.fetchProjectEpics(context.Background(), "g/p", time.Now().Add(-7*24*time.Hour), time.Now())
+	if err != nil {
+		t.Fatalf("fetchProjectEpics: %v", err)
+	}
+	if len(epics) != maxActiveEpics {
+		t.Fatalf("returned %d epics, want the cap of %d", len(epics), maxActiveEpics)
+	}
+	// Highest IIDs first in the fixture, so the newest are epics 41..60.
+	wantLow := 60 - maxActiveEpics + 1
+	if epics[0].IID != wantLow {
+		t.Errorf("kept epics starting at IID %d, want %d; "+
+			"without updated_at the highest IIDs are the only newer-by-construction signal",
+			epics[0].IID, wantLow)
+	}
+	if epics[len(epics)-1].IID != 60 {
+		t.Errorf("last epic is IID %d, want 60", epics[len(epics)-1].IID)
+	}
+}
+
 // TestFetchProjectEpics_CapsBeforeFetchingIssues: the cap must be
 // applied BEFORE the per-epic issue fetch, not after. The old order
 // made one sequential HTTP call per epic in the group and then threw

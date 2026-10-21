@@ -59,6 +59,43 @@ func (g *GitLabPublisher) ListPeriodBranches(ctx context.Context) ([]string, err
 	return out, nil
 }
 
+// ListReportFiles returns the basenames in <prefix>/<period>/ on a
+// branch. The monthly rollup needs it to notice that a week's branch
+// carries rollups for more than one window size — which happens
+// whenever --since changed mid-week, because the window is part of the
+// filename and old files are never pruned from the branch.
+func (g *GitLabPublisher) ListReportFiles(ctx context.Context, branch, period string) ([]string, error) {
+	dir := period
+	if g.Prefix != "" {
+		dir = g.Prefix + "/" + period
+	}
+	q := url.Values{}
+	q.Set("ref", branch)
+	q.Set("path", dir)
+	q.Set("per_page", "100")
+	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/tree?%s",
+		g.Host, url.PathEscape(g.Project), q.Encode())
+
+	body, err := g.get(ctx, urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("list %s on %s: %w", dir, branch, err)
+	}
+	var entries []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, fmt.Errorf("decode tree %s: %w", dir, err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Type == "blob" {
+			out = append(out, e.Name)
+		}
+	}
+	return out, nil
+}
+
 // isWeekSlug reports whether s looks like "2026-W42" — four digits, a
 // dash, a W, and exactly two digits. Deliberately not a full calendar
 // check: a branch named 2026-W99 is malformed input we should still
