@@ -4,7 +4,12 @@ All notable changes to summarizer are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0] - 2026-10-21
+
+First tagged release. Everything below shipped together under this one
+version — the earlier `[Unreleased]` and provisional `[0.1.0]`
+sections were written before any tag existed and never described a
+real published artifact.
 
 ### Changed
 - **Discovery is opt-out, not opt-in.** Running with no discovery flag now runs every project the token can see that had activity in the window (`--discover-active`, using GitLab's server-side `last_activity_after` filter). Previously an operator with ~25 projects had to add a topic to each one before anything was summarised. Three changes ship together:
@@ -27,11 +32,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **`projects:` in the config file.** `Config.Projects` parsed but was never read — an operator listing projects in YAML got "at least one --project… is required" with no hint their list was discarded. The field and its example are gone; the project set comes from `--project` / `--discover-group` / `--discover-by-topic`.
 
 ### Added
+- **Ecosystem tooling.** Report UID is a UUID v7 minted by [`inful/mdid`](https://github.com/inful/mdid) (was: a hand-rolled 16-char SHA-256-hex truncation); the mint is non-deterministic by design, and cross-run stability comes from read-before-write in the GitLab publisher, which reads the existing file's frontmatter via [`inful/mdfm`](https://github.com/inful/mdfm) and reuses the existing UID on every re-run. Report fingerprint goes through [`inful/mdfp`](https://github.com/inful/mdfp)'s `CalculateFingerprintFromParts` (was: an inline `crypto/sha256` of the body bytes); output format is unchanged (SHA-256 hex). Two new direct dependencies (`mdid`, `mdfp`), one transitive (`mdfm`).
+- **Topic icon assets.** `docs/topics/` ships SVG sources and 192×192 PNG renders for both `summarize*` topics, under GitLab's 200 KiB avatar limit, plus a README mapping each topic to its meaning.
 - **`internal/textutil`** — one rune-aware `Truncate` replacing four byte-slicing copies.
 - **Test coverage for the previously untested trust boundaries.** `internal/config` (key binding, defaults, validation — the missing `yaml_host` tag survived precisely because this was 0%), `internal/publisher` Local (refuse-first, force, temp-file cleanup on every path), `internal/llm` Anthropic (retries, `x-api-key`/`anthropic-version` header shape — the provider had never executed), and GitLab pagination (multi-page walks, the empty-page-with-next-header hang, `updated_after` surviving pagination). Total coverage 72.8%.
 - **Exit codes 8 and 1 documented.** `classify` returns named constants and matches `run.ErrInjection` via `errors.Is` rather than by substring.
-
-### Changed
 - `runRollup` and `runEpicRollup` now share one audience loop (`runAudienceRollups`), so the D5 customer/team boundary lives in one place instead of two verbatim copies.
 - `FetchMRChanges` and `FetchMRDetail` collapsed into one `FetchMRDetail` returning both the aggregate and the chunks from a single `/changes` call. With `--include-diffs` the pipeline previously made two identical authenticated round-trips and two full JSON decodes per MR.
 - `go.mod` bumped 1.26.9 → 1.26.10 for GO-2026-6809 (`crypto/x509`).
@@ -53,7 +58,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **`--discover-group` flag for activity-based discovery.** Scan a GitLab group's projects, probe each one for activity (a single cheap MR-list call per project with `per_page=1`), and roll the active ones into the run alongside any explicit `--project` listings. Recursion into subgroups is reserved for a future change; v1 ships single-level only. Composable with `--project`; dedupes by project path (explicit listings take precedence on duplicates).
 - **Discovery manifest to stderr.** Per-group scan summary with one line per scanned project (included / excluded with reason), plus a one-line totals. Diagnostic — not a separate file.
 
-### Changed
 - `internal/prompt.Render(...)` signature gained a final `[]*gitlab.Epic` parameter. Pass `nil` for projects without epics to keep the existing flat rendering. All call sites and the existing test fixtures updated.
 - `internal/run.ProjectResult` gained `Source`, `TeamOnly`, `CustomerOn` fields carrying the D5 audience policy forward so rollup filters don't recompute.
 
@@ -71,13 +75,3 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Internals (D5 / audience policy)
 - New `internal/policy` package — `ProjectSource` enum (`SourceExplicit`, `SourceDiscovered`), `ProjectPolicy`, and a pure-function `Classify(source, topics, inList)`. The 13-row truth table is the project's truth-table test (`policy_test.go`). Topics are case-sensitive exact-token matches (`"summarize-team-only"` is a distinct label from `"Summarize-Team-Only"`).
 - Discovery manifest annotates each scanned project with a `(team-only)` tag when the classifier says so, so the operator's stderr audit trail tells them what's classified how.
-
-## [0.1.0] - 2026-10-20
-
-### Changed
-- Report UID is now a UUID v7 minted by [`inful/mdid`](https://github.com/inful/mdid) (was: a hand-rolled 16-char SHA-256-hex truncation). The mint itself is non-deterministic by design (UUID v7 has random bits); cross-run stability comes from read-before-write in the GitLab publisher, which reads the existing file's frontmatter via [`inful/mdfm`](https://github.com/inful/mdfm) and reuses the existing UID on every re-run.
-- Report fingerprint now goes through [`inful/mdfp`](https://github.com/inful/mdfp)'s `CalculateFingerprintFromParts` (was: an inline `crypto/sha256` of the body bytes). Output format is unchanged (SHA-256 hex); the swap is for ecosystem consistency with the rest of the user's markdown tooling.
-
-### Added
-- Two new direct dependencies: `github.com/inful/mdid` (UID mint), `github.com/inful/mdfp` (fingerprint). Transitive: `github.com/inful/mdfm` (frontmatter parsing in the read-before-write path).
-- Initial release. CLI: `summarizer run --project X --since 7d` — fetch GitLab activity, normalise, render prompt, write two Markdown reports (customer + team audiences). Multi-project runs via repeated `--project X --project Y` (also accepts comma-separated `--project X,Y`). Cross-project LLM rollup written to `combined--<duration>d--<audience>.md` when more than one project. `--include-diffs` opt-in, `--dry-run` mode, atomic disk writes with refuse-first policy. Two LLM providers: OpenAI (default) and Anthropic. `--safety-enabled` opt-in: prompt-injection guard via `inful/decide` (default off). GitLab MR publisher: commits rendered reports to a per-period branch with docbuilder-format frontmatter; `public: true` for customer-audience reports; per-period directory layout; one MR per period.
