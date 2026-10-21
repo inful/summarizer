@@ -201,7 +201,14 @@ func (g *GitLabPublisher) Publish(req Request) (Result, error) {
 		LastCommitID:  lastCommitID,
 	})
 	if err := g.api(putURL, "PUT", putBody, nil); err != nil {
-		return Result{}, fmt.Errorf("put file %s@%s: %w", path, branch, err)
+		// The response body rarely tells you what's wrong with the
+		// request body; GitLab's "A file with this name doesn't
+		// exist" lands in both the wrong-last_commit_id and the
+		// post-PUT-but-shouldn't-have-PUT cases. Echo the fields
+		// that matter so the next debug session doesn't need
+		// tcpdump.
+		return Result{}, fmt.Errorf("put file %s@%s: %w (body: branch=%s last_commit_id=%q commit_message=%q encoding=%s content_bytes=%d)",
+			path, branch, err, branch, lastCommitID, commitMessage(req), "base64", len(encoded))
 	}
 
 	// 3. Find or create the MR for this period.
