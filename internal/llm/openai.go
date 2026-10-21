@@ -54,7 +54,7 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
 	}
 
-	resp, err := o.HTTP.Do(httpReq)
+	resp, err := doWithRetry(ctx, o.HTTP, httpReq, buf)
 	if err != nil {
 		return Response{}, err
 	}

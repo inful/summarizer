@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,11 +54,12 @@ func TestBackoffInRange(t *testing.T) {
 	}
 }
 
-// TestFetchMRChanges_httptest runs against a fake GitLab server that
-// returns a /changes-shaped payload, including per-file diff bodies
-// (which we expect to be discarded). Verifies the aggregate sums and
-// confirms the diff text doesn't leak into memory.
-func TestFetchMRChanges_httptest(t *testing.T) {
+// TestFetchMRDetail_httptest runs against a fake GitLab server that
+// returns a /changes-shaped payload including per-file diff bodies.
+// Verifies the aggregate sums AND that the truncated diff chunks come
+// back from the same single call — the point of collapsing
+// FetchMRChanges and FetchMRDetail into one method.
+func TestFetchMRDetail_httptest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/merge_requests/847/changes") {
 			http.Error(w, "not found", http.StatusNotFound)
@@ -79,25 +81,62 @@ func TestFetchMRChanges_httptest(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	s, err := c.FetchMRChanges(context.Background(), "group/proj", 847)
+	s, chunks, err := c.FetchMRDetail(context.Background(), "group/proj", 847)
 	if err != nil {
-		t.Fatalf("FetchMRChanges: %v", err)
+		t.Fatalf("FetchMRDetail: %v", err)
 	}
 	if s.Files != 3 || s.Additions != 33 || s.Deletions != 7 {
 		t.Errorf("unexpected summary: %+v", s)
 	}
+	if len(chunks) != 3 {
+		t.Fatalf("want 3 diff chunks from the same call, got %d", len(chunks))
+	}
+	if chunks[0].Diff == "" || !strings.Contains(chunks[0].Diff, "+bar") {
+		t.Errorf("diff body missing or truncated unexpectedly: %q", chunks[0].Diff)
+	}
+	if chunks[0].Path != "a" {
+		t.Errorf("chunk path: got %q, want a", chunks[0].Path)
+	}
 }
 
-// TestFetchMRChanges_PartialFailure confirms a missing /changes response
+// TestFetchMRDetail_TruncatesLongDiff: GitLab can return multi-MB diffs
+// for big refactors; each chunk's body must be capped so one MR can't
+// exhaust memory before the prompt formatter gets a say.
+func TestFetchMRDetail_TruncatesLongDiff(t *testing.T) {
+	huge := strings.Repeat("x", maxDiffRunesPerFile*3)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"changes":[{"old_path":"big","new_path":"big",` +
+			`"additions":1,"deletions":0,"diff":` + fmt.Sprintf("%q", huge) + `}]}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "glpat-test", 5*time.Second)
+	_, chunks, err := c.FetchMRDetail(context.Background(), "group/proj", 1)
+	if err != nil {
+		t.Fatalf("FetchMRDetail: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("want 1 chunk, got %d", len(chunks))
+	}
+	if got := len([]rune(chunks[0].Diff)); got > maxDiffRunesPerFile+len("...[truncated]") {
+		t.Errorf("diff not capped: %d runes", got)
+	}
+	if !strings.HasSuffix(chunks[0].Diff, "...[truncated]") {
+		t.Error("truncation marker missing")
+	}
+}
+
+// TestFetchMRDetail_PartialFailure confirms a missing /changes response
 // surfaces as an error without panicking or silently zeroing the field.
-func TestFetchMRChanges_PartialFailure(t *testing.T) {
+func TestFetchMRDetail_PartialFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"message":"404 Not found"}`, http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	_, err := c.FetchMRChanges(context.Background(), "group/proj", 9999)
+	_, _, err := c.FetchMRDetail(context.Background(), "group/proj", 9999)
 	if err == nil {
 		t.Fatal("expected error for 404, got nil")
 	}

@@ -99,21 +99,3 @@ type NoopGuard struct{}
 func (NoopGuard) Check(_ context.Context, _ string) (Verdict, float64, error) {
 	return VerdictSafe, 0, nil
 }
-
-// Fake is a test-friendly Guard that returns whichever signal the test
-// configures. Useful for pipeline tests; not for production.
-type Fake struct {
-	Safe    bool
-	Score   float64
-	NextErr error
-}
-
-func (f *Fake) Check(_ context.Context, _ string) (Verdict, float64, error) {
-	if f.NextErr != nil {
-		return "", 0, f.NextErr
-	}
-	if f.Safe {
-		return VerdictSafe, f.Score, nil
-	}
-	return VerdictInjection, f.Score, nil
-}

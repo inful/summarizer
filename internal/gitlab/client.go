@@ -575,35 +575,25 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 	return getAll[Commit](ctx, c, fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q)
 }
 
-// FetchMRChanges calls GET /merge_requests/:iid/changes and returns the
-// per-MR aggregate (file count, total additions, total deletions). The
-// per-file `diff` bodies in the payload are dropped by the JSON decoder —
-// we declare only the fields we want, so the diff text never lands in
-// memory or the prompt.
+// FetchMRDetail calls GET /merge_requests/:iid/changes once and returns
+// BOTH the per-MR aggregate (file count, total additions/deletions) and
+// the per-file diff chunks, with each chunk's Diff capped at
+// maxDiffRunesPerFile so a multi-MB refactor diff can't blow up memory.
 //
-// One call per MR. Callers fetching N MRs should fan out concurrently to
-// keep total wall time bounded; the pipeline does this with a worker pool.
-func (c *Client) FetchMRChanges(ctx context.Context, projectPath string, iid int) (ChangesSummary, error) {
+// One call, two consumers: the aggregate feeds the "+N/-M in K files"
+// suffix on every prompt line; the chunks feed the team prompt when the
+// operator passes --include-diffs. An earlier design had two methods
+// (FetchMRChanges / FetchMRDetail) and the pipeline called BOTH, which
+// meant two identical authenticated round-trips and two full JSON
+// decodes per MR.
+//
+// One call per MR. Callers fetching N MRs should fan out concurrently
+// to keep total wall time bounded; the pipeline does this with a worker
+// pool.
+func (c *Client) FetchMRDetail(ctx context.Context, projectPath string, iid int) (ChangesSummary, []DiffChunk, error) {
 	chunks, err := c.fetchMRChangesRaw(ctx, projectPath, iid)
 	if err != nil {
-		return ChangesSummary{}, err
-	}
-	return summarizeChunks(chunks), nil
-}
-
-// FetchMRDetail returns the full per-file diff chunks for an MR, including
-// the per-file diff body. Each chunk's Diff is capped at maxDiffRunesPerFile
-// to keep memory bounded even when GitLab returns multi-MB diffs (typical
-// for big refactors). Use FetchMRChanges when only the aggregate is
-// needed — same wire call, no diff bodies parsed.
-//
-// When --include-diffs is on, the pipeline calls this per MR in the
-// worker pool and feeds the chunks into the team prompt so the model can
-// reason about code changes rather than just metadata.
-func (c *Client) FetchMRDetail(ctx context.Context, projectPath string, iid int) ([]DiffChunk, error) {
-	chunks, err := c.fetchMRChangesRaw(ctx, projectPath, iid)
-	if err != nil {
-		return nil, err
+		return ChangesSummary{}, nil, err
 	}
 	// Truncate each chunk's Diff at maxDiffRunesPerFile.
 	for i := range chunks {
@@ -611,17 +601,14 @@ func (c *Client) FetchMRDetail(ctx context.Context, projectPath string, iid int)
 			chunks[i].Diff = string(r[:maxDiffRunesPerFile]) + "...[truncated]"
 		}
 	}
-	return chunks, nil
+	return summarizeChunks(chunks), chunks, nil
 }
 
 // fetchMRChangesRaw hits /changes once and returns the per-file chunks
-// (with diff bodies in the wire payload). Internal: FetchMRChanges and
-// FetchMRDetail thin it differently — see those.
-//
-// The wire struct intentionally includes the diff field; the JSON
-// decoder skips it for callers that don't want it, but for callers that
-// do (FetchMRDetail) it's already parsed and ready. This is the cleanest
-// way to avoid decoding the same body twice for the same MR.
+// with diff bodies in the wire payload. The diff field is always
+// decoded — GitLab puts it in the same payload, so skipping it would
+// mean a second decode of the same body. FetchMRDetail truncates it
+// immediately afterwards.
 func (c *Client) fetchMRChangesRaw(ctx context.Context, projectPath string, iid int) ([]DiffChunk, error) {
 	var resp struct {
 		Changes []struct {

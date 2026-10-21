@@ -45,7 +45,7 @@ func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := a.HTTP.Do(httpReq)
+	resp, err := doWithRetry(ctx, a.HTTP, httpReq, buf)
 	if err != nil {
 		return Response{}, err
 	}

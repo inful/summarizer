@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,10 +52,10 @@ func TestResolveProjects_DiscoverByTopic(t *testing.T) {
 	defer srv.Close()
 	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
 
-	proj, disc, err := resolveProjectsForTest(gc, Options{
+	proj, disc, err := resolveProjects(context.Background(), gc, Options{
 		DiscoverByTopic: true,
 		Since:           7 * 24 * time.Hour,
-	}, time.Now())
+	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -89,11 +90,11 @@ func TestResolveProjects_DiscoverByTopicRespectsExplicit(t *testing.T) {
 	defer srv.Close()
 	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
 
-	proj, disc, err := resolveProjectsForTest(gc, Options{
+	proj, disc, err := resolveProjects(context.Background(), gc, Options{
 		Projects:        []string{"team-a/api"},
 		DiscoverByTopic: true,
 		Since:           7 * 24 * time.Hour,
-	}, time.Now())
+	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

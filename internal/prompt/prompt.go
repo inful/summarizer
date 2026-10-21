@@ -340,12 +340,7 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 	hasEpicSection := false
 
 	// Bucket events by epic IID so we can nest under each epic header.
-	// Events with Epic == nil land in the "other" bucket for later.
-	type epicBucket struct {
-		epic   *gitlab.Epic
-		events []events.NormalizedEvent
-	}
-	buckets := make([]epicBucket, 0, len(epics))
+	// Events with Epic == nil are collected into "Other activity" below.
 	byIID := make(map[int][]events.NormalizedEvent, len(epics))
 	for _, e := range evs {
 		if e.Epic == nil {
@@ -358,12 +353,12 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 	// active" first if the pipeline sorted. Within each epic, sort
 	// events by Updated descending for stable, readable ordering.
 	for _, e := range epics {
-		evs := byIID[e.IID]
-		if len(evs) == 0 {
+		epicEvents := byIID[e.IID]
+		if len(epicEvents) == 0 {
 			continue
 		}
-		sort.SliceStable(evs, func(i, j int) bool {
-			return evs[i].Updated.After(evs[j].Updated)
+		sort.SliceStable(epicEvents, func(i, j int) bool {
+			return epicEvents[i].Updated.After(epicEvents[j].Updated)
 		})
 		if !hasEpicSection {
 			fmt.Fprintf(&buf, "## Epics active this period\n\n")
@@ -377,13 +372,11 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 			fmt.Fprintf(&buf, " — %s", e.WebURL)
 		}
 		buf.WriteString(")\n\n")
-		for _, ev := range evs {
+		for _, ev := range epicEvents {
 			writeEventLine(&buf, ev, aud)
 			buf.WriteByte('\n')
 		}
-		buckets = append(buckets, epicBucket{epic: e, events: evs})
 	}
-	_ = buckets // annotation-only; future cross-epic rollup could use
 
 	// Other activity: events with no epic link. These include:
 	//   - MRs that close no fetched issue (we don't query /closes_issues)
@@ -478,16 +471,7 @@ func kindLabel(k events.Kind) string {
 	}
 }
 
-func joinLabels(ls []string) string {
-	out := ""
-	for i, l := range ls {
-		if i > 0 {
-			out += ", "
-		}
-		out += l
-	}
-	return out
-}
+func joinLabels(ls []string) string { return strings.Join(ls, ", ") }
 
 // capEvents returns the events to send: the most-recently-updated N,
 // sorted most-recent-first. Sorts a COPY so the caller's slice — shared

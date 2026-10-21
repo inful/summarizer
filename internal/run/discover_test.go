@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,10 +113,10 @@ func TestResolveProjects_OnlyExplicit(t *testing.T) {
 	f := &fakeGitLabForDiscover{mrHandlers: map[string]http.HandlerFunc{}}
 	_, gc := newFakeServer(t, f)
 
-	proj, disc, err := resolveProjectsForTest(gc, Options{
+	proj, disc, err := resolveProjects(context.Background(), gc, Options{
 		Projects: []string{"group/a", "group/b"},
 		Since:    7 * 24 * time.Hour,
-	}, time.Now())
+	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -160,10 +161,10 @@ func TestResolveProjects_DiscoverOnly(t *testing.T) {
 	defer srv.Close()
 	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
 
-	proj, disc, err := resolveProjectsForTest(gc, Options{
+	proj, disc, err := resolveProjects(context.Background(), gc, Options{
 		DiscoveredGroups: []string{"infra"},
 		Since:            7 * 24 * time.Hour,
-	}, time.Now())
+	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -212,11 +213,11 @@ func TestResolveProjects_ComposableDedupes(t *testing.T) {
 	defer srv.Close()
 	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
 
-	proj, disc, err := resolveProjectsForTest(gc, Options{
+	proj, disc, err := resolveProjects(context.Background(), gc, Options{
 		Projects:         []string{"infra/overlap"},
 		DiscoveredGroups: []string{"infra"},
 		Since:            7 * 24 * time.Hour,
-	}, time.Now())
+	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

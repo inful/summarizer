@@ -22,8 +22,28 @@ func TestNoopGuard_AlwaysSafe(t *testing.T) {
 	}
 }
 
-// TestFakeGuard_SafeAndInjury: covers both verdicts via the test-friendly
-// Fake guard so pipeline tests can drive both paths without an HTTP roundtrip.
+// Fake is a test-only Guard so pipeline tests can drive both verdicts
+// without an HTTP roundtrip. It lives in the test file on purpose: the
+// production package has no business shipping a guard that answers
+// whatever the caller asked for.
+type Fake struct {
+	Safe    bool
+	Score   float64
+	NextErr error
+}
+
+func (f *Fake) Check(_ context.Context, _ string) (Verdict, float64, error) {
+	if f.NextErr != nil {
+		return "", 0, f.NextErr
+	}
+	if f.Safe {
+		return VerdictSafe, f.Score, nil
+	}
+	return VerdictInjection, f.Score, nil
+}
+
+// TestFakeGuard_SafeAndInjury: covers both verdicts plus the transport-error
+// path (which the pipeline soft-fails on).
 func TestFakeGuard_SafeAndInjury(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -36,7 +56,8 @@ func TestFakeGuard_SafeAndInjury(t *testing.T) {
 		{"fake-err", &Fake{NextErr: errors.New("boom")}, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			v, _, err := tc.fake.Check(context.Background(), "anything")
+			var g Guard = tc.fake // Fake must satisfy the port
+			v, _, err := g.Check(context.Background(), "anything")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error")

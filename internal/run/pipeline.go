@@ -223,10 +223,11 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string, source pol
 	if err != nil {
 		return res, fmt.Errorf("fetch mrs: %w", err)
 	}
-	fillMRChanges(ctx, p.GitLab, project, mrs)
-	if p.Opts.IncludeDiffs {
-		fillMRDetails(ctx, p.GitLab, project, mrs)
-	}
+	// One /changes call per MR serves both needs. With --include-diffs
+	// the same response carries the diff bodies the team prompt wants;
+	// without it only the aggregate is used, but there is still no
+	// reason to make the call twice.
+	fillMRDetail(ctx, p.GitLab, project, mrs, p.Opts.IncludeDiffs)
 
 	issues, err := p.GitLab.FetchIssues(ctx, project, since)
 	if err != nil {
@@ -343,49 +344,52 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string, source pol
 	return res, nil
 }
 
-// runRollup runs one extra LLM call per audience over the per-project
-// reports and writes the combined files. Only called when len(Projects)
-// > 1. The rollup prompt takes per-project reports as input and asks the
-// model to surface cross-project themes.
-func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
+// audienceInputs is what one audience's rollup needs, or false when
+// that audience has nothing to say (an all-team-only run has no
+// customer rollup at all — publishing an empty one would put a file on
+// the branch that says nothing).
+type audienceInputs struct {
+	name        string // prompt/label suffix: "rollup" / "epics-rollup"
+	titlePrefix string // frontmatter title prefix
+	render      func(prompt.Audience) (system, user string, err error)
+}
+
+// eligibleProjects applies the D5 audience filter: the customer rollups
+// see only projects that produced customer content, the team rollups see
+// everything. Shared by both rollups so the security boundary lives in
+// one place.
+func eligibleProjects(aud prompt.Audience, projects []ProjectResult) []ProjectResult {
+	if aud != prompt.AudienceCustomer {
+		return projects
+	}
+	out := make([]ProjectResult, 0, len(projects))
+	for _, pr := range projects {
+		if pr.CustomerOn {
+			out = append(out, pr)
+		}
+	}
+	return out
+}
+
+// runAudienceRollups is the single rollup driver. runRollup and
+// runEpicRollup differed only in how they built their per-audience
+// inputs; the audience loop, the D5 filter, the guard call, the LLM
+// call and the publish were verbatim copies. One loop now, so a fix to
+// the audience boundary cannot land in one path and miss the other.
+func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectResult, spec audienceInputs) ([]string, error) {
 	var files []string
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-		// Audience policy (D5): filter projects by audience. The
-		// customer-facing rollup only sees projects with CustomerOn;
-		// the team-facing rollup sees all projects. When the
-		// customer-facing list is empty (all-team-only run), skip
-		// the customer rollup entirely — no file should land
-		// containing zero customer-eligible projects.
-		var customerEligible []ProjectResult
-		if aud == prompt.AudienceCustomer {
-			for _, pr := range projects {
-				if pr.CustomerOn {
-					customerEligible = append(customerEligible, pr)
-				}
-			}
-			if len(customerEligible) == 0 {
+		if len(eligibleProjects(aud, projects)) == 0 && aud == prompt.AudienceCustomer {
+			continue
+		}
+		system, user, err := spec.render(aud)
+		if err != nil {
+			if errors.Is(err, errSkipAudience) {
 				continue
 			}
-		} else {
-			customerEligible = projects
+			return files, err
 		}
-
-		// Pick the right per-audience text per project. Per-project
-		// results carry both texts; we feed the rollup the same
-		// audience the per-project report was written for.
-		reports := make([]prompt.ProjectReport, 0, len(customerEligible))
-		for _, pr := range customerEligible {
-			body := pr.TeamText
-			if aud == prompt.AudienceCustomer {
-				body = pr.CustomerText
-			}
-			reports = append(reports, prompt.ProjectReport{Name: pr.Project, Body: body})
-		}
-		system, user, err := prompt.RenderRollup(aud, p.Opts.Since, reports)
-		if err != nil {
-			return files, fmt.Errorf("render rollup %s: %w", aud, err)
-		}
-		if err := p.checkPrompt(ctx, "rollup", aud, system+"\n\n"+user); err != nil {
+		if err := p.checkPrompt(ctx, spec.name, aud, system+"\n\n"+user); err != nil {
 			return files, err
 		}
 		resp, err := p.LLM.Complete(ctx, llm.Request{
@@ -395,27 +399,54 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 			MaxTokens: 2048,
 		})
 		if err != nil {
-			return files, fmt.Errorf("llm rollup %s: %w", aud, err)
+			return files, fmt.Errorf("llm %s %s: %w", spec.name, aud, err)
 		}
-
-		name := rollupFilename(p.Opts.Since, aud)
-		period := periodSlug(p.Opts.PeriodMode)
-		res2, err := p.Publisher.Publish(publisher.Request{
-			Name:    name,
+		res, err := p.Publisher.Publish(publisher.Request{
+			Name:    rollupFilename(p.Opts.Since, aud, spec.name),
 			Body:    []byte(resp.Text),
 			Force:   p.Opts.forceOverwrite(),
 			Kind:    publisher.KindRollup,
-			Period:  period,
-			Title:   "rollup " + string(aud),
+			Period:  periodSlug(p.Opts.PeriodMode),
+			Title:   spec.titlePrefix + " " + string(aud),
 			Project: "",
 			Public:  aud == prompt.AudienceCustomer,
 		})
 		if err != nil {
-			return files, fmt.Errorf("write rollup %s: %w", aud, err)
+			return files, fmt.Errorf("write %s %s: %w", spec.name, aud, err)
 		}
-		files = append(files, res2.Ref)
+		files = append(files, res.Ref)
 	}
 	return files, nil
+}
+
+// runRollup runs one extra LLM call per audience over the per-project
+// reports and writes the combined files. Only called when len(Projects)
+// > 1. The rollup prompt takes per-project reports as input and asks the
+// model to surface cross-project themes.
+func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
+	return p.runAudienceRollups(ctx, projects, audienceInputs{
+		name:        "rollup",
+		titlePrefix: "rollup",
+		render: func(aud prompt.Audience) (string, string, error) {
+			// Pick the right per-audience text per project. Per-project
+			// results carry both texts; we feed the rollup the same
+			// audience the per-project report was written for.
+			eligible := eligibleProjects(aud, projects)
+			reports := make([]prompt.ProjectReport, 0, len(eligible))
+			for _, pr := range eligible {
+				body := pr.TeamText
+				if aud == prompt.AudienceCustomer {
+					body = pr.CustomerText
+				}
+				reports = append(reports, prompt.ProjectReport{Name: pr.Project, Body: body})
+			}
+			system, user, err := prompt.RenderRollup(aud, p.Opts.Since, reports)
+			if err != nil {
+				return "", "", fmt.Errorf("render rollup %s: %w", aud, err)
+			}
+			return system, user, nil
+		},
+	})
 }
 
 // runEpicRollup publishes one cross-project epic rollup file per
@@ -435,120 +466,69 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 // count), NOT per-event detail, so the model's job is cross-
 // project theme synthesis, not narration.
 func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
-	var files []string
-	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-		// Audience policy (D5): same filtering as runRollup. The
-		// customer-facing epic rollup only sees epics from projects
-		// with CustomerOn == true; the team-facing rollup sees all
-		// epics. Skip the customer audience entirely if no customer-
-		// eligible epics exist.
-		var eligible []ProjectResult
-		if aud == prompt.AudienceCustomer {
-			for _, pr := range projects {
-				if pr.CustomerOn {
-					eligible = append(eligible, pr)
-				}
-			}
-			if len(eligible) == 0 {
-				continue
-			}
-		} else {
-			eligible = projects
-		}
-		entries := make([]prompt.EpicRollupEntry, 0, len(eligible))
-		for _, pr := range eligible {
-			if len(pr.ActiveEpics) == 0 {
-				continue
-			}
-			summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
-			for _, e := range pr.ActiveEpics {
-				// EventCount is the activity-breadth signal for the
-				// rollup. We approximate it from the rendered body
-				// of the per-project report — a simpler tally would
-				// be "any epic with at least one issue updated in
-				// the window" but the event-count gives the model
-				// more useful info for prioritizing.
-				count := countEpicEvents(pr, e)
-				summaries = append(summaries, prompt.EpicSummary{Epic: e, EventCount: count})
-			}
-			entries = append(entries, prompt.EpicRollupEntry{
-				Project: pr.Project,
-				Epics:   summaries,
-			})
-		}
-		if len(entries) == 0 {
-			continue
-		}
-		// Pick a representative project name for the report header
-		// (the rollup spans N projects; we surface a single project
-		// path in the doc-builder frontmatter — first by sorted
-		// order for determinism).
-		repProject := ""
-		if len(projects) > 0 {
-			repProject = projects[0].Project
-		}
-		system, user, err := prompt.RenderEpicRollup(aud, repProject, p.Opts.Since, entries)
-		if err != nil {
-			return files, fmt.Errorf("render epics rollup %s: %w", aud, err)
-		}
-		if err := p.checkPrompt(ctx, "epics-rollup", aud, system+"\n\n"+user); err != nil {
-			return files, err
-		}
-		resp, err := p.LLM.Complete(ctx, llm.Request{
-			System:    system,
-			User:      user,
-			Model:     p.Opts.Model,
-			MaxTokens: 2048,
-		})
-		if err != nil {
-			return files, fmt.Errorf("llm epics rollup %s: %w", aud, err)
-		}
-
-		name := epicRollupFilename(p.Opts.Since, aud)
-		period := periodSlug(p.Opts.PeriodMode)
-		res2, err := p.Publisher.Publish(publisher.Request{
-			Name:    name,
-			Body:    []byte(resp.Text),
-			Force:   p.Opts.forceOverwrite(),
-			Kind:    publisher.KindRollup,
-			Period:  period,
-			Title:   "epics rollup " + string(aud),
-			Project: "",
-			Public:  aud == prompt.AudienceCustomer,
-		})
-		if err != nil {
-			return files, fmt.Errorf("write epics rollup %s: %w", aud, err)
-		}
-		files = append(files, res2.Ref)
+	// Pick a representative project name for the report header (the
+	// rollup spans N projects; we surface a single project path in the
+	// doc-builder frontmatter — first by sorted order for determinism).
+	repProject := ""
+	if len(projects) > 0 {
+		repProject = projects[0].Project
 	}
-	return files, nil
+	return p.runAudienceRollups(ctx, projects, audienceInputs{
+		name:        "epics-rollup",
+		titlePrefix: "epics rollup",
+		render: func(aud prompt.Audience) (string, string, error) {
+			entries := make([]prompt.EpicRollupEntry, 0, len(projects))
+			for _, pr := range eligibleProjects(aud, projects) {
+				if len(pr.ActiveEpics) == 0 {
+					continue
+				}
+				// Hoist the body concatenation out of the per-epic
+				// loop: it used to rebuild two full report bodies per
+				// epic.
+				body := pr.CustomerText + pr.TeamText
+				summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
+				for _, e := range pr.ActiveEpics {
+					summaries = append(summaries, prompt.EpicSummary{
+						Epic:       e,
+						EventCount: countEpicEvents(body, e),
+					})
+				}
+				entries = append(entries, prompt.EpicRollupEntry{
+					Project: pr.Project,
+					Epics:   summaries,
+				})
+			}
+			if len(entries) == 0 {
+				// No epic to talk about for this audience — the caller
+				// skips publishing rather than writing an empty report.
+				return "", "", errSkipAudience
+			}
+			system, user, err := prompt.RenderEpicRollup(aud, repProject, p.Opts.Since, entries)
+			if err != nil {
+				return "", "", fmt.Errorf("render epics rollup %s: %w", aud, err)
+			}
+			return system, user, nil
+		},
+	})
 }
 
-// countEpicEvents tallies how many lines in the per-project report's
-// issue-section mention this epic. It's an approximation — the
-// rendered body doesn't carry Epic references per-line — but it
-// gives the cross-project rollup a sense of activity breadth
-// without re-fetching any data. For the customer audience this
-// number is the model's only signal beyond the epic's own title;
-// for the team audience it's a coarse health check.
+// errSkipAudience tells runAudienceRollups that this audience produced
+// no inputs, so no file should be published for it.
+var errSkipAudience = errors.New("no inputs for this audience")
+
+// countEpicEvents tallies how many times the epic's title appears in
+// the rendered per-project report body. It's an approximation — the
+// rendered body doesn't carry Epic references per-line — but it gives
+// the cross-project rollup a sense of activity breadth without
+// re-fetching any data.
 //
-// Implementation walks the body once per epic. Project reports
-// are short (cap-events at 200, default), so this is cheap.
-func countEpicEvents(pr ProjectResult, e *gitlab.Epic) int {
-	body := pr.CustomerText + pr.TeamText
-	count := 0
-	// We count occurrences of the epic's title as a rough proxy
-	// for "events tagged with this epic". Real counting would
-	// require carrying per-event Epic refs into ProjectResult;
-	// that data is available in runOneProject's all slice but
-	// would inflate the struct. This heuristic is good enough
-	// for the cross-project rollup's breadth signal.
-	needle := e.Title
-	if needle == "" {
+// body is passed in rather than assembled here: the caller concatenates
+// customer+team text once per project instead of once per epic.
+func countEpicEvents(body string, e *gitlab.Epic) int {
+	if e.Title == "" {
 		return 0
 	}
-	count += strings.Count(body, needle)
-	return count
+	return strings.Count(body, e.Title)
 }
 
 // periodSlug returns the YYYY-MM-DD slug for the period end-date. The
@@ -681,11 +661,17 @@ func (p *Pipeline) checkPrompt(ctx context.Context, project string, aud prompt.A
 // most plans, big enough to keep total wall time bounded.
 const changeConcurrency = 4
 
-// fillMRChanges fans out the per-MR /changes call across changeConcurrency
-// workers and attaches the result onto each MergeRequest. A failure on one
-// MR is logged to stderr and the MR proceeds without changes data; we
-// don't fail the whole run for one missing per-file summary.
-func fillMRChanges(ctx context.Context, gc *gitlab.Client, project string, mrs []gitlab.MergeRequest) {
+// fillMRDetail fans out the per-MR /changes call across
+// changeConcurrency workers and attaches the aggregate plus the
+// truncated diff bodies onto each MergeRequest.
+//
+// One call per MR serves both needs. A failure on one MR is logged and
+// that MR proceeds without changes data — one missing per-file summary
+// doesn't fail the run. The prompts that include diff chunks use <data>
+// markers and instruct the model to "infer what the MR does from the
+// diff — paraphrase, never paste code into the report", which treats the
+// diff as data, not instructions.
+func fillMRDetail(ctx context.Context, gc *gitlab.Client, project string, mrs []gitlab.MergeRequest, wantDiffs bool) {
 	if len(mrs) == 0 {
 		return
 	}
@@ -697,47 +683,15 @@ func fillMRChanges(ctx context.Context, gc *gitlab.Client, project string, mrs [
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			s, err := gc.FetchMRChanges(ctx, project, mrs[i].IID)
+			summary, chunks, err := gc.FetchMRDetail(ctx, project, mrs[i].IID)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "summarizer: changes fetch for MR %d failed: %v (skipping)\n", mrs[i].IID, err)
 				return
 			}
-			mrs[i].Changes = &s
-		}(i)
-	}
-	wg.Wait()
-}
-
-// fillMRDetails fans out the per-MR /changes call *with diff bodies* across
-// changeConcurrency workers and attaches the per-file chunks onto each
-// MergeRequest. Same worker pool as fillMRChanges; sequential on the
-// per-MR scale so the two can run concurrently if the operator enables
-// both (currently they always do — fillMRDetails is only called when
-// --include-diffs is on, alongside fillMRChanges).
-//
-// Failures on a single MR are logged and the MR proceeds with no diff
-// data. The prompts that include these chunks use <data> markers and
-// instruct the model to "infer what the MR does from the diff —
-// paraphrase, never paste code into the report", which treats the diff
-// as data, not instructions.
-func fillMRDetails(ctx context.Context, gc *gitlab.Client, project string, mrs []gitlab.MergeRequest) {
-	if len(mrs) == 0 {
-		return
-	}
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, changeConcurrency)
-	for i := range mrs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			chunks, err := gc.FetchMRDetail(ctx, project, mrs[i].IID)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "summarizer: diff fetch for MR %d failed: %v (skipping)\n", mrs[i].IID, err)
-				return
+			mrs[i].Changes = &summary
+			if wantDiffs {
+				mrs[i].DiffChunks = chunks
 			}
-			mrs[i].DiffChunks = chunks
 		}(i)
 	}
 	wg.Wait()
@@ -822,12 +776,12 @@ func (p *Pipeline) projectTopics(ctx context.Context, project string) []string {
 //     tags each ProjectResult with this so summaries can tell the
 //     operator which projects were auto-discovered.
 func (p *Pipeline) resolveProjects(ctx context.Context) ([]string, map[string]bool, error) {
-	return resolveProjectsWithClient(ctx, p.GitLab, p.Opts)
+	return resolveProjects(ctx, p.GitLab, p.Opts)
 }
 
-// resolveProjectsWithClient is the testable form: takes a Client
-// directly so unit tests don't need a full Pipeline.
-func resolveProjectsWithClient(ctx context.Context, gc *gitlab.Client, opts Options) ([]string, map[string]bool, error) {
+// resolveProjects merges explicit and discovered inputs. Takes the
+// Client directly so unit tests don't need a full Pipeline.
+func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]string, map[string]bool, error) {
 	finalList := make([]string, 0, len(opts.Projects))
 	discoveredSet := make(map[string]bool)
 
@@ -929,14 +883,6 @@ func discoveryTopics() []string {
 	return []string{policy.TopicSummarize, policy.TopicSummarizeTeamOnly}
 }
 
-// resolveProjectsForTest wraps resolveProjectsWithClient for use by
-// tests that don't construct a full Pipeline. Returns the same shape
-// (final list + discovered-set) without the legacy stderr-lines arg
-// the older test fixtures assumed.
-func resolveProjectsForTest(gc *gitlab.Client, opts Options, _ time.Time) (finalList []string, discoveredSet map[string]bool, err error) {
-	return resolveProjectsWithClient(context.Background(), gc, opts)
-}
-
 // containsString is a small helper used to skip already-explicit
 // projects during the discovery loop. Hand-rolled linear scan: the
 // project list is small and slices.Contains would add an import.
@@ -949,36 +895,26 @@ func containsString(ss []string, target string) bool {
 	return false
 }
 
+// windowDays renders the window as the "Nd" segment every report
+// filename carries. Sub-day windows round up to 1 so a --since 12h run
+// doesn't produce a file named "--0d--".
+func windowDays(window time.Duration) int {
+	return max(int(window/(24*time.Hour)), 1)
+}
+
+// filename: <sanitized project>--<since-days>d--<audience>.md. The "since"
+// is encoded in the filename so re-runs land on different files; combined
+// with the refuse-first policy in writer, double-runs are safe.
 func filename(window time.Duration, project string, aud prompt.Audience) string {
-	days := int(window / (24 * time.Hour))
-	if days < 1 {
-		days = 1
-	}
-	return fmt.Sprintf("%s--%dd--%s.md", sanitize(project), days, aud)
+	return fmt.Sprintf("%s--%dd--%s.md", sanitize(project), windowDays(window), aud)
 }
 
-// rollupFilename is the combined-report counterpart of filename: a fixed
-// "combined" prefix instead of a project name. Two of these per run
-// (customer + team) when len(Projects) > 1.
-func rollupFilename(window time.Duration, aud prompt.Audience) string {
-	days := int(window / (24 * time.Hour))
-	if days < 1 {
-		days = 1
-	}
-	return fmt.Sprintf("combined--%dd--%s.md", days, aud)
-}
-
-// epicRollupFilename produces the cross-project epic rollup file
-// name. Distinct prefix (`epics`) so a docbuilder operator browsing
-// the period directory can tell it from the per-project rollup at
-// a glance. Two of these per run (customer + team) when ≥1 active
-// epic exists anywhere in the run.
-func epicRollupFilename(window time.Duration, aud prompt.Audience) string {
-	days := int(window / (24 * time.Hour))
-	if days < 1 {
-		days = 1
-	}
-	return fmt.Sprintf("combined--epics--%dd--%s.md", days, aud)
+// rollupFilename is the combined-report name. kind is "rollup" or
+// "epics-rollup"; the latter keeps its distinct prefix so a docbuilder
+// operator browsing the period directory can tell the two apart without
+// rendering either.
+func rollupFilename(window time.Duration, aud prompt.Audience, kind string) string {
+	return fmt.Sprintf("combined--%s--%dd--%s.md", kind, windowDays(window), aud)
 }
 
 func sanitize(s string) string {
