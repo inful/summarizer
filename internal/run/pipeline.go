@@ -34,7 +34,6 @@ type Options struct {
 	IncludeDiffs         bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
 	DiscoveredGroups     []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
 	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
-	PeriodMode           PeriodMode    // --period-mode daily|monday; controls whether daily runs produce a new directory each (daily) or anchor to the week's Monday (monday). Default: daily (matches v0.1.0).
 	DiscoverByTopic      bool          // --discover-by-topic: scan every project on the instance carrying a `summarize*` topic, across all groups the token can see. Composes with Projects and DiscoveredGroups.
 	DiscoverActive       bool          // --discover-active: include every project the token can see that had activity since the window opened. Set automatically when no other discovery input is given, which is the documented default: an active project runs unless it opts out.
 }
@@ -326,7 +325,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string, source pol
 		}
 
 		name := filename(window, project, aud)
-		period := periodSlug(p.Opts.PeriodMode)
+		period := periodSlug()
 		res2, err := p.Publisher.Publish(publisher.Request{
 			Name:    name,
 			Body:    []byte(text),
@@ -423,7 +422,7 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				Body:    []byte(resp.Text),
 				Force:   p.Opts.forceOverwrite(),
 				Kind:    publisher.KindRollup,
-				Period:  periodSlug(p.Opts.PeriodMode),
+				Period:  periodSlug(),
 				Title:   part.title + " " + string(aud),
 				Project: "",
 				Public:  aud == prompt.AudienceCustomer,
@@ -654,32 +653,28 @@ func countEpicEvents(body string, e *gitlab.Epic) int {
 	return strings.Count(body, e.Title)
 }
 
-// periodSlug returns the YYYY-MM-DD slug for the period end-date. The
-// GitLab publisher uses this as the source-branch suffix so a re-run
-// on the same bucket lands on the same branch (and updates the same
-// MR) rather than spawning a new branch per re-invocation.
+// periodSlug returns the ISO-8601 week slug for the current period,
+// e.g. "2026-W42". The GitLab publisher uses this as the
+// source-branch suffix and the per-period directory, so every run
+// within the same Mon→Sun week lands on the same branch and updates
+// the same MR rather than forking a new one per invocation.
 //
-// The bucket shape is configurable via opts.PeriodMode:
-//   - PeriodModeDaily: each calendar day is its own bucket (default;
-//     matches the historical v0.1.0 behaviour where each cron tick
-//     was a new directory).
-//   - PeriodModeMonday: the bucket is anchored to the most-recent
-//     Monday at-or-before now. Daily runs within the same Mon→Sun
-//     ISO week overwrite the same path. The GoLive cron uses this
-//     so an early-period operator sees one rollup file per week
-//     that gets refined every day.
-func periodSlug(mode PeriodMode) string {
-	return periodSlugFor(time.Now().UTC(), resolvePeriodMode(mode))
+// This replaced a `--period-mode daily|monday` flag. A day-granular
+// bucket can't be expressed as a week number — seven runs would
+// collide on one directory — so the flag went away with its daily
+// mode rather than leaving two modes that meant the same thing.
+func periodSlug() string {
+	return weekSlugFor(time.Now().UTC())
 }
 
-// periodSlugFor is the same logic but parametrized so the date-math
-// is unit-testable without freezing time.
-func periodSlugFor(now time.Time, mode PeriodMode) string {
-	t := now
-	if mode == PeriodModeMonday {
-		t = mondayAnchor(t)
-	}
-	return t.Format("2006-01-02")
+// weekSlugFor is periodSlug with the timestamp injected so the
+// calendar arithmetic is unit-testable without freezing time.
+func weekSlugFor(now time.Time) string {
+	year, week := now.ISOWeek()
+	// %02d on the week matters: Go's ISOWeek returns 1..53, but a
+	// bare %d would render "2026-W1" and sort before "2026-W10"
+	// for anything reading the directory as a string.
+	return fmt.Sprintf("%04d-W%02d", year, week)
 }
 
 // mondayAnchor returns the most-recent Monday at-or-before t. Calendar
@@ -691,55 +686,14 @@ func mondayAnchor(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day()-daysSinceMonday, 0, 0, 0, 0, t.Location())
 }
 
-// PeriodMode controls the period-slug bucket shape. See periodSlug
-// for the trade-offs.
-type PeriodMode string
-
-const (
-	// PeriodModeDaily: each calendar day is its own bucket. Default
-	// for backwards compatibility; daily runs produce a new
-	// directory each.
-	PeriodModeDaily PeriodMode = "daily"
-
-	// PeriodModeMonday: the bucket is anchored to the most-recent
-	// Monday. Daily runs within the same Mon→Sun ISO week overwrite
-	// the same path; the GitLab publisher accumulates commits on
-	// one branch; the cross-project MR doesn't churn.
-	PeriodModeMonday PeriodMode = "monday"
-)
-
-// resolvePeriodMode picks the mode the run uses. Empty / daily = the
-// historical default; an explicit PeriodModeMonday forces the
-// weekly bucket. main.go parses the CLI flag and puts it in
-// opts.PeriodMode; this helper is a small decision-tree with a
-// default to keep periodSlug's call sites flat.
-func resolvePeriodMode(mode PeriodMode) PeriodMode {
-	if mode == "" {
-		return PeriodModeDaily
-	}
-	return mode
-}
-
-// forceOverwrite: in monday mode every day of the week targets the
-// same path, so a refuse-first local disk would fail the cron from
-// day 2 onward. Implied Force; the GitLab publisher already
-// accumulates onto the same branch.
+// forceOverwrite is always true. Every run lands in the same weekly
+// bucket, so a refuse-first local publisher would fail the cron from
+// day 2 onward with "file exists". The GitLab publisher accumulates
+// onto the same branch regardless. Kept as a method rather than
+// deleted so the call sites read the same and so a future mode that
+// needs refuse-first has an obvious home.
 func (o Options) forceOverwrite() bool {
-	return o.Force || resolvePeriodMode(o.PeriodMode) == PeriodModeMonday
-}
-
-// ParsePeriodMode parses a CLI flag value. Case-sensitive: only
-// "daily" and "monday" are accepted (exact match). Empty string
-// is treated as "daily" for caller convenience.
-func ParsePeriodMode(s string) (PeriodMode, error) {
-	switch PeriodMode(s) {
-	case PeriodModeDaily, "":
-		return PeriodModeDaily, nil
-	case PeriodModeMonday:
-		return PeriodModeMonday, nil
-	default:
-		return "", fmt.Errorf("period mode %q: want \"daily\" or \"monday\"", s)
-	}
+	return true
 }
 
 // checkPrompt runs the rendered prompt through the safety guard.

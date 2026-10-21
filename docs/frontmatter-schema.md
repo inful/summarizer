@@ -61,12 +61,15 @@ project; subscribers filter by `rollup` instead.
 
 | Report kind | Pattern | Example |
 |---|---|---|
-| per-project | `Weekly <audience> report — <project>, <period>` | `Weekly customer report — group/proj, 2026-10-19` |
-| rollup | `Cross-project rollup <audience> report — all subscribed projects, <period>` | `Cross-project rollup team report — all subscribed projects, 2026-10-19` |
+| per-project | `Weekly <audience> report — <project>, <period>` | `Weekly customer report — group/proj, 2026-W43` |
+| rollup | `Cross-project rollup <audience> report — all subscribed projects, <period>` | `Cross-project rollup team report — all subscribed projects, 2026-W43` |
+| monthly rollup | `Month-end <audience> rollup — <month>` | `Month-end customer rollup — 2026-09` |
 
-`<period>` is the period slug (`YYYY-MM-DD` of the run day in UTC by
-default); rollups use the same slug as their constituent per-project
-runs.
+`<period>` is the ISO-8601 week slug (`YYYY-Www`) of the run, computed
+in UTC. Every run inside the same Mon–Sun week shares one period slug,
+so daily runs overwrite each other on purpose rather than accumulating
+seven directories a week. Monthly rollups use the month itself
+(`YYYY-MM`), which never collides with a weekly slug.
 
 ## UID stability — across re-runs and across project moves
 

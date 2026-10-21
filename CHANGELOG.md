@@ -4,6 +4,20 @@ All notable changes to summarizer are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- **Period directories are ISO week numbers.** `summarizer/2026-10-19/` → `summarizer/2026-W43/`, via Go's `ISOWeek()` so the ISO year-boundary rules apply (2027-01-01 is `2026-W53`, not `2027-W01`). Weekly buckets were already what `--period-mode monday` selected; this makes them the only option and removes the flag. A day-granular bucket can't be expressed as a week number — seven runs would collide on one directory — so `daily` went with it rather than being left as a mode that lies about its output. `--force` is now implied: every run in a week targets the same path, so refuse-first would fail the cron from day 2.
+- **`--period-mode` removed.** Passing it is now a usage error.
+
+### Added
+- **`summarizer monthly` — month-end rollup over the weekly rollups.** Reads the previous calendar month's already-published weekly cross-project rollups back out of the target repo and writes one month-end file per audience (`reports/2026-09/monthly--2026-09--customer.md` and `--team.md`), on its own branch and MR so it never collides with a week's. Reading the published output rather than re-running the pipeline keeps this to one LLM call per audience instead of a second full pass of per-project calls, and means it rolls up exactly what was published and runs from any machine holding the reports token. Weeks with no published rollup are skipped and listed; a month with none at all is an error rather than an empty summary. `--month YYYY-MM` re-runs a past month, `--dry-run` prints the assembled prompt. Requires `publish.enabled` — a local-disk publisher has nothing to roll up.
+- **Read capability on the GitLab publisher** (`ListPeriodBranches`, `ReadReportFile`). Filtered to the publisher's own `<prefix>/YYYY-Www` branches so the target's default branch, other tools' branches, and a person's feature work are all left out. A 404 on a file reports absence rather than erroring, so one unpublished week doesn't kill the month.
+- **A week belongs to the month containing its Monday.** September 2026 collects W37–W40; the week of Aug 31 is a September-adjacent week that would otherwise be counted in both months. Covered by a 2026-12 case, since 2026 is a 53-week ISO year.
+
+### Not changed
+- Per-customer epic rollups (`combined--epics-rollup--*`) are deliberately excluded from the monthly summary. They are already split per customer; folding them into one blob would mix customers together, which is the opposite of what that split exists to prevent.
+
 ## [0.1.0] - 2026-10-21
 
 First tagged release. Everything below shipped together under this one

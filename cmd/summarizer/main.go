@@ -59,6 +59,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		os.Exit(runCmd(os.Args[2:]))
+	case "monthly":
+		os.Exit(monthlyCmd(os.Args[2:]))
 	case "version", "--version", "-v":
 		fmt.Printf("summarizer %s (commit %s, %s)\n", version, commit, date)
 		os.Exit(0)
@@ -72,15 +74,56 @@ func main() {
 	}
 }
 
+// resolveLLM builds the LLM provider from the resolved config,
+// falling back to the usual environment variables for keys. Returns a
+// non-zero exit code and prints the reason on failure.
+//
+// Shared by `run` and `monthly` so the two can't drift on which env
+// vars they read or how they treat a local OpenAI-compatible server.
+func resolveLLM(cfg *config.Config, openaiKey, anthropicKey string) (llm.Provider, int) {
+	switch cfg.Provider {
+	case "openai":
+		key := openaiKey
+		if key == "" {
+			key = os.Getenv("OPENAI_API_KEY")
+		}
+		// Local OpenAI-compatible servers (Ollama, vLLM, LM Studio, llama.cpp)
+		// typically don't require auth. Treat an empty key as opt-in to
+		// "no auth" when the baseURL points somewhere other than the
+		// canonical api.openai.com. For api.openai.com we still require
+		// a key — better to fail loud than to silently send empty bearer.
+		if key == "" && cfg.OpenAIBaseURL == "https://api.openai.com/v1" {
+			fmt.Fprintln(os.Stderr, "error: provider=openai but OPENAI_API_KEY is not set (or set --openai-base-url for a local server)")
+			return nil, exitEnv
+		}
+		return llm.NewOpenAI(key, cfg.Model, cfg.OpenAIBaseURL), exitOK
+	case "anthropic":
+		key := anthropicKey
+		if key == "" {
+			key = os.Getenv("ANTHROPIC_API_KEY")
+		}
+		if key == "" {
+			fmt.Fprintln(os.Stderr, "error: provider=anthropic but ANTHROPIC_API_KEY is not set")
+			return nil, exitEnv
+		}
+		return llm.NewAnthropic(key, cfg.Model, ""), exitOK
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown provider %q\n", cfg.Provider)
+		return nil, exitConfig
+	}
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `summarizer — GitLab project activity → two Markdown reports
 
 Commands:
   run         Fetch activity, call LLM, write reports
+  monthly     Roll up a month of published weekly rollups
   version     Print version and exit
   help        Print this message
 
 Run 'summarizer run --help' for run flags.
+Run 'summarizer monthly --help' for monthly flags.
 `)
 }
 
@@ -134,7 +177,6 @@ Env:
 		gitlabToken    = fs.String("gitlab-token", "", "GitLab PRIVATE-TOKEN (default: $GITLAB_TOKEN). Prefer env var.")
 		discoverGroups = stringSliceFlag{}
 		internalOnly   = stringSliceFlag{}
-		periodMode     = fs.String("period-mode", "", "Period bucket shape: 'daily' (default; each run gets its own <prefix>/<YYYY-MM-DD>/ directory) or 'monday' (bucket is the ISO week's Monday, so daily cron runs within Mon-Sun overwrite the same directory, branch and MR)")
 		discoverTopic  = fs.Bool("discover-by-topic", false, "Scan every project on the GitLab instance carrying a summarize or summarize-team-only topic, across all groups the token can see. Same activity gate and audience policy as --discover-group; composes with it.")
 		discoverActive = fs.Bool("discover-active", false, "Run every project the token can see that had activity in the window. This is the default when no other discovery input is given: active projects are included, they get a team-only report, and they opt out with a .summaryignore or .docignore file at the repo root. Customer-facing output still needs the summarize topic.")
 		openaiKey      = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY). Optional when --openai-base-url is set to a non-default host (e.g. local Ollama/vLLM/LM Studio).")
@@ -224,36 +266,9 @@ Env:
 	}
 
 	// Resolve LLM provider and keys.
-	var llmProvider llm.Provider
-	switch cfg.Provider {
-	case "openai":
-		key := *openaiKey
-		if key == "" {
-			key = os.Getenv("OPENAI_API_KEY")
-		}
-		// Local OpenAI-compatible servers (Ollama, vLLM, LM Studio, llama.cpp)
-		// typically don't require auth. Treat an empty key as opt-in to
-		// "no auth" when the baseURL points somewhere other than the
-		// canonical api.openai.com. For api.openai.com we still require
-		// a key — better to fail loud than to silently send empty bearer.
-		if key == "" && cfg.OpenAIBaseURL == "https://api.openai.com/v1" {
-			fmt.Fprintln(os.Stderr, "error: provider=openai but OPENAI_API_KEY is not set (or set --openai-base-url for a local server)")
-			return exitEnv
-		}
-		llmProvider = llm.NewOpenAI(key, cfg.Model, cfg.OpenAIBaseURL)
-	case "anthropic":
-		key := *anthropicKey
-		if key == "" {
-			key = os.Getenv("ANTHROPIC_API_KEY")
-		}
-		if key == "" {
-			fmt.Fprintln(os.Stderr, "error: provider=anthropic but ANTHROPIC_API_KEY is not set")
-			return exitEnv
-		}
-		llmProvider = llm.NewAnthropic(key, cfg.Model, "")
-	default:
-		fmt.Fprintf(os.Stderr, "error: unknown provider %q\n", cfg.Provider)
-		return exitConfig
+	llmProvider, code := resolveLLM(cfg, *openaiKey, *anthropicKey)
+	if code != exitOK {
+		return code
 	}
 
 	// Pick a publisher. Local disk by default; GitLab MR when
@@ -305,12 +320,6 @@ Env:
 		guard = safety.NewDecide(decisionURL, token, threshold)
 	}
 
-	periodModeParsed, err := run.ParsePeriodMode(*periodMode)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: --period-mode: %v\n", err)
-		return exitUsage
-	}
-
 	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
 		Projects:             projects,
 		DiscoveredGroups:     discoverGroups,
@@ -321,7 +330,6 @@ Env:
 		DryRun:               *dryRun,
 		IncludeDiffs:         *includeDiffs,
 		InternalOnlyProjects: unionSlices(internalOnly, cfg.InternalOnlyProjects),
-		PeriodMode:           periodModeParsed,
 		DiscoverByTopic:      *discoverTopic,
 		DiscoverActive:       *discoverActive,
 	})

@@ -193,6 +193,78 @@ type ProjectReport struct {
 	Body string
 }
 
+// RenderMonthlyRollup renders the month-end prompt. weeks carries one
+// ProjectReport per weekly rollup, with Name set to the week slug
+// ("2026-W36") and Body to that week's rollup text.
+//
+// Separate from RenderRollup because the input shape and the job are
+// different: Rollup synthesises across projects within one window,
+// MonthlyRollup synthesises across weeks within one month. Reusing
+// Rollup's template would tell the model there are N *projects* when
+// there are N *weeks*, which it would resolve by writing a week-by-
+// week digest — exactly the output the monthly format exists to avoid.
+//
+// Same injection defences and the same body-capping strategy as
+// RenderRollup; the only change is which template is loaded.
+func RenderMonthlyRollup(aud Audience, month string, weeks []ProjectReport) (system, user string, err error) {
+	tplName := "monthly-rollup-" + string(aud) + ".tmpl"
+	raw, err := templatesFS.ReadFile("templates/" + tplName)
+	if err != nil {
+		return "", "", fmt.Errorf("read template %s: %w", tplName, err)
+	}
+	tpl, err := template.New(tplName).Parse(string(raw))
+	if err != nil {
+		return "", "", fmt.Errorf("parse template %s: %w", tplName, err)
+	}
+
+	bodies := make(map[string]string, len(weeks))
+	names := make([]string, 0, len(weeks))
+	for _, w := range weeks {
+		body := w.Body
+		if r := []rune(body); len(r) > rollupPerBodyCap {
+			body = string(r[:rollupPerBodyCap]) + "...[truncated]"
+		}
+		bodies[w.Name] = body
+		names = append(names, w.Name)
+	}
+	// A month is 4-5 weekly rollups of ~2-4k runes each. Cap the total
+	// the same way RenderRollup does, dropping the oldest weeks first —
+	// the most recent weeks are what a month-end reader cares about.
+	for len(bodies) > 1 {
+		var total int
+		for _, b := range bodies {
+			total += len(b)
+		}
+		if total <= rollupTotalCap {
+			break
+		}
+		for _, name := range names {
+			if _, ok := bodies[name]; ok {
+				delete(bodies, name)
+				break
+			}
+		}
+	}
+
+	data := struct {
+		Month      string
+		WeekCount  int
+		WeekNames  []string
+		WeekBodies map[string]string
+	}{
+		Month:      month,
+		WeekCount:  len(names),
+		WeekNames:  names,
+		WeekBodies: bodies,
+	}
+
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, data); err != nil {
+		return "", "", fmt.Errorf("execute template: %w", err)
+	}
+	return systemPrompt(aud, subjectCrossProject), buf.String(), nil
+}
+
 // EpicRollupEntry is one project-worth of active-epic data for the
 // cross-project epic rollup. Each entry carries the project's
 // active epics (filtered to those with issue activity in the

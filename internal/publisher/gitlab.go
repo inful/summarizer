@@ -74,11 +74,12 @@ func (g *GitLabPublisher) PeriodBranch(period string) string {
 // After every week's MR is merged into the default branch, the target
 // repo's main tree looks like:
 //
-//	reports/2026-10-13/  group-proj--7d--customer.md
-//	                     group-proj--7d--team.md
-//	                     combined--7d--customer.md
-//	                     combined--7d--team.md
-//	reports/2026-10-20/  ...
+//	reports/2026-W42/  group-proj--7d--customer.md
+//	                    group-proj--7d--team.md
+//	                    combined--rollup--7d--customer.md
+//	                    combined--rollup--7d--team.md
+//	reports/2026-W43/  ...
+//	reports/2026-09/   monthly--2026-09--customer.md   (monthly rollup)
 //
 // Browsable week-by-week in the GitLab UI; docbuilder indexes recursively
 // so all weeks are reachable from the search.

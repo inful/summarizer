@@ -131,9 +131,9 @@ summarizer run --project group/proj --since 7d
 
 What you get:
 
-1. For each run, a source branch is created (e.g. `summarizer/2026-10-19`) from `<default_branch>` if it doesn't exist.
+1. For each run, a source branch is created (e.g. `summarizer/2026-W43`) from `<default_branch>` if it doesn't exist.
 2. Each rendered report (per project, per audience) is committed to that branch under `<prefix>/<period>/<filename>`, wrapped in **docbuilder-format frontmatter** (`uid`, `title`, `date`, `lastmod`, `fingerprint`, `tags`, `categories`, `aliases`, plus `public: true` for customer-audience reports). docbuilder in your `reports` project indexes them automatically.
-3. A single MR is opened against `<default_branch>` with body: "Summarizer rollup 2026-10-19".
+3. A single MR is opened against `<default_branch>` with body: "Summarizer rollup 2026-W43".
 4. Re-runs for the same period accumulate commits on the same MR — no branch/MR sprawl.
 5. If a prior MR for the period is already merged, summarizer refuses rather than reopen it; pick a new period slug or merge yourself.
 
@@ -141,20 +141,23 @@ What you get:
 
 ```
 reports/
-  2026-10-13/
+  2026-W42/
     group-proj--7d--customer.md        # public: true → customer index
     group-proj--7d--team.md            # no public key    → internal index
     other-proj--7d--customer.md       # public: true
     other-proj--7d--team.md
-    combined--7d--customer.md          # cross-project rollup (when ≥2 projects)
-    combined--7d--team.md
-    combined--epics--7d--customer.md   # cross-project epic rollup (when ≥1 active epic)
-    combined--epics--7d--team.md
-  2026-10-20/
+    combined--rollup--7d--customer.md   # cross-project rollup (when ≥2 projects)
+    combined--rollup--7d--team.md
+    combined--epics-rollup--7d--customer.md   # cross-project epic rollup (when ≥1 active epic)
+    combined--epics-rollup--7d--team.md
+  2026-W43/
     ...
+  2026-09/                             # `summarizer monthly` output
+    monthly--2026-09--customer.md
+    monthly--2026-09--team.md
 ```
 
-Each weekly run = one folder. The GitLab UI and `git log` both let you browse week-by-week. `public: true` on customer reports means docbuilder exposes them externally; team reports stay inside the team's index — defense-in-depth on top of the folder layout.
+Each weekly run = one folder, named by ISO week. The GitLab UI and `git log` both let you browse week-by-week. `public: true` on customer reports means docbuilder exposes them externally; team reports stay inside the team's index — defense-in-depth on top of the folder layout.
 
 ### Why a separate token
 
@@ -288,12 +291,11 @@ summarizer run --discover-group group/team-a \
 # (combined--<since>d--customer.md and --team.md) by feeding the
 # per-project reports to one extra LLM call per audience.
 
-# Period bucketing: --period-mode monday anchors the output directory
-# to the ISO week's Monday, so a daily cron overwrites the same
-# <prefix>/<YYYY-MM-DD>/ directory, branch and MR all week long
-# instead of opening seven. --period-mode daily (default) keeps one
-# bucket per calendar day.
-summarizer run --discover-group group/team-a --since 7d --period-mode monday
+# Period bucketing is by ISO week number. Every run inside the same
+# Mon-Sun week writes to <prefix>/<YYYY-Www>/, onto the same source
+# branch, updating the same MR — so a daily cron refines one week's
+# report instead of opening seven directories a week.
+summarizer run --discover-group group/team-a --since 7d
 ```
 
 Output files are written under `--output-dir` (or `output_dir` from config):
@@ -308,11 +310,45 @@ combined--<duration>d--customer.md
 combined--<duration>d--team.md
 ```
 
+## Monthly rollups
+
+`summarizer monthly` rolls up a whole calendar month of the weekly
+rollups you've already published, into one month-end file per audience.
+
+```bash
+summarizer monthly                    # previous calendar month
+summarizer monthly --month 2026-09    # a specific month, re-runnable
+summarizer monthly --dry-run          # print the prompt, spend nothing
+```
+
+It reads the weekly files back out of the **target repo**, not from
+local disk and not by re-running the pipeline — September's weekly
+rollups already exist as text, so this is one LLM call per audience
+rather than a second pass of per-project calls. That also means it
+works from any machine with just the reports token, and it rolls up
+exactly what was published.
+
+Weeks with no published rollup (the cron didn't run, or the MR was
+never pushed) are skipped and listed in the summary rather than
+failing the month. A month with no published weeks at all is an error
+— an empty month-end summary would be worse than none.
+
+Output lands in `reports/<YYYY-MM>/monthly--<YYYY-MM>--<audience>.md`,
+on its own branch and MR, so it never collides with a week's.
+
+Per-customer epic rollups (`combined--epics-rollup--*`) are **not**
+folded into the monthly summary. They're already split per customer;
+combining them into one blob would mix customers together, which is
+what that split exists to prevent.
+
 ## Schedule
 
 ```cron
 # Every Monday at 09:00, refresh last week's reports.
 0 9 * * 1 cd /path/to/summarizer && ./summarizer run --project group/subgroup/project >> /var/log/summarizer.log 2>&1
+
+# First of each month at 10:00, roll up the month that just closed.
+0 10 1 * * cd /path/to/summarizer && ./summarizer monthly >> /var/log/summarizer.log 2>&1
 ```
 
 ## Design
