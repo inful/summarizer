@@ -17,7 +17,6 @@ import (
 type optOutServer struct {
 	optOutByPath  map[string][]string
 	defaultBranch string
-	mrHits        int
 	fileHits      int
 }
 
