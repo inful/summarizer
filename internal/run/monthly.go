@@ -3,6 +3,8 @@ package run
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/inful/summarizer/internal/llm"
@@ -184,24 +186,15 @@ func (r *MonthlyRunner) readWeeklyRollup(branch string, aud prompt.Audience) (st
 // It mirrors GitLabPublisher.targetPath; kept as a method so the
 // monthly runner works against either publisher.
 func (r *MonthlyRunner) pathFor(branch, name string) string {
-	period := branch
 	// Strip the source-branch prefix to get back the period slug.
-	if i := lastSlash(period); i >= 0 {
-		period = period[i+1:]
+	period := branch
+	if i := strings.LastIndex(branch, "/"); i >= 0 {
+		period = branch[i+1:]
 	}
 	if r.ReportPrefix == "" {
 		return period + "/" + name
 	}
 	return r.ReportPrefix + "/" + period + "/" + name
-}
-
-func lastSlash(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '/' {
-			return i
-		}
-	}
-	return -1
 }
 
 // weeksInMonth returns the ISO week slugs whose Monday falls inside
@@ -247,8 +240,8 @@ func parseMonth(s string) (year, month int, err error) {
 			return 0, 0, fmt.Errorf("month %q: want YYYY-MM", s)
 		}
 	}
-	year = atoi(s[0:4])
-	month = atoi(s[5:7])
+	year, _ = strconv.Atoi(s[0:4])
+	month, _ = strconv.Atoi(s[5:7])
 	if month < 1 || month > 12 {
 		return 0, 0, fmt.Errorf("month %q: month out of range 1-12", s)
 	}
@@ -256,17 +249,6 @@ func parseMonth(s string) (year, month int, err error) {
 		return 0, 0, fmt.Errorf("month %q: not a real month", s)
 	}
 	return year, month, nil
-}
-
-// atoi parses the 4-digit or 2-digit substrings parseMonth produces.
-// strconv.Atoi would do, but these are guaranteed-digit slices and the
-// error is impossible, so a loop keeps it allocation-free.
-func atoi(s string) int {
-	n := 0
-	for i := 0; i < len(s); i++ {
-		n = n*10 + int(s[i]-'0')
-	}
-	return n
 }
 
 // previousMonth returns the YYYY-MM before t's month, rolling back

@@ -14,14 +14,11 @@ import "testing"
 // .summaryignore file at the repo root, checked at the pipeline
 // layer rather than here).
 //
-// The `source` argument still exists in the signature because
-// callers already pass it; the classifier itself no longer reads it
-// because the default is the same regardless of how the project
-// surfaced in the run.
+// How a project entered the run is not an input: the audience default
+// is the same for an explicitly-named project and a discovered one.
 func TestClassify(t *testing.T) {
 	type tc struct {
 		name         string
-		source       ProjectSource
 		topics       []string
 		inList       bool // in summarizer.yaml internal_only_projects OR on --internal-only-project
 		wantTeam     bool
@@ -29,41 +26,33 @@ func TestClassify(t *testing.T) {
 	}
 	cases := []tc{
 		// The only way to opt in to customer output is the
-		// `summarize` topic. Source does not matter.
-		{"summarize topic, explicit", SourceExplicit, []string{"summarize"}, false, false, true},
-		{"summarize topic, discovered", SourceDiscovered, []string{"summarize"}, false, false, true},
+		// `summarize` topic.
+		{"summarize topic", []string{"summarize"}, false, false, true},
 
 		// summarize-team-only wins over summarize (sticky override).
-		{"team-only topic, explicit", SourceExplicit, []string{"summarize-team-only"}, false, true, false},
-		{"team-only topic, discovered", SourceDiscovered, []string{"summarize-team-only"}, false, true, false},
-		{"both topics, team-only wins", SourceExplicit, []string{"summarize", "summarize-team-only"}, false, true, false},
+		{"team-only topic", []string{"summarize-team-only"}, false, true, false},
+		{"both topics, team-only wins", []string{"summarize", "summarize-team-only"}, false, true, false},
 
-		// The new default: any project with no `summarize` topic
-		// gets a team-only report, regardless of source. This is
-		// the behaviour change the operator asked for — the
-		// friction of "every project needs a topic to be summarised"
-		// is replaced by "every project is summarised unless told
-		// otherwise."
-		{"no topics, explicit — was customer, now team-only", SourceExplicit, nil, false, true, false},
-		{"no topics, discovered", SourceDiscovered, nil, false, true, false},
-		{"unrelated topics, explicit", SourceExplicit, []string{"ruby", "kubernetes"}, false, true, false},
-		{"unrelated topics, discovered", SourceDiscovered, []string{"ruby"}, false, true, false},
+		// The default: any project with no `summarize` topic gets a
+		// team-only report. This is the behaviour change the operator
+		// asked for — the friction of "every project needs a topic
+		// to be summarised" is replaced by "every project is
+		// summarised unless told otherwise."
+		{"no topics", nil, false, true, false},
+		{"unrelated topics", []string{"ruby", "kubernetes"}, false, true, false},
 
 		// Operator-level override (config / CLI): always wins.
-		{"summarize topic, but operator override", SourceExplicit, []string{"summarize"}, true, true, false},
-		{"no topics, operator override", SourceDiscovered, nil, true, true, false},
+		{"summarize topic, but operator override", []string{"summarize"}, true, true, false},
+		{"no topics, operator override", nil, true, true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			p := Classify(c.source, c.topics, c.inList)
+			p := Classify(c.topics, c.inList)
 			if p.TeamOnly != c.wantTeam {
 				t.Errorf("TeamOnly: got %v, want %v", p.TeamOnly, c.wantTeam)
 			}
 			if p.CustomerOn != c.wantCustomer {
 				t.Errorf("CustomerOn: got %v, want %v", p.CustomerOn, c.wantCustomer)
-			}
-			if !p.Run {
-				t.Errorf("Run should always be true in v1; got false")
 			}
 		})
 	}
@@ -75,8 +64,8 @@ func TestClassify(t *testing.T) {
 // is NOT a feature — operators who write `Summarize` get a different
 // result from `summarizer`.
 func TestClassify_TopicCaseSensitive(t *testing.T) {
-	lowercase := Classify(SourceDiscovered, []string{"summarize"}, false)
-	mixedcase := Classify(SourceDiscovered, []string{"Summarize"}, false)
+	lowercase := Classify([]string{"summarize"}, false)
+	mixedcase := Classify([]string{"Summarize"}, false)
 	if lowercase.CustomerOn != true {
 		t.Errorf("lowercase 'summarize' should opt-in to customer")
 	}

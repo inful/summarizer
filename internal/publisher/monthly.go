@@ -3,6 +3,7 @@ package publisher
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -160,21 +161,11 @@ func (g *GitLabPublisher) getStatus(urlStr string) (rawResponse, error) {
 	return rawResponse{status: resp.StatusCode, body: body}, nil
 }
 
-// errReadUnsupported is returned by publishers with no remote repo to
-// read from. `summarizer monthly` surfaces it as a usage error rather
-// than an empty rollup.
-var errReadUnsupported = fmt.Errorf("this publisher cannot read published reports; monthly rollups need publish.enabled with a GitLab target")
-
 // ReadReportFile is on GitLabPublisher only. The interface deliberately
 // does not include it: a monthly run against a local-disk publisher
 // has nothing to read, and forcing every implementation to stub an
-// unsupported method hides that.
+// unsupported method hides that. cmd/summarizer rejects a
+// local-disk publisher before it ever gets here.
 func (l *Local) ReadReportFile(_, _ string) (string, error) {
-	return "", errReadUnsupported
-}
-
-// ErrReadUnsupported lets cmd/summarizer recognise the unsupported
-// case and pick a usage exit code instead of reporting a failure.
-func ErrReadUnsupported(err error) bool {
-	return err != nil && strings.Contains(err.Error(), errReadUnsupported.Error())
+	return "", errors.New("local-disk publisher has no reports to read; monthly rollups need publish.enabled with a GitLab target")
 }

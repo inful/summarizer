@@ -26,29 +26,8 @@ const (
 	TopicSummarizeTeamOnly = "summarize-team-only"
 )
 
-// ProjectSource identifies how the project entered the run. The
-// classifier itself no longer reads this value (the audience
-// decision is uniform regardless of source), but the type is kept
-// in the signature for caller readability and for any future
-// source-specific branching.
-type ProjectSource int
-
-const (
-	// SourceExplicit is a project named on the CLI via --project or
-	// in summarizer.yaml's projects list.
-	SourceExplicit ProjectSource = iota
-
-	// SourceDiscovered is a project surfaced by --discover-group,
-	// --discover-by-topic, or the default-by-activity discovery.
-	SourceDiscovered
-)
-
-// ProjectPolicy is what summarizer does with one project. Run is
-// always true today; the Run field exists so future extensions
-// (per-project skip, per-project overrides) can land without
-// changing the call sites.
+// ProjectPolicy is what summarizer does with one project.
 type ProjectPolicy struct {
-	Run        bool // always true in v1; reserved for future per-project skip
 	TeamOnly   bool // true ⇒ never produce a customer-facing report
 	CustomerOn bool // true ⇒ customer-facing report is produced
 }
@@ -70,14 +49,14 @@ type ProjectPolicy struct {
 // `summarize` topic is the only way to produce a customer-facing
 // report.
 //
-// The previous model distinguished discovered from explicit at this
-// level (discovered defaulting to team-only, explicit defaulting to
-// customer-on). That distinguished was removed when the operator
+// How the project entered the run is deliberately NOT an input. The
+// previous model distinguished discovered from explicit here
+// (discovered defaulting to team-only, explicit defaulting to
+// customer-on); that distinction was removed when the operator
 // inverted the discovery model from "opt in to summarizer" to
-// "opt out of summarizer": every active project now runs by
-// default, and the audience default is uniformly team-only. The
-// operator's opt-in to customer is a single bit — the
-// `summarize` topic — for every project regardless of source.
+// "opt out of summarizer". Every active project runs by default and
+// the audience default is uniformly team-only, so the source cannot
+// change the answer.
 //
 // The project-level opt-out (file `.summaryignore` or `.docignore`
 // at the repo root) is NOT modelled here. It is checked at the
@@ -86,12 +65,11 @@ type ProjectPolicy struct {
 // this function is even called.
 //
 // Truth table lives in policy_test.go.
-func Classify(source ProjectSource, topics []string, inList bool) ProjectPolicy {
+func Classify(topics []string, inList bool) ProjectPolicy {
 	teamOnly := inList ||
 		hasTopic(topics, TopicSummarizeTeamOnly) ||
 		!hasTopic(topics, TopicSummarize)
 	return ProjectPolicy{
-		Run:        true,
 		TeamOnly:   teamOnly,
 		CustomerOn: !teamOnly,
 	}

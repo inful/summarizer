@@ -36,6 +36,7 @@ type Options struct {
 	InternalOnlyProjects []string      // --internal-only-project (repeatable) + YAML internal_only_projects block. Union with topic-based "summarize-team-only" classification; team-only projects produce no customer-facing report.
 	DiscoverByTopic      bool          // --discover-by-topic: scan every project on the instance carrying a `summarize*` topic, across all groups the token can see. Composes with Projects and DiscoveredGroups.
 	DiscoverActive       bool          // --discover-active: include every project the token can see that had activity since the window opened. Set automatically when no other discovery input is given, which is the documented default: an active project runs unless it opts out.
+	MaxProjects          int           // --max-projects: hard cap on projects fed to the LLM, applied after discovery and opt-out but before any LLM call. Each project costs two completions, so a quarter where 200 repos were touched is ~400 calls; this bounds the bill. 0 = DefaultMaxProjects.
 }
 
 // maxActiveEpics caps the number of epic headers that appear in a
@@ -46,6 +47,12 @@ type Options struct {
 // nested events add roughly 200–400 tokens to the prompt; 20 keeps
 // even a 4-project rollup under 16K tokens for the epic section.
 const maxActiveEpics = 20
+
+// DefaultMaxProjects caps how many projects one run feeds to the LLM
+// when --max-projects is not given. 50 projects is ~100 completions
+// before rollups — enough for a busy quarter, bounded enough that an
+// instance-wide activity scan cannot produce an unbounded bill.
+const DefaultMaxProjects = 50
 
 // ProjectResult describes what one project produced. Used to feed the
 // rollup step (when len(Projects) > 1) without re-reading from disk.
@@ -61,6 +68,10 @@ type ProjectResult struct {
 	TeamOnly         bool           // true ⇒ no customer-facing content was produced for this project
 	CustomerOn       bool           // true ⇒ customer-facing content was produced (== !TeamOnly)
 	ActiveEpics      []*gitlab.Epic // active epics for this project (had issue activity in window); used by runEpicRollup
+	// AnnotatedEvents is the project's full event set after
+	// AttachEpics ran. Kept so the epic rollup can count each epic's
+	// events exactly instead of re-deriving them from rendered text.
+	AnnotatedEvents []events.NormalizedEvent
 }
 
 // Result describes what the run produced. Used by main to write the stderr
@@ -138,33 +149,56 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 		return res, nil
 	}
 
+	// Bound the bill before the first LLM call. Each project costs two
+	// completions, so the activity-default discovery can produce an
+	// unbounded bill on an instance where everything was touched. The
+	// cap lands after discovery and opt-out (so it does not count
+	// projects that would never have run) and before any LLM call.
+	if cap := p.Opts.maxProjects(); len(finalList) > cap {
+		dropped := finalList[cap:]
+		finalList = finalList[:cap]
+		fmt.Fprintf(os.Stderr, "summarizer: --max-projects %d — dropping %d project(s) that would have cost %d more LLM call(s):\n",
+			cap, len(dropped), 2*len(dropped))
+		for _, p := range dropped {
+			fmt.Fprintf(os.Stderr, "  dropped: %s\n", p)
+		}
+	}
+
 	// Per-project loop. Each project produces two files (customer +
 	// team); the rollup step (below) adds two more when there's more
-	// than one project. Failures on one project don't stop the others —
-	// the partial-result contract is the same as the single-project
-	// path's.
+	// than one project.
+	//
+	// A failure on one project does not abort the others. A rate-limited
+	// LLM call on project 3 of 25 must not leave projects 4-25
+	// unrun — the projects already published stay published either
+	// way, so continuing strictly increases what the run delivers. The
+	// first error is kept and returned after the loop; the caller
+	// still gets a non-zero exit code and a message naming the project.
+	var firstErr error
 	for _, project := range finalList {
-		// A project's origin decides its audience default: discovered
-		// projects are team-only unless they carry the `summarize`
-		// opt-in. Passing the wrong source here silently publishes
-		// customer reports for untagged discovered projects.
-		source := policy.SourceExplicit
-		if discoveredSet[project] {
-			source = policy.SourceDiscovered
+		pr, err := p.runOneProject(ctx, project)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("project %s: %w", project, err)
+			}
+			fmt.Fprintf(os.Stderr, "summarizer: WARN %s failed, continuing: %v\n", project, err)
+			continue
 		}
-		pr, err := p.runOneProject(ctx, project, source)
 		// Tag whether this project came from discovery. Consumed by
 		// the operator-visible summary so a wide-net run is auditable.
-		pr.FromDiscovery = source == policy.SourceDiscovered
+		pr.FromDiscovery = discoveredSet[project]
 		// Active epics were already fetched inside runOneProject
 		// (via fetchProjectEpics); carry them forward on the
 		// ProjectResult so runEpicRollup can publish the cross-
 		// project epic rollup without re-fetching.
 		pr.ActiveEpics = p.lastActiveEpics[project]
 		res.Projects = append(res.Projects, pr)
-		if err != nil {
-			return res, fmt.Errorf("project %s: %w", project, err)
-		}
+	}
+	if firstErr != nil {
+		// Return what succeeded alongside the error. The rollups are
+		// skipped: a cross-project rollup over a partial set would
+		// silently read as a complete week.
+		return res, firstErr
 	}
 
 	if len(res.Projects) > 1 && !p.Opts.DryRun {
@@ -201,11 +235,11 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 // the customer iteration is skipped entirely when the project's
 // policy says TeamOnly (no LLM call, no file, no Epic ordering
 // through the customer audience). The team iteration always runs.
-// The classification is computed from source (Discovered vs
-// Explicit), the project's GitLab topics, and the three sources of
-// team-only override (config / CLI / topic) — see policy.Classify
-// for the truth table.
-func (p *Pipeline) runOneProject(ctx context.Context, project string, source policy.ProjectSource) (ProjectResult, error) {
+// The classification is computed from the project's GitLab topics
+// and the team-only override list (config / CLI) — see policy.Classify
+// for the truth table. How the project entered the run is not an
+// input: the audience default is the same either way.
+func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectResult, error) {
 	res := ProjectResult{
 		Project:          project,
 		FilesWritten:     []string{},
@@ -214,7 +248,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string, source pol
 
 	inOverrideList := containsString(p.Opts.InternalOnlyProjects, project)
 	topics := p.projectTopics(ctx, project)
-	audience := policy.Classify(source, topics, inOverrideList)
+	audience := policy.Classify(topics, inOverrideList)
 	res.TeamOnly = audience.TeamOnly
 	res.CustomerOn = audience.CustomerOn
 
@@ -271,6 +305,12 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string, source pol
 	events.AttachEpics(all, epics)
 	res.EventsFetched = len(all)
 	res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
+	// Carry the annotated slice so runEpicRollup can count each epic's
+	// events exactly. Only retained when the project actually has
+	// active epics; otherwise nothing downstream reads it.
+	if len(epics) > 0 {
+		res.AnnotatedEvents = all
+	}
 
 	// Record active epics for runEpicRollup (read by Run, not by the
 	// per-project LLM call below). Allocated lazily so projects with
@@ -509,9 +549,6 @@ func bucketEpicsByCustomer(projects []ProjectResult, window time.Duration) []epi
 		if len(pr.ActiveEpics) == 0 {
 			continue
 		}
-		// Hoist the body concatenation out of the per-epic loop: it
-		// used to rebuild two full report bodies per epic.
-		body := pr.CustomerText + pr.TeamText
 		perCode := make(map[string][]prompt.EpicSummary)
 		for _, e := range pr.ActiveEpics {
 			// Inheritance: org::* labels on the epic OR on its
@@ -519,21 +556,18 @@ func bucketEpicsByCustomer(projects []ProjectResult, window time.Duration) []epi
 			// An unlabelled epic with one child issue labelled
 			// org::ACME is still an ACME epic.
 			codes := policy.EpicCustomerCodes(e)
+			// Counted once per epic, not once per customer bucket: it
+			// is a property of the epic, not of the attribution.
+			n := countEpicEvents(pr.AnnotatedEvents, e)
 			if len(codes) == 0 {
 				// No org:: anywhere → the unlabelled bucket. The
 				// combined file becomes the "not yet attributed"
 				// report rather than a silent miss.
-				perCode[""] = append(perCode[""], prompt.EpicSummary{
-					Epic:       e,
-					EventCount: countEpicEvents(body, e),
-				})
+				perCode[""] = append(perCode[""], prompt.EpicSummary{Epic: e, EventCount: n})
 				continue
 			}
 			for _, code := range codes {
-				perCode[code] = append(perCode[code], prompt.EpicSummary{
-					Epic:       e,
-					EventCount: countEpicEvents(body, e),
-				})
+				perCode[code] = append(perCode[code], prompt.EpicSummary{Epic: e, EventCount: n})
 			}
 		}
 		for code, summaries := range perCode {
@@ -578,12 +612,11 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 		if len(pr.ActiveEpics) == 0 {
 			continue
 		}
-		body := pr.CustomerText + pr.TeamText
 		summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
 		for _, e := range pr.ActiveEpics {
 			summaries = append(summaries, prompt.EpicSummary{
 				Epic:       e,
-				EventCount: countEpicEvents(body, e),
+				EventCount: countEpicEvents(pr.AnnotatedEvents, e),
 			})
 		}
 		entries = append(entries, prompt.EpicRollupEntry{Project: pr.Project, Epics: summaries})
@@ -638,19 +671,29 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 // no inputs, so no file should be published for it.
 var errSkipAudience = errors.New("no inputs for this audience")
 
-// countEpicEvents tallies how many times the epic's title appears in
-// the rendered per-project report body. It's an approximation — the
-// rendered body doesn't carry Epic references per-line — but it gives
-// the cross-project rollup a sense of activity breadth without
-// re-fetching any data.
+// countEpicEvents tallies how many events in the project's event set
+// belong to this epic. Exact: AttachEpics annotates every issue event
+// with the epic that contains it, so this counts real annotations
+// rather than searching rendered text.
 //
-// body is passed in rather than assembled here: the caller concatenates
-// customer+team text once per project instead of once per epic.
-func countEpicEvents(body string, e *gitlab.Epic) int {
-	if e.Title == "" {
+// The previous version counted occurrences of the epic's title in the
+// rendered report body, which double-counted two epics sharing a title
+// and could be inflated by the title appearing in prose — and the
+// number reached customer-facing documents.
+//
+// events is the project's full annotated event slice; counting a
+// subset (e.g. only the customer-audience events) would understate.
+func countEpicEvents(events []events.NormalizedEvent, e *gitlab.Epic) int {
+	if e == nil {
 		return 0
 	}
-	return strings.Count(body, e.Title)
+	n := 0
+	for _, ev := range events {
+		if ev.Epic != nil && ev.Epic.IID == e.IID {
+			n++
+		}
+	}
+	return n
 }
 
 // periodSlug returns the ISO-8601 week slug for the current period,
@@ -684,6 +727,17 @@ func mondayAnchor(t time.Time) time.Time {
 	weekday := int(t.Weekday())
 	daysSinceMonday := (weekday + 6) % 7
 	return time.Date(t.Year(), t.Month(), t.Day()-daysSinceMonday, 0, 0, 0, 0, t.Location())
+}
+
+// maxProjects resolves --max-projects. Zero or negative means "unset",
+// which is the default cap — NOT "no limit". An explicit value is
+// honoured even when it is below the default, so an operator can
+// deliberately run a smaller set.
+func (o Options) maxProjects() int {
+	if o.MaxProjects > 0 {
+		return o.MaxProjects
+	}
+	return DefaultMaxProjects
 }
 
 // forceOverwrite is always true. Every run lands in the same weekly
@@ -917,7 +971,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		// `summarize-team-only` continues to mean "team-only
 		// even if the project has `summarize`."
 		inOverride := containsString(opts.InternalOnlyProjects, proj.Path)
-		aud := policy.Classify(policy.SourceDiscovered, proj.Topics, inOverride)
+		aud := policy.Classify(proj.Topics, inOverride)
 		tnoTag := ""
 		if aud.TeamOnly {
 			tnoTag = " (team-only)"

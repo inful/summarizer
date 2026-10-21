@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/inful/summarizer/internal/config"
-	"github.com/inful/summarizer/internal/publisher"
 	"github.com/inful/summarizer/internal/run"
 	"gopkg.in/yaml.v3"
 )
@@ -36,10 +35,10 @@ func TestUnionSlices_DedupesAndKeepsOrder(t *testing.T) {
 	}
 }
 
-// TestClassify_TypedSentinelsWin: the two sentinels we can match
-// reliably must NOT depend on the message text. ErrInjection and
-// ErrExists both carry distinctive words ("write", "config") but a
-// wrapped error's outer text is what classify sees.
+// TestClassify_TypedSentinelsWin: the sentinel we can match reliably
+// must NOT depend on the message text. ErrInjection carries the word
+// "write"-adjacent vocabulary in some wrappings, but a wrapped
+// error's outer text is what classify sees.
 func TestClassify_TypedSentinelsWin(t *testing.T) {
 	cases := []struct {
 		name string
@@ -47,7 +46,6 @@ func TestClassify_TypedSentinelsWin(t *testing.T) {
 		want int
 	}{
 		{"nil", nil, exitOK},
-		{"exists", fmt.Errorf("deep inside: %w", publisher.ErrExists), exitWrite},
 		{"injection", fmt.Errorf("project g/p: %w", run.ErrInjection), exitInjection},
 		{"gitlab", errors.New("fetch mrs: 500 boom"), exitGitLab},
 		{"llm", errors.New("llm customer: connection reset"), exitLLM},

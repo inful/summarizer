@@ -4,6 +4,21 @@ All notable changes to summarizer are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- **The local-disk publisher discarded the period, so every week overwrote the last — silent data loss.** `Local.Publish` did `filepath.Join(l.Dir, req.Name)` and never read `req.Period`; only the GitLab publisher used it. Report filenames carry the window (`--7d`) but not the date, so week N and week N+1 produced the same path and the second destroyed the first. `publish.enabled` defaults to `false`, so this was the out-of-the-box path. Both publishers now write `<dir>/<period>/<name>`, matching the layout the docs had been claiming for local mode all along.
+- **A failure on one project aborted the whole run, contradicting the comment that promised the opposite.** `Run()`'s per-project loop carried the comment *"Failures on one project don't stop the others"* and then returned on the first error. A rate-limited completion on project 1 of 25 meant 24 projects never ran, while earlier projects were already published to the branch. The loop now logs `summarizer: WARN <project> failed, continuing`, finishes the remaining projects, and returns the first error so the exit code still signals failure. Cross-project rollups are skipped when any project failed — a rollup over a partial set would read as a complete week.
+- **A failed project was appended to the result as a zero value before the error check**, so the run summary could count a project with an empty name. The append now happens after the failure is handled.
+- **`monthlyCmd` duplicated `runCmd`'s publisher setup and had dropped its checks.** It validated the token env but not `publish.project`, so `publish.enabled: true` with no project produced a bare 404 from `/api/v4/projects//…` instead of the clear message `run` gives. Both commands now share one `newPublisher`.
+- **The epic rollup's "activity in window: N events" was a substring search.** `countEpicEvents` counted occurrences of the epic's *title* inside the rendered report body, so two epics sharing a title each reported the sum of both, and a title appearing in prose inflated the count — in a customer-facing document. It now counts the real epic annotations `AttachEpics` already puts on every issue event.
+
+### Removed
+- **Dead code left by the last two releases.** `publisher.ErrExists`, `Result.Skipped`, and `classify`'s branch for them were unreachable once weekly buckets made `forceOverwrite()` constant. `ProjectPolicy.Run` was set to `true` and read nowhere. `policy.Classify`'s `source` parameter was never read — the whole `ProjectSource` enum existed only to feed it, threaded through `Run()` → `runOneProject` for no effect. `lastSlash` and `atoi` reimplemented `strings.LastIndex` and `strconv.Atoi`. `ErrReadUnsupported` was exported and never called. Also: refuse-first is gone from the local publisher, which is what those three were supporting.
+
+### Added
+- **`--max-projects` (default 50) bounds the per-run LLM bill.** Each project costs two completions, so the activity-default discovery could produce an unbounded number of calls on an instance where everything had been touched. The cap is applied after discovery and opt-out — so it never counts projects that would not have run — and before the first completion, so dropping projects actually saves money. Dropped projects are listed on stderr. `0` means "use the default", not "no limit"; an explicit value below the default is honoured.
+
 ## [0.2.0] - 2026-10-21
 
 ### Fixed

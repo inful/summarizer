@@ -85,8 +85,8 @@ Both have a one-line run summary on stderr:
 
 ```
 summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=168h0m0s)
-  → ./summarizer-out/group_subgroup_project--7d--customer.md
-  → ./summarizer-out/group_subgroup_project--7d--team.md
+  → ./summarizer-out/2026-W43/group_subgroup_project--7d--customer.md
+  → ./summarizer-out/2026-W43/group_subgroup_project--7d--team.md
   tokens[group/subgroup/project/customer]: prompt=2103 completion=812 total=2915
   tokens[group/subgroup/project/team]:     prompt=2478 completion=901 total=3379
 ```

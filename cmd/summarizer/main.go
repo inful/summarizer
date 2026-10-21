@@ -113,6 +113,37 @@ func resolveLLM(cfg *config.Config, openaiKey, anthropicKey string) (llm.Provide
 	}
 }
 
+// newPublisher builds the publisher for both `run` and `monthly`.
+//
+// Shared so the two cannot drift: monthlyCmd was missing the
+// publish.project check that runCmd has, so one misconfiguration gave
+// two different — and in monthly's case much worse — errors.
+func newPublisher(cfg *config.Config) (publisher.Publisher, int) {
+	if !cfg.Publish.Enabled {
+		return publisher.NewLocal(cfg.OutputDir), exitOK
+	}
+	tokenEnv := cfg.Publish.TokenEnv
+	if tokenEnv == "" {
+		tokenEnv = "GITLAB_REPORTS_TOKEN"
+	}
+	if os.Getenv(tokenEnv) == "" {
+		fmt.Fprintf(os.Stderr, "error: publish.enabled=true but $%s is not set\n", tokenEnv)
+		return nil, exitEnv
+	}
+	if cfg.Publish.Project == "" {
+		fmt.Fprintln(os.Stderr, "error: publish.enabled=true but publish.project is empty")
+		return nil, exitConfig
+	}
+	host := cfg.Publish.Host
+	if host == "" {
+		host = cfg.GitLabHost
+	}
+	return publisher.NewGitLab(
+		host, os.Getenv(tokenEnv), cfg.Publish.Project,
+		cfg.Publish.Prefix, cfg.Publish.DefaultBranch, cfg.Publish.SourceBranchPrefix,
+	), exitOK
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `summarizer — GitLab project activity → two Markdown reports
 
@@ -167,6 +198,7 @@ Env:
 		model          = fs.String("model", "", "LLM model id (default from config)")
 		outputDir      = fs.String("output-dir", "", "output directory (default from config)")
 		maxEvents      = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
+		maxProjects    = fs.Int("max-projects", 0, "hard cap on projects fed to the LLM, applied after discovery and opt-out (default 50). Each project costs two completions, so this bounds the per-run bill. Dropped projects are listed on stderr.")
 		force          = fs.Bool("force", false, "overwrite existing output files")
 		dryRun         = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
 		includeDiffs   = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
@@ -248,23 +280,6 @@ Env:
 
 	gc := gitlab.New(cfg.GitLabHost, gitlabTokenVal, 30*time.Second)
 
-	// Validate the optional GitLab publisher up front so its config
-	// errors surface before the (more common) LLM provider check.
-	if cfg.Publish.Enabled {
-		tokenEnv := cfg.Publish.TokenEnv
-		if tokenEnv == "" {
-			tokenEnv = "GITLAB_REPORTS_TOKEN"
-		}
-		if os.Getenv(tokenEnv) == "" {
-			fmt.Fprintf(os.Stderr, "error: publish.enabled=true but $%s is not set\n", tokenEnv)
-			return exitEnv
-		}
-		if cfg.Publish.Project == "" {
-			fmt.Fprintln(os.Stderr, "error: publish.enabled=true but publish.project is empty")
-			return exitConfig
-		}
-	}
-
 	// Resolve LLM provider and keys.
 	llmProvider, code := resolveLLM(cfg, *openaiKey, *anthropicKey)
 	if code != exitOK {
@@ -272,24 +287,10 @@ Env:
 	}
 
 	// Pick a publisher. Local disk by default; GitLab MR when
-	// cfg.Publish.Enabled is true (token env was validated earlier so we
-	// can just read it now).
-	var pub publisher.Publisher
-	if cfg.Publish.Enabled {
-		host := cfg.Publish.Host
-		if host == "" {
-			host = cfg.GitLabHost
-		}
-		tokenEnv := cfg.Publish.TokenEnv
-		if tokenEnv == "" {
-			tokenEnv = "GITLAB_REPORTS_TOKEN"
-		}
-		pub = publisher.NewGitLab(
-			host, os.Getenv(tokenEnv), cfg.Publish.Project,
-			cfg.Publish.Prefix, cfg.Publish.DefaultBranch, cfg.Publish.SourceBranchPrefix,
-		)
-	} else {
-		pub = publisher.NewLocal(cfg.OutputDir)
+	// cfg.Publish.Enabled is true.
+	pub, code := newPublisher(cfg)
+	if code != exitOK {
+		return code
 	}
 
 	// Safety guard. Disabled by default. When enabled, every LLM call is
@@ -332,6 +333,7 @@ Env:
 		InternalOnlyProjects: unionSlices(internalOnly, cfg.InternalOnlyProjects),
 		DiscoverByTopic:      *discoverTopic,
 		DiscoverActive:       *discoverActive,
+		MaxProjects:          *maxProjects,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -398,8 +400,6 @@ func classify(err error) int {
 	switch {
 	case errors.Is(err, run.ErrInjection):
 		return exitInjection
-	case errors.Is(err, publisher.ErrExists):
-		return exitWrite
 	}
 	msg := err.Error()
 	switch {

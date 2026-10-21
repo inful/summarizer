@@ -17,8 +17,8 @@ The most useful stderr line is the trailing summary:
 
 ```
 summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=168h0m0s)
-  → ./summarizer-out/group_subgroup_project--7d--customer.md
-  → ./summarizer-out/group_subgroup_project--7d--team.md
+  → ./summarizer-out/2026-W43/group_subgroup_project--7d--customer.md
+  → ./summarizer-out/2026-W43/group_subgroup_project--7d--team.md
   tokens[group/subgroup/project/customer]: prompt=2103 completion=812 total=2915
   tokens[group/subgroup/project/team]:     prompt=2478 completion=901 total=3379
 ```
@@ -126,21 +126,39 @@ What to do:
 
 ## GitLab publish scenarios
 
-### "Refuse overwrite"
+### Overwrite behaviour
 
-Not reachable any more. Every run in a week targets the same
+There is no refuse-first. Every run inside a week targets the same
 `(project, audience, period)` path, so both publishers overwrite in
 place — otherwise the cron would fail on the second run of every week.
 On the GitLab publisher the UID is read back from the existing file
 before the rewrite, so overwriting preserves document identity.
 
+Each period gets its own subdirectory on both publishers:
+`<output_dir>/<YYYY-Www>/<name>` locally, `<prefix>/<YYYY-Www>/<name>`
+in the target repo. That is what stops one week's reports from
+overwriting the previous week's — the filenames themselves carry the
+window (`--7d`) but not the date.
+
 `--force` is accepted and does nothing; it is kept only so existing
 cron lines and muscle memory don't break.
 
-If you want the previous week's content back, re-run with a `--since`
-window that ends before the current week, or read the file out of git
+If you want the previous week's content back, read the file out of git
 history — the publisher commits each run to the period branch, so every
 intermediate version is recoverable.
+
+## A run failed part-way through
+
+A failure on one project no longer aborts the rest. The run logs
+`summarizer: WARN <project> failed, continuing: …` per failure, finishes
+the remaining projects, and returns a non-zero exit code naming the
+first failure. Check the log for the WARN lines to see which projects
+were skipped.
+
+Cross-project rollups are **skipped** when any project failed: a
+rollup synthesised over a partial project set would read as a complete
+week. Per-project reports for the projects that did succeed are still
+published.
 
 ### "GitLab MR didn't auto-merge"
 
@@ -189,6 +207,7 @@ wins over config in every case.
 | `--dry-run` | off | no LLM call, no write. |
 | `--include-diffs` | off | adds per-MR `/changes` bodies to the team prompt. |
 | `--max-events N` | 200 | events per project in the prompt; most recent kept. |
+| `--max-projects N` | 50 | projects fed to the LLM. Applied after discovery and opt-out, before any completion. Dropped projects are listed on stderr. |
 | `--output-dir D` | from config | local publisher only. |
 | `--model M` / `--provider P` | from config | `openai` or `anthropic`. |
 | `--openai-key` | `$OPENAI_API_KEY` | prefer the env var. |

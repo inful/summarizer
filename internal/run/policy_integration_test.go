@@ -13,7 +13,6 @@ import (
 	"github.com/inful/summarizer/internal/config"
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/llm"
-	"github.com/inful/summarizer/internal/policy"
 	"github.com/inful/summarizer/internal/publisher"
 	"github.com/inful/summarizer/internal/safety"
 )
@@ -30,7 +29,7 @@ func TestRunOneProject_SkipsCustomerForTeamOnlyProject(t *testing.T) {
 	p, llm, pub := newTeamOnlyPipeline(t)
 	p.Opts.InternalOnlyProjects = []string{"group/secret"}
 
-	pr, err := p.runOneProject(context.Background(), "group/secret", policy.SourceExplicit)
+	pr, err := p.runOneProject(context.Background(), "group/secret")
 	if err != nil {
 		t.Fatalf("runOneProject: %v", err)
 	}

@@ -1,45 +1,47 @@
 package publisher
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
-// ErrExists signals the target file already exists and Force was not set.
-var ErrExists = errors.New("output file already exists")
-
-// Local writes Markdown reports to a local directory under Dir. The flow:
-//  1. Refuse if dir/name exists and !Force
-//  2. mkdir -p dir
-//  3. write to dir/.name.tmp-<pid>-<rand>
-//  4. rename tmp -> dir/name
+// Local writes Markdown reports to a local directory under Dir, one
+// subdirectory per period: <Dir>/<period>/<name>. The flow:
+//  1. mkdir -p <Dir>/<period>
+//  2. write to <Dir>/<period>/.name.tmp-<rand>
+//  3. rename tmp -> <Dir>/<period>/<name>
 //
-// Rename is atomic on POSIX (same filesystem); a crash before step 4
+// Rename is atomic on POSIX (same filesystem); a crash before step 3
 // leaves no half-written file in the target path.
+//
+// There is no refuse-first. Every run inside a period targets the same
+// (project, audience, period) path, so refusing would fail the second
+// run of every week; overwriting in place is the intended behaviour.
+//
+// The period subdirectory is what keeps *different* weeks from
+// colliding: report names carry the window (7d, 30d) but not the date,
+// so without it this week's run would overwrite last week's.
 type Local struct {
-	Dir string // root directory; created on each Publish
+	Dir string // root directory; per-period subdirectories created on each Publish
 }
 
 // NewLocal returns a disk-backed publisher rooted at dir.
 func NewLocal(dir string) *Local { return &Local{Dir: dir} }
 
 // Publish conforms to Publisher. Returns the absolute path as Ref;
-// Branch/MRURL are empty; Skipped is true when refuse-first declined.
+// Branch and MRURL are empty.
 func (l *Local) Publish(req Request) (Result, error) {
-	if err := os.MkdirAll(l.Dir, 0o755); err != nil {
-		return Result{}, fmt.Errorf("mkdir %s: %w", l.Dir, err)
+	dir := l.Dir
+	if req.Period != "" {
+		dir = filepath.Join(dir, req.Period)
 	}
-	target := filepath.Join(l.Dir, req.Name)
-	if !req.Force {
-		if _, err := os.Stat(target); err == nil {
-			return Result{Ref: target, Skipped: true}, fmt.Errorf("%w: %s", ErrExists, target)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return Result{}, fmt.Errorf("stat %s: %w", target, err)
-		}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return Result{}, fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	tmp, err := os.CreateTemp(l.Dir, "."+req.Name+".tmp-*")
+	target := filepath.Join(dir, req.Name)
+
+	tmp, err := os.CreateTemp(dir, "."+req.Name+".tmp-*")
 	if err != nil {
 		return Result{}, fmt.Errorf("create tmp: %w", err)
 	}

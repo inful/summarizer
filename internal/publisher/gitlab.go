@@ -22,12 +22,12 @@ import (
 //
 // Typical flow per period (e.g. "2026-10-19"):
 //
-//  1. POST  /projects/:id/repository/branches  (summarizer/2026-10-19, from main) — once per period
-//  2. PUT   /projects/:id/repository/files/:path?branch=summarizer/2026-10-19 — once per file
-//  3. GET   /projects/:id/merge_requests?source_branch=summarizer/2026-10-19
+//  1. POST  /projects/:id/repository/branches  (summarizer/2026-W42, from main) — once per period
+//  2. PUT   /projects/:id/repository/files/:path?branch=summarizer/2026-W42 — once per file
+//  3. GET   /projects/:id/merge_requests?source_branch=summarizer/2026-W42
 //     - none: POST .../merge_requests
 //     - open:  leave as-is; the new commit stacks on the existing MR
-//     - merged / closed: skip with Result.Skipped + clear stderr message
+//     - merged / closed: refuse to re-open; the error names the state
 //
 // Idempotency: re-runs for the same period accumulate commits on the
 // same MR. Each re-run only changes the files for that audience — old
@@ -395,9 +395,9 @@ func (g *GitLabPublisher) mergeRequests(sourceBranch, state string) ([]mergeRequ
 }
 
 // findOrCreateMR opens the MR if one isn't open for this source branch.
-// Returns the MR web URL. If an MR exists in merged / closed state, we
-// decline to re-open it and return a Skipped result via the returned
-// error; the caller decides what to do.
+// Returns the MR web URL. If an MR exists in merged / closed state we
+// decline to re-open it and return an error naming that state; the
+// caller surfaces it.
 func (g *GitLabPublisher) findOrCreateMR(branch string, req Request) (string, error) {
 	mrs, err := g.mergeRequests(branch, "opened")
 	if err != nil {

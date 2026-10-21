@@ -92,24 +92,19 @@ Example:
 		return exitConfig
 	}
 
-	host := cfg.Publish.Host
-	if host == "" {
-		host = cfg.GitLabHost
-	}
-	tokenEnv := cfg.Publish.TokenEnv
-	if tokenEnv == "" {
-		tokenEnv = "GITLAB_REPORTS_TOKEN"
-	}
-	if os.Getenv(tokenEnv) == "" {
-		fmt.Fprintf(os.Stderr, "error: %s is not set; it must be able to read the target repo\n", tokenEnv)
-		return exitEnv
-	}
-	glPub := publisher.NewGitLab(host, os.Getenv(tokenEnv), cfg.Publish.Project,
-		cfg.Publish.Prefix, cfg.Publish.DefaultBranch, cfg.Publish.SourceBranchPrefix)
-
-	llmProvider, code := resolveLLM(cfg, *openaiKey, *anthropicKey)
+	pub, code := newPublisher(cfg)
 	if code != exitOK {
 		return code
+	}
+	glPub, ok := pub.(*publisher.GitLabPublisher)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "error: summarizer monthly needs the GitLab publisher")
+		return exitConfig
+	}
+
+	llmProvider, llmCode := resolveLLM(cfg, *openaiKey, *anthropicKey)
+	if llmCode != exitOK {
+		return llmCode
 	}
 
 	runner := &run.MonthlyRunner{

@@ -13,19 +13,17 @@ import (
 	"github.com/inful/summarizer/internal/config"
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/llm"
-	"github.com/inful/summarizer/internal/policy"
 	"github.com/inful/summarizer/internal/safety"
 )
 
-// Regression tests for the D5 safe-default being inverted.
+// Tests for the audience policy applied per project.
 //
-// runOneProject used to classify with a hardcoded policy.SourceExplicit,
-// because Run() documented an override to SourceDiscovered that it never
-// performed. Every discovered project therefore classified as
-// operator-named, so a project with NO topics produced a customer-facing
-// report with Public: true — while the discovery manifest printed
-// "(team-only)" from a correct, separately-computed classification. The
-// origin a project actually came from now flows into the classifier.
+// The original bug: runOneProject classified with a hardcoded
+// "explicit" origin, so every discovered project was treated as
+// operator-named and a project with NO topics produced a customer-facing
+// report with Public: true. That is now fixed twice over — the audience
+// default is team-only for every project, and the origin no longer
+// reaches the classifier at all.
 
 // sourcePipeline builds a Pipeline whose fake GitLab answers every
 // endpoint the per-project path touches, with the given project topics.
@@ -150,7 +148,7 @@ func (r *recordingLLM) promptAt(i int) string {
 func TestRunOneProject_DiscoveredWithoutOptInIsTeamOnly(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
 
-	pr, err := sp.p.runOneProject(context.Background(), "group/public", policy.SourceDiscovered)
+	pr, err := sp.p.runOneProject(context.Background(), "group/public")
 	if err != nil {
 		t.Fatalf("runOneProject: %v", err)
 	}
@@ -178,7 +176,7 @@ func TestRunOneProject_DiscoveredWithoutOptInIsTeamOnly(t *testing.T) {
 func TestRunOneProject_DiscoveredWithOptInIsCustomerOn(t *testing.T) {
 	sp := newSourcePipeline(t, []string{"summarize"}, nil)
 
-	pr, err := sp.p.runOneProject(context.Background(), "group/public", policy.SourceDiscovered)
+	pr, err := sp.p.runOneProject(context.Background(), "group/public")
 	if err != nil {
 		t.Fatalf("runOneProject: %v", err)
 	}
@@ -209,7 +207,7 @@ func TestRunOneProject_DiscoveredWithOptInIsCustomerOn(t *testing.T) {
 func TestRunOneProject_ExplicitNoTopicsIsTeamOnly(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
 
-	pr, err := sp.p.runOneProject(context.Background(), "group/public", policy.SourceExplicit)
+	pr, err := sp.p.runOneProject(context.Background(), "group/public")
 	if err != nil {
 		t.Fatalf("runOneProject: %v", err)
 	}
@@ -219,17 +217,15 @@ func TestRunOneProject_ExplicitNoTopicsIsTeamOnly(t *testing.T) {
 }
 
 // TestRunOneProject_TopicTeamOnlyOverridesOptIn: `summarize-team-only`
-// wins over `summarize`, for discovered and explicit alike.
+// wins over `summarize`.
 func TestRunOneProject_TopicTeamOnlyOverridesOptIn(t *testing.T) {
-	for _, src := range []policy.ProjectSource{policy.SourceDiscovered, policy.SourceExplicit} {
-		sp := newSourcePipeline(t, []string{"summarize", "summarize-team-only"}, nil)
-		pr, err := sp.p.runOneProject(context.Background(), "group/public", src)
-		if err != nil {
-			t.Fatalf("runOneProject: %v", err)
-		}
-		if !pr.TeamOnly {
-			t.Errorf("source=%v: summarize-team-only must win over summarize", src)
-		}
+	sp := newSourcePipeline(t, []string{"summarize", "summarize-team-only"}, nil)
+	pr, err := sp.p.runOneProject(context.Background(), "group/public")
+	if err != nil {
+		t.Fatalf("runOneProject: %v", err)
+	}
+	if !pr.TeamOnly {
+		t.Error("summarize-team-only must win over summarize")
 	}
 }
 

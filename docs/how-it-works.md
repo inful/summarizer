@@ -84,8 +84,7 @@ the data flow and the components.
    ┌───────────────────────────────────────────────────────────────┐
    │  internal/publisher                                           │
    │  Local: os.WriteFile(tmp) → os.Rename(target)                 │
-   │         (overwrite-in-place; week buckets make refuse-first   │
-   │          unusable)                                            │
+   │         overwrite-in-place, one <period>/ subdir per week   │
    │  GitLab:                                                    │
    │    1. ensure branch <prefix>/<YYYY-Www>  (GET first, POST 404)│
    │    2. GET file → existing UID + last_commit_id               │

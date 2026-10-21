@@ -226,6 +226,7 @@ The diff text is always wrapped in `<data>` markers (same OWASP LLM01:2025 mitig
 
 | Cap | Value | Source |
 |---|---|---|
+| Projects per run | `--max-projects`, default 50 | `internal/run/pipeline.go` `DefaultMaxProjects` |
 | Events per project in the prompt | `--max-events`, default 200 | `internal/prompt/prompt.go` `capEvents` |
 | Per-file diff (decode-time, memory bound) | 600 runes | `internal/gitlab/client.go` `maxDiffRunesPerFile` |
 | Per-MR diff total (prompt-time) | 4000 runes | `internal/prompt/prompt.go` `diffMaxPerMR` |
@@ -310,22 +311,29 @@ summarizer run --discover-group group/team-a \
 summarizer run --discover-group group/team-a --since 7d
 ```
 
-Output files are written under `--output-dir` (or `output_dir` from config):
+Output files are written under `--output-dir` (or `output_dir` from config),
+one subdirectory per ISO week — the same layout the GitLab publisher
+uses in the target repo:
 
 ```
 # Single-project run:
-<project>--<duration>d--customer.md
-<project>--<duration>d--team.md
+<output_dir>/2026-W43/<project>--<duration>d--customer.md
+<output_dir>/2026-W43/<project>--<duration>d--team.md
 
 # Multi-project run (additionally):
-combined--rollup--<duration>d--customer.md
-combined--rollup--<duration>d--team.md
+<output_dir>/2026-W43/combined--rollup--<duration>d--customer.md
+<output_dir>/2026-W43/combined--rollup--<duration>d--team.md
 
 # With active epics (additionally):
-combined--epics-rollup--<duration>d--customer.md
-combined--epics-rollup--<duration>d--team.md
-combined--epics-<customer-slug>--<duration>d--customer.md
+<output_dir>/2026-W43/combined--epics-rollup--<duration>d--customer.md
+<output_dir>/2026-W43/combined--epics-rollup--<duration>d--team.md
+<output_dir>/2026-W43/combined--epics-<customer-slug>--<duration>d--customer.md
 ```
+
+Runs inside the same week overwrite in place (that is the point of
+weekly buckets); each new week gets its own directory, so no week is
+lost. There is no refuse-first — `--force` is accepted and does
+nothing.
 
 ## Monthly rollups
 
