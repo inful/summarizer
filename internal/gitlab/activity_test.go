@@ -14,10 +14,12 @@ import (
 // returns 1 item (active) or [] (inactive) so the function's `len > 0`
 // check does the rest.
 type activityServer struct {
-	mrByPath    map[string]bool // project path → MR active?
-	issueByPath map[string]bool // project path → issue active?
-	mrErr       int             // status to return for the MR endpoint (0 = ok)
-	issueErr    int             // status to return for the issue endpoint
+	mrByPath     map[string]bool // project path → MR active?
+	issueByPath  map[string]bool // project path → issue active?
+	commitByPath map[string]bool // project path → commit active?
+	mrErr        int             // status to return for the MR endpoint (0 = ok)
+	issueErr     int             // status to return for the issue endpoint
+	commitProbes int             // counts how often the commit probe is reached
 }
 
 func (a *activityServer) handler() http.Handler {
@@ -25,9 +27,9 @@ func (a *activityServer) handler() http.Handler {
 	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
 		// r.URL.Path is URL-decoded, so project paths with slashes
 		// come through naturally. The kind ("merge_requests" /
-		// "issues") is the last URL segment, so we can match the
-		// suffix without having to know how many slashes the project
-		// path has.
+		// "issues" / "repository/commits") is the last URL segment,
+		// so we can match the suffix without having to know how many
+		// slashes the project path has.
 		path := strings.TrimPrefix(r.URL.Path, "/api/v4/projects/")
 		var projPath, kind string
 		switch {
@@ -35,6 +37,8 @@ func (a *activityServer) handler() http.Handler {
 			projPath, kind = strings.TrimSuffix(path, "/merge_requests"), "merge_requests"
 		case strings.HasSuffix(path, "/issues"):
 			projPath, kind = strings.TrimSuffix(path, "/issues"), "issues"
+		case strings.HasSuffix(path, "/repository/commits"):
+			projPath, kind = strings.TrimSuffix(path, "/repository/commits"), "repository/commits"
 		default:
 			http.Error(w, "unhandled subpath "+path, http.StatusNotFound)
 			return
@@ -54,6 +58,9 @@ func (a *activityServer) handler() http.Handler {
 		case "issues":
 			activeMap = a.issueByPath
 			forcedStatus = a.issueErr
+		case "repository/commits":
+			activeMap = a.commitByPath
+			a.commitProbes++
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if forcedStatus != 0 {
@@ -105,6 +112,51 @@ func TestProbeProjectActivity_IssuesCount(t *testing.T) {
 	}
 	if !active {
 		t.Error("project with only issues in window should be active — that's the whole point of the widening")
+	}
+}
+
+// TestProbeProjectActivity_CommitsCount: a repo maintained by direct
+// pushes to the default branch produces neither an MR nor an issue.
+// Without the commit probe the whole week's work on such a repo is
+// invisible, and under activity-default discovery those are exactly
+// the repos most likely to be discovered.
+func TestProbeProjectActivity_CommitsCount(t *testing.T) {
+	srv := httptest.NewServer((&activityServer{
+		mrByPath:     map[string]bool{"g/p": false},
+		issueByPath:  map[string]bool{"g/p": false},
+		commitByPath: map[string]bool{"g/p": true},
+	}).handler())
+	defer srv.Close()
+	c := New(srv.URL, "glpat-test", 5*time.Second)
+
+	active, err := c.ProbeProjectActivity(context.Background(), "g/p", time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !active {
+		t.Error("project with only commits in window should be active")
+	}
+}
+
+// TestProbeProjectActivity_CommitProbeIsLast: the MR probe answers most
+// of the time, so the commit probe must not run once an MR hit lands.
+// Pins the short-circuit order so a future reordering doesn't quietly
+// add a round-trip to every active project.
+func TestProbeProjectActivity_CommitProbeIsLast(t *testing.T) {
+	as := &activityServer{
+		mrByPath:     map[string]bool{"g/p": true},
+		issueByPath:  map[string]bool{"g/p": false},
+		commitByPath: map[string]bool{"g/p": true},
+	}
+	srv := httptest.NewServer(as.handler())
+	defer srv.Close()
+	c := New(srv.URL, "glpat-test", 5*time.Second)
+
+	if _, err := c.ProbeProjectActivity(context.Background(), "g/p", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if as.commitProbes != 0 {
+		t.Errorf("commit probe ran %d times despite an MR hit; want 0", as.commitProbes)
 	}
 }
 

@@ -327,11 +327,11 @@ func (c *Client) FetchProjectsByTopic(ctx context.Context, topics []string) ([]P
 }
 
 // ProbeProjectActivity asks one cheap question per project: did this
-// project have any MR or any issue updated in [since, now]? Returns
-// (true, nil) when either endpoint returns at least one row, (false,
-// nil) when both come back empty.
+// project have any MR, issue, or commit updated in [since, now]?
+// Returns (true, nil) as soon as any endpoint returns a row,
+// (false, nil) when all three come back empty.
 //
-// 404 on either endpoint (project moved, renamed, never existed, or
+// 404 on any endpoint (project moved, renamed, never existed, or
 // just confidential) soft-degrades to (false, nil) so the discovery
 // loop skips it without surfacing transport noise. 403, 429 and 5xx
 // are real problems and hard-error: a 403 is a token or permissions
@@ -339,25 +339,35 @@ func (c *Client) FetchProjectsByTopic(ctx context.Context, topics []string) ([]P
 // infrastructure. Soft-degrading any of these would silently hide a
 // project from the report.
 //
-// Why MRs AND issues:
-//   - MRs are gitlab's "engineering work landed" signal.
+// Why all three, in this order:
+//   - MRs are gitlab's "engineering work landed" signal, and they
+//     answer most of the time.
 //   - Issues are the "this team is alive" signal: a triage week
 //     produces no MRs but a project with five closed issues is not
 //     quiet.
-//   - Cost is one extra /issues?per_page=1 call per discovered
-//     project. The MR probe runs first because it answers most of
-//     the time; the issue probe is skipped on the first hit.
+//   - Commits are the "someone worked here without opening anything"
+//     signal. A repo maintained by direct pushes to the default
+//     branch produces neither an MR nor an issue, so without this
+//     probe the whole week's work on such a repo is invisible —
+//     exactly the repos that the activity-default discovery is most
+//     likely to surface.
+//
+// Cost is at most two extra /<kind>?per_page=1 calls per discovered
+// project, and only for projects already quiet on everything probed
+// before them.
 //
 // (Inlined HTTP loop rather than reusing doJSON: we need a 404
 // soft-degrade path, and doJSON's 4xx switch returns a hard error
 // before the decode callback runs. A future refactor could add a
 // soft-fail mode to doJSON itself, but the surface area is small.)
 func (c *Client) ProbeProjectActivity(ctx context.Context, projectPath string, since time.Time) (bool, error) {
-	active, err := c.probeHasAny(ctx, projectPath, "merge_requests", since)
-	if err != nil || active {
-		return active, err
+	for _, kind := range []string{"merge_requests", "issues", "repository/commits"} {
+		active, err := c.probeHasAny(ctx, projectPath, kind, since)
+		if err != nil || active {
+			return active, err
+		}
 	}
-	return c.probeHasAny(ctx, projectPath, "issues", since)
+	return false, nil
 }
 
 // probeHasAny is one side of the activity gate: did the project have

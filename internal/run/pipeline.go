@@ -970,7 +970,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		}
 		if !active {
 			excluded++
-			fmt.Fprintf(os.Stderr, "  excluded (no MRs in window): %s%s last_activity_at=%s\n",
+			fmt.Fprintf(os.Stderr, "  excluded (no MRs, issues or commits in window): %s%s last_activity_at=%s\n",
 				proj.Path, tnoTag, proj.LastActivityAt.Format(time.RFC3339))
 			return nil
 		}
