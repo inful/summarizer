@@ -142,6 +142,13 @@ type Epic struct {
 	UpdatedAt    time.Time  `json:"updated_at"`
 	ClosedAt     *time.Time `json:"closed_at"` // nullable; RFC3339 datetime
 
+	// Labels are the epic's own group labels, returned by
+	// GET /groups/:id/epics as a plain string array (an array of
+	// objects only when with_labels_details=true, which we don't ask
+	// for). summarizer reads the `org::CUSTOMER_CODE` one to attribute
+	// the epic to a customer — see policy.CustomerCode.
+	Labels []string `json:"labels"`
+
 	// GroupID is captured from the surrounding namespace context for
 	// use by FetchEpicIssues (which is a group-scoped endpoint). The
 	// /epics list endpoint doesn't return it explicitly; the caller

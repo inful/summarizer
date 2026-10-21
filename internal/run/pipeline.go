@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -349,9 +350,19 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string, source pol
 // customer rollup at all — publishing an empty one would put a file on
 // the branch that says nothing).
 type audienceInputs struct {
-	name        string // prompt/label suffix: "rollup" / "epics-rollup"
-	titlePrefix string // frontmatter title prefix
-	render      func(prompt.Audience) (system, user string, err error)
+	name  string // prompt/label suffix: "rollup" / "epics-rollup"
+	parts func(prompt.Audience) ([]rollupPart, error)
+}
+
+// rollupPart is one published file: a filename segment, a frontmatter
+// title prefix, and the rendered prompt. A rollup that splits by
+// customer returns one part per customer; one that doesn't returns a
+// single part.
+type rollupPart struct {
+	name   string // filename kind segment, e.g. "epics-rollup", "epics-acme"
+	title  string // frontmatter title prefix
+	system string
+	user   string
 }
 
 // eligibleProjects applies the D5 audience filter: the customer rollups
@@ -385,39 +396,42 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 		if len(eligibleProjects(aud, projects)) == 0 {
 			continue
 		}
-		system, user, err := spec.render(aud)
+		parts, err := spec.parts(aud)
 		if err != nil {
 			if errors.Is(err, errSkipAudience) {
 				continue
 			}
 			return files, err
 		}
-		if err := p.checkPrompt(ctx, spec.name, aud, system+"\n\n"+user); err != nil {
-			return files, err
+		for _, part := range parts {
+			label := spec.name + "/" + part.name
+			if err := p.checkPrompt(ctx, label, aud, part.system+"\n\n"+part.user); err != nil {
+				return files, err
+			}
+			resp, err := p.LLM.Complete(ctx, llm.Request{
+				System:    part.system,
+				User:      part.user,
+				Model:     p.Opts.Model,
+				MaxTokens: 2048,
+			})
+			if err != nil {
+				return files, fmt.Errorf("llm %s %s: %w", label, aud, err)
+			}
+			res, err := p.Publisher.Publish(publisher.Request{
+				Name:    rollupFilename(p.Opts.Since, aud, part.name),
+				Body:    []byte(resp.Text),
+				Force:   p.Opts.forceOverwrite(),
+				Kind:    publisher.KindRollup,
+				Period:  periodSlug(p.Opts.PeriodMode),
+				Title:   part.title + " " + string(aud),
+				Project: "",
+				Public:  aud == prompt.AudienceCustomer,
+			})
+			if err != nil {
+				return files, fmt.Errorf("write %s %s: %w", label, aud, err)
+			}
+			files = append(files, res.Ref)
 		}
-		resp, err := p.LLM.Complete(ctx, llm.Request{
-			System:    system,
-			User:      user,
-			Model:     p.Opts.Model,
-			MaxTokens: 2048,
-		})
-		if err != nil {
-			return files, fmt.Errorf("llm %s %s: %w", spec.name, aud, err)
-		}
-		res, err := p.Publisher.Publish(publisher.Request{
-			Name:    rollupFilename(p.Opts.Since, aud, spec.name),
-			Body:    []byte(resp.Text),
-			Force:   p.Opts.forceOverwrite(),
-			Kind:    publisher.KindRollup,
-			Period:  periodSlug(p.Opts.PeriodMode),
-			Title:   spec.titlePrefix + " " + string(aud),
-			Project: "",
-			Public:  aud == prompt.AudienceCustomer,
-		})
-		if err != nil {
-			return files, fmt.Errorf("write %s %s: %w", spec.name, aud, err)
-		}
-		files = append(files, res.Ref)
 	}
 	return files, nil
 }
@@ -428,9 +442,8 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 // model to surface cross-project themes.
 func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
 	return p.runAudienceRollups(ctx, projects, audienceInputs{
-		name:        "rollup",
-		titlePrefix: "rollup",
-		render: func(aud prompt.Audience) (string, string, error) {
+		name: "rollup",
+		parts: func(aud prompt.Audience) ([]rollupPart, error) {
 			// Pick the right per-audience text per project. Per-project
 			// results carry both texts; we feed the rollup the same
 			// audience the per-project report was written for.
@@ -445,9 +458,9 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 			}
 			system, user, err := prompt.RenderRollup(aud, p.Opts.Since, reports)
 			if err != nil {
-				return "", "", fmt.Errorf("render rollup %s: %w", aud, err)
+				return nil, fmt.Errorf("render rollup %s: %w", aud, err)
 			}
-			return system, user, nil
+			return []rollupPart{{name: "rollup", title: "rollup", system: system, user: user}}, nil
 		},
 	})
 }
@@ -468,6 +481,103 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 // trim — only epic-level metadata (title, state, web URL, event
 // count), NOT per-event detail, so the model's job is cross-
 // project theme synthesis, not narration.
+// epicRollupPart is one project-scope group of epics destined for a
+// single file: per-customer files carry CustomerCode, the combined file
+// carries "".
+type epicRollupPart struct {
+	Customer string
+	Entries  []prompt.EpicRollupEntry
+}
+
+// bucketEpicsByCustomer groups a run's active epics for the customer
+// audience: one bucket per `org::CODE` epic label, plus one bucket for
+// the epics nobody has labelled yet.
+//
+// The team audience is not split — internal readers want the whole
+// picture, so its single combined part is built by bucketAllEpics.
+//
+// Buckets come back sorted by customer code so two runs over the same
+// window produce the same file order on the branch. The unlabelled
+// bucket sorts last: it is the backlog, not a customer.
+func bucketEpicsByCustomer(projects []ProjectResult, window time.Duration) []epicRollupPart {
+	byCode := make(map[string]*epicRollupPart)
+	// Touch the combined bucket first so it always exists and always
+	// appears last in the sorted output below.
+	byCode[""] = &epicRollupPart{}
+
+	for _, pr := range projects {
+		if len(pr.ActiveEpics) == 0 {
+			continue
+		}
+		// Hoist the body concatenation out of the per-epic loop: it
+		// used to rebuild two full report bodies per epic.
+		body := pr.CustomerText + pr.TeamText
+		perCode := make(map[string][]prompt.EpicSummary)
+		for _, e := range pr.ActiveEpics {
+			code, _ := policy.CustomerCode(e.Labels)
+			perCode[code] = append(perCode[code], prompt.EpicSummary{
+				Epic:       e,
+				EventCount: countEpicEvents(body, e),
+			})
+		}
+		for code, summaries := range perCode {
+			b := byCode[code]
+			if b == nil {
+				b = &epicRollupPart{Customer: code}
+				byCode[code] = b
+			}
+			b.Entries = append(b.Entries, prompt.EpicRollupEntry{Project: pr.Project, Epics: summaries})
+		}
+	}
+
+	out := make([]epicRollupPart, 0, len(byCode))
+	for _, code := range sortedCustomerCodes(byCode) {
+		b := byCode[code]
+		if len(b.Entries) == 0 {
+			continue
+		}
+		out = append(out, *b)
+	}
+	return out
+}
+
+// sortedCustomerCodes returns the bucket keys with the unlabelled
+// bucket last and the customer codes in lexical order.
+func sortedCustomerCodes(byCode map[string]*epicRollupPart) []string {
+	keys := make([]string, 0, len(byCode))
+	for k := range byCode {
+		if k != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return append(keys, "")
+}
+
+// bucketAllEpics puts every active epic in one part — the team
+// audience's view, and the fallback when per-customer splitting is off.
+func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
+	var entries []prompt.EpicRollupEntry
+	for _, pr := range projects {
+		if len(pr.ActiveEpics) == 0 {
+			continue
+		}
+		body := pr.CustomerText + pr.TeamText
+		summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
+		for _, e := range pr.ActiveEpics {
+			summaries = append(summaries, prompt.EpicSummary{
+				Epic:       e,
+				EventCount: countEpicEvents(body, e),
+			})
+		}
+		entries = append(entries, prompt.EpicRollupEntry{Project: pr.Project, Epics: summaries})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	return []epicRollupPart{{Entries: entries}}
+}
+
 func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
 	// Pick a representative project name for the report header (the
 	// rollup spans N projects; we surface a single project path in the
@@ -477,40 +587,33 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 		repProject = projects[0].Project
 	}
 	return p.runAudienceRollups(ctx, projects, audienceInputs{
-		name:        "epics-rollup",
-		titlePrefix: "epics rollup",
-		render: func(aud prompt.Audience) (string, string, error) {
-			entries := make([]prompt.EpicRollupEntry, 0, len(projects))
-			for _, pr := range eligibleProjects(aud, projects) {
-				if len(pr.ActiveEpics) == 0 {
-					continue
-				}
-				// Hoist the body concatenation out of the per-epic
-				// loop: it used to rebuild two full report bodies per
-				// epic.
-				body := pr.CustomerText + pr.TeamText
-				summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
-				for _, e := range pr.ActiveEpics {
-					summaries = append(summaries, prompt.EpicSummary{
-						Epic:       e,
-						EventCount: countEpicEvents(body, e),
-					})
-				}
-				entries = append(entries, prompt.EpicRollupEntry{
-					Project: pr.Project,
-					Epics:   summaries,
-				})
+		name: "epics-rollup",
+		parts: func(aud prompt.Audience) ([]rollupPart, error) {
+			// The customer audience splits per customer; the team
+			// audience stays whole.
+			buckets := bucketAllEpics(eligibleProjects(aud, projects))
+			if aud == prompt.AudienceCustomer {
+				buckets = bucketEpicsByCustomer(eligibleProjects(aud, projects), p.Opts.Since)
 			}
-			if len(entries) == 0 {
-				// No epic to talk about for this audience — the caller
+			if len(buckets) == 0 {
+				// Nothing to talk about for this audience — the caller
 				// skips publishing rather than writing an empty report.
-				return "", "", errSkipAudience
+				return nil, errSkipAudience
 			}
-			system, user, err := prompt.RenderEpicRollup(aud, repProject, p.Opts.Since, entries)
-			if err != nil {
-				return "", "", fmt.Errorf("render epics rollup %s: %w", aud, err)
+			parts := make([]rollupPart, 0, len(buckets))
+			for _, b := range buckets {
+				system, user, err := prompt.RenderEpicRollup(aud, repProject, p.Opts.Since, b.Entries)
+				if err != nil {
+					return nil, fmt.Errorf("render epics rollup %s: %w", aud, err)
+				}
+				name, title := "epics-rollup", "epics rollup"
+				if b.Customer != "" {
+					name = "epics-" + slugCustomer(b.Customer)
+					title = "epics rollup for " + b.Customer
+				}
+				parts = append(parts, rollupPart{name: name, title: title, system: system, user: user})
 			}
-			return system, user, nil
+			return parts, nil
 		},
 	})
 }
@@ -934,4 +1037,29 @@ func sanitize(s string) string {
 		return "report"
 	}
 	return string(out)
+}
+
+// slugCustomer renders a customer code as a filename-safe segment:
+// lowercased, alphanumerics kept, every other run collapsed to a single
+// "-". "Acme Corp" → "acme-corp", "  ACME--EU  " → "acme-eu".
+//
+// Two codes that slug to the same string ("Acme Corp" and "acme-corp")
+// would collide on the branch. GitLab labels are case-sensitive and an
+// org::code is expected to be one canonical token, so this is a
+// display convenience rather than an identity.
+func slugCustomer(code string) string {
+	var b strings.Builder
+	prevDash := true // leading separators are dropped
+	for _, r := range strings.ToLower(code) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			prevDash = false
+			continue
+		}
+		if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
 }
