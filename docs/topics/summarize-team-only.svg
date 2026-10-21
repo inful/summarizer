@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  summarize-team-only topic avatar
+  ===============================
+  Pair of docs/topics/summarize.svg. Same document motif, same palette,
+  same proportions. The only difference is a small padlock badge in
+  the bottom-right corner: reports go to the team audience only, never
+  the customer rollup (D5 audience policy).
+
+  Upload to the project's topic admin just like summarize.svg.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="summarize-team-only topic avatar">
+  <title>summarize-team-only topic avatar</title>
+  <!-- background panel: light blue, rounded square -->
+  <rect width="64" height="64" rx="12" fill="#dbeafe"/>
+  <!-- document body with folded top-right corner -->
+  <path d="M16 10 H42 L50 18 V54 H16 Z" fill="#ffffff" stroke="#2563eb" stroke-width="3" stroke-linejoin="round"/>
+  <!-- folded corner detail -->
+  <path d="M42 10 V18 H50" fill="none" stroke="#2563eb" stroke-width="3" stroke-linejoin="round"/>
+  <!-- summary bar: top, bold, the focal element -->
+  <rect x="22" y="22" width="20" height="5" rx="1" fill="#2563eb"/>
+  <!-- data lines below: the source being summarised -->
+  <line x1="22" y1="34" x2="44" y2="34" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="22" y1="42" x2="40" y2="42" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="22" y1="50" x2="36" y2="50" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- padlock badge: bottom-right, signals "internal / team only".
+       Circle background matches the panel so the lock reads as a
+       pinned-on element, not a feature. Drawn in slate so the lock
+       reads as metadata, not primary content. -->
+  <circle cx="44" cy="48" r="9" fill="#ffffff" stroke="#1f2937" stroke-width="1.5"/>
+  <path d="M41 47 V44.5 a3 3 0 0 1 6 0 V47" fill="none" stroke="#1f2937" stroke-width="1.5" stroke-linecap="round"/>
+  <rect x="40.5" y="46.5" width="7" height="6" rx="1" fill="#1f2937"/>
+</svg>
