@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -285,7 +286,7 @@ func (c *Client) FetchActiveProjects(ctx context.Context, since time.Time) ([]Pr
 	q.Set("last_activity_after", since.UTC().Format(time.RFC3339))
 	q.Set("order_by", "last_activity_at")
 	q.Set("per_page", "100")
-	projs, truncated, err := c.pagedProjects(ctx, "/projects", q, maxActiveScanPages)
+	projs, truncated, err := getAll[ProjectSummary](ctx, c, "/projects", q, maxActiveScanPages)
 	if err != nil {
 		return nil, fmt.Errorf("discover active: %w", err)
 	}
@@ -294,25 +295,6 @@ func (c *Client) FetchActiveProjects(ctx context.Context, since time.Time) ([]Pr
 			"more active projects exist and were not examined\n", maxActiveScanPages, len(projs))
 	}
 	return projs, nil
-}
-
-// pagedProjects is getAll with a page ceiling. Returns what it found
-// plus whether there was more, so the caller can say so rather than
-// silently presenting a truncated scan as complete.
-func (c *Client) pagedProjects(ctx context.Context, path string, q url.Values, maxPages int) ([]ProjectSummary, bool, error) {
-	var out []ProjectSummary
-	for page := 1; page <= maxPages; page++ {
-		q.Set("page", strconv.Itoa(page))
-		batch, next, err := getPage[ProjectSummary](ctx, c, path, q)
-		if err != nil {
-			return out, false, err
-		}
-		out = append(out, batch...)
-		if !next || len(batch) == 0 {
-			return out, false, nil
-		}
-	}
-	return out, true, nil
 }
 
 // maxActiveScanPages bounds how far FetchActiveProjects will page.
@@ -433,7 +415,7 @@ func (c *Client) probeHasAny(ctx context.Context, projectPath, kind string, sinc
 	case resp.StatusCode >= 500:
 		return false, fmt.Errorf("gitlab %s: %d (probe)", http.MethodGet, resp.StatusCode)
 	case resp.StatusCode >= 400:
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		return false, fmt.Errorf("gitlab %s: %d %s",
 			http.MethodGet, resp.StatusCode, truncate(string(body), 200))
 	}
@@ -458,7 +440,9 @@ func (c *Client) FetchMRs(ctx context.Context, projectPath string, since time.Ti
 	q.Set("updated_after", since.UTC().Format(time.RFC3339))
 	q.Set("scope", "all")
 	q.Set("per_page", "100")
-	return getAll[MergeRequest](ctx, c, fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)), q)
+	out, _, err := getAll[MergeRequest](ctx, c,
+		fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)), q, 0)
+	return out, err
 }
 
 // FetchEpics returns epics for a group. Epics are a Premium/Ultimate
@@ -508,7 +492,7 @@ func (c *Client) pageEpics(ctx context.Context, path string, page int) ([]Epic, 
 		if err != nil {
 			return nil, false, err
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
@@ -541,61 +525,15 @@ func (c *Client) pageEpics(ctx context.Context, path string, page int) ([]Epic, 
 // to know which issues each contains. Same graceful-degrade contract
 // as FetchEpics: 403/404 → (nil, nil); 401 → real error.
 func (c *Client) FetchEpicIssues(ctx context.Context, groupPath string, epicIID int) ([]Issue, error) {
-	path := fmt.Sprintf("/groups/%s/epics/%d/issues", url.PathEscape(groupPath), epicIID)
 	q := url.Values{}
 	q.Set("per_page", "100")
-	var out []Issue
-	page := 1
-	for {
-		q.Set("page", strconv.Itoa(page))
-		var batch []Issue
-		var next bool
-		u := c.baseURL + path + "?" + q.Encode()
-		var attempt int
-		var decodeErr error
-		for {
-			attempt++
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-			if err != nil {
-				return nil, err
-			}
-			req.Header.Set("PRIVATE-TOKEN", c.token)
-			req.Header.Set("Accept", "application/json")
-			resp, err := c.http.Do(req)
-			if err != nil {
-				return nil, err
-			}
-			body, _ := io.ReadAll(resp.Body)
-			_ = resp.Body.Close()
-			switch {
-			case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
-				if err := sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
-					return nil, err
-				}
-				continue
-			case resp.StatusCode >= 500 && attempt <= maxRetries:
-				if err := sleep(ctx, backoff(attempt)); err != nil {
-					return nil, err
-				}
-				continue
-			case resp.StatusCode == http.StatusForbidden, resp.StatusCode == http.StatusNotFound:
-				return nil, nil
-			case resp.StatusCode >= 400:
-				return nil, fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
-			}
-			next = resp.Header.Get("X-Next-Page") != ""
-			decodeErr = json.Unmarshal(body, &batch)
-			break
-		}
-		if decodeErr != nil {
-			return nil, decodeErr
-		}
-		out = append(out, batch...)
-		if !next || len(batch) == 0 {
-			return out, nil
-		}
-		page++
-	}
+	// 403/404 soft-degrade: an epic the token cannot see, or one on a
+	// plan without the feature, yields no issues rather than an error,
+	// so the report simply shows an epic with no child tasks.
+	out, _, err := getAll[Issue](ctx, c,
+		fmt.Sprintf("/groups/%s/epics/%d/issues", url.PathEscape(groupPath), epicIID),
+		q, 0, http.StatusForbidden, http.StatusNotFound)
+	return out, err
 }
 
 // FetchProjectNamespace returns the parent namespace (group or user)
@@ -635,7 +573,7 @@ func (c *Client) FetchProjectSummary(ctx context.Context, projectPath string) (*
 		if err != nil {
 			return nil, err
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusNotFound:
@@ -745,7 +683,7 @@ func (c *Client) hasRepoRootFile(ctx context.Context, projectPath, name string) 
 		if err != nil {
 			return false, err
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusNotFound:
@@ -783,7 +721,9 @@ func (c *Client) FetchIssues(ctx context.Context, projectPath string, since time
 	q.Set("updated_after", since.UTC().Format(time.RFC3339))
 	q.Set("scope", "all")
 	q.Set("per_page", "100")
-	return getAll[Issue](ctx, c, fmt.Sprintf("/projects/%s/issues", url.PathEscape(projectPath)), q)
+	out, _, err := getAll[Issue](ctx, c,
+		fmt.Sprintf("/projects/%s/issues", url.PathEscape(projectPath)), q, 0)
+	return out, err
 }
 
 // FetchCommits returns commits on the default branch authored within [since, now].
@@ -793,7 +733,9 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 	q := url.Values{}
 	q.Set("since", since.UTC().Format(time.RFC3339))
 	q.Set("per_page", "100")
-	return getAll[Commit](ctx, c, fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q)
+	out, _, err := getAll[Commit](ctx, c,
+		fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q, 0)
+	return out, err
 }
 
 // cappedDiff is a diff body that truncates during JSON decoding rather
@@ -951,32 +893,52 @@ const maxRetries = 3
 // Matches mreview's default.
 const retryAfterCapDefault = 60 * time.Second
 
+// maxResponseBytes caps how much of a response body is read into memory.
+// Every read below goes through io.LimitReader rather than io.ReadAll:
+// an unbounded read is a remote-triggered OOM, and /merge_requests/:iid/
+// changes is the one that gets large — a single merge request that
+// committed a generated lockfile or a vendored binary returns tens of
+// megabytes, and fillMRDetail runs four of those concurrently. The
+// truncated diff still parses; a diff body that is genuinely larger
+// than this is not something a weekly summary needs anyway.
+const maxResponseBytes = 16 << 20
+
 // maxBackoff caps the exponential backoff between retries. Also prevents
 // `1<<n` from overflowing at large attempt counts.
 const maxBackoff = 30 * time.Second
 
-func getAll[T any](ctx context.Context, c *Client, path string, q url.Values) ([]T, error) {
+// getAll walks offset pagination until the response is empty. maxPages
+// bounds the walk: 0 means unlimited, which is right for the per-project
+// endpoints where the result IS the answer, and wrong for the
+// instance-wide scan where only the first few pages matter. Reports
+// whether it stopped early so the caller can say so rather than
+// presenting a truncated scan as complete.
+func getAll[T any](ctx context.Context, c *Client, path string, q url.Values, maxPages int, soft ...int) ([]T, bool, error) {
 	var out []T
-	page := 1
-	for {
+	for page := 1; maxPages == 0 || page <= maxPages; page++ {
 		q.Set("page", strconv.Itoa(page))
-		batch, next, err := getPage[T](ctx, c, path, q)
+		batch, next, err := getPage[T](ctx, c, path, q, soft...)
 		if err != nil {
-			return out, err
+			return out, false, err
 		}
 		out = append(out, batch...)
 		if !next || len(batch) == 0 {
-			return out, nil
+			return out, false, nil
 		}
-		page++
 	}
+	return out, true, nil
 }
 
 // doJSON issues one GET against baseURL+path, with the same retry/backoff
 // policy as getPage, then hands the response + body to decode. The decode
 // callback also receives the response so callers can read headers (X-Next-Page
 // for pagination, Link for relative URLs, etc.).
-func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode func(resp *http.Response, body []byte) error) error {
+// soft lists statuses that should decode as an empty result rather than
+// an error. GitLab answers 403 and 404 for endpoints a plan or a token
+// does not reach (epics on Free tier, a project the PAT cannot see) —
+// "not available" rather than "something broke", so a run continues
+// without the section instead of aborting.
+func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode func(resp *http.Response, body []byte) error, soft ...int) error {
 	u := c.baseURL + path
 	if q != nil {
 		u += "?" + q.Encode()
@@ -995,7 +957,7 @@ func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode f
 		if err != nil {
 			return err
 		}
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 
 		switch {
@@ -1010,6 +972,8 @@ func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode f
 				return err
 			}
 			continue
+		case slices.Contains(soft, resp.StatusCode):
+			return nil
 		case resp.StatusCode >= 400:
 			return fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
 		}
@@ -1029,13 +993,13 @@ func (c *Client) getJSON(ctx context.Context, path string, q url.Values, into an
 
 // getPage issues one GET, applies 429-aware backoff, returns the page,
 // whether more pages remain (X-Next-Page header), and any error.
-func getPage[T any](ctx context.Context, c *Client, path string, q url.Values) ([]T, bool, error) {
+func getPage[T any](ctx context.Context, c *Client, path string, q url.Values, soft ...int) ([]T, bool, error) {
 	var batch []T
 	var next bool
 	err := c.doJSON(ctx, path, q, func(resp *http.Response, body []byte) error {
 		next = resp.Header.Get("X-Next-Page") != ""
 		return json.Unmarshal(body, &batch)
-	})
+	}, soft...)
 	if err != nil {
 		return nil, false, err
 	}

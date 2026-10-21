@@ -21,3 +21,29 @@ func TestNormalizeBaseURL(t *testing.T) {
 		}
 	}
 }
+
+// TestIsOpenAIHost: the guard that decides "is a key mandatory" must
+// match every spelling normalizeBaseURL accepts. It used to compare
+// against one literal, so `openai_base_url: https://api.openai.com` —
+// a form the config comment says is supported — sent an unauthenticated
+// request to api.openai.com for an entire run instead of failing at
+// start-up.
+func TestIsOpenAIHost(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"https://api.openai.com/v1", true},
+		{"https://api.openai.com", true},
+		{"https://api.openai.com/v1/", true},
+		{"https://API.OpenAI.com/v1", true},
+		{"", true}, // the built-in default
+		{"http://localhost:11434/v1", false},
+		{"http://localhost:8000/v1", false},
+		{"https://openrouter.ai/api/v1", false},
+	} {
+		if got := IsOpenAIHost(tc.raw); got != tc.want {
+			t.Errorf("IsOpenAIHost(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}

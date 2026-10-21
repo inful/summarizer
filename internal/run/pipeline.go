@@ -30,7 +30,6 @@ type Options struct {
 	Since                time.Duration // window: now - Since < since
 	Provider             string        // "openai" or "anthropic" (overrides config)
 	Model                string        // overrides config
-	Force                bool          // overwrite existing reports
 	DryRun               bool          // fetch + print + exit; no LLM call, no file write
 	IncludeDiffs         bool          // --include-diffs: fetch per-MR diff bodies and feed them into the team prompt
 	DiscoveredGroups     []string      // --discover-group: each entry is a group path; the pipeline fetches the group's projects, probes each for activity, and includes the active ones in the run. Composes with Projects.
@@ -261,12 +260,6 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	if err != nil {
 		return res, fmt.Errorf("fetch mrs: %w", err)
 	}
-	// One /changes call per MR serves both needs. With --include-diffs
-	// the same response carries the diff bodies the team prompt wants;
-	// without it only the aggregate is used, but there is still no
-	// reason to make the call twice.
-	fillMRDetail(ctx, p.GitLab, project, mrs, p.Opts.IncludeDiffs)
-
 	issues, err := p.GitLab.FetchIssues(ctx, project, since)
 	if err != nil {
 		return res, fmt.Errorf("fetch issues: %w", err)
@@ -276,6 +269,42 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		return res, fmt.Errorf("fetch commits: %w", err)
 	}
 
+	// Dry-run exits HERE, before every PER-ITEM fetch. The three list
+	// calls above are one request each and their counts are exactly
+	// what the preview reports. Everything below costs one request per
+	// item: /changes per merge request, then /issues per epic. Paying
+	// those for output the run discards makes the preview slower than
+	// the run it previews, which is how you stop people previewing.
+	if p.Opts.DryRun {
+		total := len(mrs) + len(issues) + len(commits)
+		res.EventsFetched = total
+		res.EventsUsed = min(total, p.Cfg.MaxEvents)
+		fmt.Fprintf(os.Stderr, "summarizer dry-run: %s: %d events (%d mrs, %d issues, %d commits) in window [%s, %s]\n",
+			project, total, len(mrs), len(issues), len(commits),
+			since.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+		return res, nil
+	}
+
+	// One /changes call per MR serves both needs. With --include-diffs
+	// the same response carries the diff bodies the team prompt wants;
+	// without it only the aggregate is used, but there is still no
+	// reason to make the call twice.
+	//
+	// Bounded by MaxEvents BEFORE the fetch. capEvents (inside
+	// prompt.Render) keeps only the newest N events, so a merge request
+	// that will be dropped anyway was costing a full /changes request
+	// to be thrown away — and max_events is the flag an operator
+	// reaches for to bound exactly this.
+	if max := p.Cfg.MaxEvents; max > 0 && len(mrs) > max {
+		var dropped int
+		mrs, dropped = keepNewestMRs(mrs, max)
+		fmt.Fprintf(os.Stderr, "summarizer: %s: %d merge request(s) in window, fetching changes for the %d most recent (--max-events %d)\n",
+			project, max+dropped, max, max)
+	}
+	fillMRDetail(ctx, p.GitLab, project, mrs, p.Opts.IncludeDiffs)
+
+	// Assembled after the trim and the fill, not before: every event the
+	// prompt can show must carry the details that were just fetched.
 	all := make([]events.NormalizedEvent, 0, len(mrs)+len(issues)+len(commits))
 	for _, m := range mrs {
 		all = append(all, events.MR(m))
@@ -285,19 +314,6 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	}
 	for _, c := range commits {
 		all = append(all, events.Commit(c))
-	}
-
-	// Dry-run exits HERE, before the epic fetch. Epics are the most
-	// expensive thing this function does — one HTTP call per epic, per
-	// project — and a dry run throws the result away. Making the preview
-	// slower than the run it previews is how you stop people previewing.
-	if p.Opts.DryRun {
-		res.EventsFetched = len(all)
-		res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
-		fmt.Fprintf(os.Stderr, "summarizer dry-run: %s: %d events (%d mrs, %d issues, %d commits) in window [%s, %s]\n",
-			project, len(all), len(mrs), len(issues), len(commits),
-			since.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
-		return res, nil
 	}
 
 	epics, err := p.fetchProjectEpics(ctx, project, since, time.Now().UTC())
@@ -370,14 +386,14 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		name := filename(window, project, aud)
 		period := periodSlug()
 		res2, err := p.Publisher.Publish(ctx, publisher.Request{
-			Name:    name,
-			Body:    []byte(text),
-			Force:   true, // weekly buckets always overwrite in place
-			Kind:    publisher.KindPerProject,
-			Period:  period,
-			Title:   string(aud),
-			Project: project,
-			Public:  aud == prompt.AudienceCustomer,
+			Name:     name,
+			Body:     []byte(text),
+			Kind:     publisher.KindPerProject,
+			Period:   period,
+			Title:    string(aud),
+			Audience: string(aud),
+			Project:  project,
+			Public:   aud == prompt.AudienceCustomer,
 		})
 		if err != nil {
 			return res, fmt.Errorf("write %s: %w", aud, err)
@@ -461,14 +477,14 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				return files, fmt.Errorf("llm %s %s: %w", label, aud, err)
 			}
 			res, err := p.Publisher.Publish(ctx, publisher.Request{
-				Name:    rollupFilename(p.Opts.Since, aud, part.name),
-				Body:    []byte(resp.Text),
-				Force:   true, // weekly buckets always overwrite in place
-				Kind:    publisher.KindRollup,
-				Period:  periodSlug(),
-				Title:   part.title + " " + string(aud),
-				Project: "",
-				Public:  aud == prompt.AudienceCustomer,
+				Name:     rollupFilename(p.Opts.Since, aud, part.name),
+				Body:     []byte(resp.Text),
+				Kind:     publisher.KindRollup,
+				Period:   periodSlug(),
+				Title:    part.title + " " + string(aud),
+				Audience: string(aud),
+				Project:  "",
+				Public:   aud == prompt.AudienceCustomer,
 			})
 			if err != nil {
 				return files, fmt.Errorf("write %s %s: %w", label, aud, err)
@@ -535,6 +551,16 @@ type epicRollupPart struct {
 // bucketEpicsByCustomer groups a run's active epics for the customer
 // audience: one bucket per `org::CODE` epic label, plus one bucket for
 // the epics nobody has labelled yet.
+//
+// BUG TRAP for the per-epic issue list (not yet built). An epic reaches
+// MORE THAN ONE bucket, on purpose: policy.EpicCustomerCodes unions the
+// epic's own org:: labels with those of its child issues, so an epic
+// tagged org::ACME carrying a GLOBEX-tagged issue appears in both ACME's
+// file and GLOBEX's. That is safe today only because the templates
+// render epic-level fields alone. The moment a template starts printing
+// Epic.Issues, the issues arrive unfiltered and ACME's customer report
+// lists GLOBEX's tasks. Filter e.Issues to the bucket's code when
+// building EpicSummary, before that work lands.
 //
 // The team audience is not split — internal readers want the whole
 // picture, so its single combined part is built by bucketAllEpics.
@@ -850,6 +876,26 @@ const changeConcurrency = 4
 // markers and instruct the model to "infer what the MR does from the
 // diff — paraphrase, never paste code into the report", which treats the
 // diff as data, not instructions.
+// keepNewestMRs trims an over-long merge-request list to the n most
+// recently updated, returning the kept slice and how many were dropped.
+// Same ordering as prompt.capEvents — newest first, IID as the
+// tiebreak — so the trim and the cap agree on what "the newest n"
+// means and no event in the prompt is left without its /changes fetch.
+func keepNewestMRs(mrs []gitlab.MergeRequest, n int) ([]gitlab.MergeRequest, int) {
+	sorted := make([]gitlab.MergeRequest, len(mrs))
+	copy(sorted, mrs)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if !sorted[i].UpdatedAt.Equal(sorted[j].UpdatedAt) {
+			return sorted[i].UpdatedAt.After(sorted[j].UpdatedAt)
+		}
+		return sorted[i].IID < sorted[j].IID
+	})
+	if len(sorted) <= n {
+		return sorted, 0
+	}
+	return sorted[:n], len(sorted) - n
+}
+
 func fillMRDetail(ctx context.Context, gc *gitlab.Client, project string, mrs []gitlab.MergeRequest, wantDiffs bool) {
 	if len(mrs) == 0 {
 		return

@@ -45,7 +45,10 @@ type DecideGuard struct {
 // NewDecide builds a DecideGuard pointed at the given API. token may be empty
 // (the decide API may be unauthenticated for the operator's deployment).
 func NewDecide(baseURL, token string, threshold float64) *DecideGuard {
-	if threshold <= 0 || threshold >= 1 {
+	// Only an unset value is defaulted. 1.0 is a legitimate "block
+	// everything" reading and used to be silently rewritten to 0.7,
+	// because the clamp shared its branch with the zero check.
+	if threshold <= 0 {
 		threshold = 0.7
 	}
 	return &DecideGuard{

@@ -172,14 +172,14 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 			return res, fmt.Errorf("llm monthly %s: %w", aud, err)
 		}
 		out, err := r.Publisher.Publish(ctx, publisher.Request{
-			Name:    monthlyRollupFilename(month, aud),
-			Body:    []byte(resp.Text),
-			Force:   true,
-			Kind:    publisher.KindRollup,
-			Period:  monthlySlug(month),
-			Title:   "monthly rollup " + string(aud),
-			Project: "",
-			Public:  aud == prompt.AudienceCustomer,
+			Name:     monthlyRollupFilename(month, aud),
+			Body:     []byte(resp.Text),
+			Kind:     publisher.KindRollup,
+			Period:   monthlySlug(month),
+			Title:    "monthly rollup " + string(aud),
+			Audience: string(aud),
+			Project:  "",
+			Public:   aud == prompt.AudienceCustomer,
 		})
 		if err != nil {
 			return res, fmt.Errorf("publish monthly %s: %w", aud, err)

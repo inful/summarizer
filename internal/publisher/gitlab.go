@@ -182,7 +182,7 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 	// is detectable by docbuilder. Public is set per Request — customer
 	// reports get public: true so docbuilder exposes them externally;
 	// team reports omit the key (internal-only).
-	fm := NewFrontmatter(req.Project, req.Title, req.Period, req.Kind, time.Now().UTC(), req.Body, existingUID)
+	fm := NewFrontmatter(req.Project, req.Audience, req.Period, req.Kind, time.Now().UTC(), req.Body, existingUID)
 	fm.Public = req.Public
 	finalBody := fm.Render(req.Body)
 	encoded := base64.StdEncoding.EncodeToString(finalBody)

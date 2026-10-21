@@ -21,3 +21,17 @@ func normalizeBaseURL(raw string) string {
 	}
 	return strings.TrimRight(trimmed, "/")
 }
+
+// IsOpenAIHost reports whether a configured base URL points at
+// OpenAI's own API, where a key is mandatory. Callers use it to decide
+// whether an empty key is a local-server convenience or a mistake —
+// which is why it must not be a literal string compare: normalizeBaseURL
+// accepts three spellings of the same host, and a guard that only
+// matched one of them would let an operator send unauthenticated
+// requests to api.openai.com for an entire run.
+func IsOpenAIHost(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return true // empty means the built-in default, which is OpenAI
+	}
+	return strings.EqualFold(normalizeBaseURL(raw), "https://api.openai.com")
+}

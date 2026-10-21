@@ -513,7 +513,6 @@ func TestGitLabPublisher_PublishFlow(t *testing.T) {
 	res, err := p.Publish(context.Background(), Request{
 		Name:   "group-proj--7d--customer.md",
 		Body:   []byte("# Customer weekly update\n\nShipped login.\n"),
-		Force:  false,
 		Kind:   KindPerProject,
 		Period: "2026-10-19",
 		Title:  "customer",

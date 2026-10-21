@@ -64,10 +64,13 @@ func parseIssueIID(ref string) (int, bool) {
 }
 
 // FilterActiveEpics returns the subset of epics that had at least one
-// of their linked issues with updated_at in [since, until]. The cap
-// on rendered epics is applied to this filtered slice, not the whole
-// input — a project's "inactive" epics never appear in the report,
-// regardless of how many exist.
+// of their linked issues with updated_at in [since, until].
+//
+// This runs AFTER the cap, not before it: fetchProjectEpics selects
+// the maxActiveEpics most recently updated epics, fetches their issues,
+// and only then calls this. An inactive epic that was not selected is
+// not "filtered out" — it was never fetched, so it cannot be reported
+// on. The cap's shortcut comment says what that costs.
 //
 // Half-open interval: since ≤ updated_at ≤ until. Issues updated
 // exactly at the boundary count as active; this matters for cron

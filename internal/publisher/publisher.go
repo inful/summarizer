@@ -26,11 +26,20 @@ const (
 type Request struct {
 	Name    string   // file basename, e.g. "group-proj--7d--customer.md"
 	Body    []byte   // raw Markdown bytes (no frontmatter wrapping)
-	Force   bool     // overwrite existing target if true
 	Kind    FileKind // per-project or rollup
 	Period  string   // "2026-10-19" or "2026-W42" — the MR branch slug
-	Title   string   // "customer" / "team" — used for frontmatter + MR title
+	Title   string   // human label for the MR, e.g. "epics rollup for ACME customer"
 	Project string   // GitLab project path — used for frontmatter UID + tags
+
+	// Audience is "customer" or "team", and is what lands in the
+	// frontmatter's audience slot and tag. It used to be passed as
+	// Title, which worked only for per-project files: the four rollup
+	// paths set Title to "rollup customer", "epics rollup for ACME
+	// customer" and so on, so those files shipped a title reading
+	// "Cross-project rollup rollup customer report" and an audience
+	// *tag* that was a sentence. Audience is its own field so a
+	// display label can never leak into a machine-read one.
+	Audience string
 
 	// Public controls docbuilder's external publication flag (the
 	// `public: true` frontmatter key). True means docbuilder will index

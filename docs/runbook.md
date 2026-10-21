@@ -140,8 +140,9 @@ in the target repo. That is what stops one week's reports from
 overwriting the previous week's — the filenames themselves carry the
 window (`--7d`) but not the date.
 
-`--force` is accepted and does nothing; it is kept only so existing
-cron lines and muscle memory don't break.
+(There is no `--force`; it was removed when week buckets made
+refuse-first unreachable. A run inside a period always overwrites it,
+so cron lines and muscle memory don't break.)
 
 If you want the previous week's content back, read the file out of git
 history — the publisher commits each run to the period branch, so every
@@ -203,7 +204,6 @@ wins over config in every case.
 | `--internal-only-project P` | — | repeatable. Forces team-only. Unions with the YAML block and the `summarize-team-only` topic. |
 | `--since D` | from config | rolling window, e.g. `168h` or `7d`. |
 | `--period-mode` | **removed** | week numbers replaced it; passing it is a usage error. |
-| `--force` | no-op | accepted for compatibility. Week buckets always overwrite. |
 | `--dry-run` | off | no LLM call, no write. |
 | `--include-diffs` | off | adds per-MR `/changes` bodies to the team prompt. |
 | `--max-events N` | 200 | events per project in the prompt; most recent kept. |

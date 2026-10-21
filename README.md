@@ -253,9 +253,9 @@ summarizer run --project group/subgroup/project
 # Custom window + provider.
 summarizer run --project group/subgroup/project --since 30d --provider anthropic
 
-# Cron-friendly: --force is accepted but not needed. Period buckets
+# Cron-friendly: period buckets overwrite in place, so a second run of
 # are weeks, so a re-run always overwrites the same path in place.
-summarizer run --project group/subgroup/project --force
+summarizer run --project group/subgroup/project
 
 # Multi-project: --project is repeatable; comma-separated works too.
 summarizer run --project group/a --project group/b
@@ -342,8 +342,9 @@ uses in the target repo:
 
 Runs inside the same week overwrite in place (that is the point of
 weekly buckets); each new week gets its own directory, so no week is
-lost. There is no refuse-first — `--force` is accepted and does
-nothing.
+lost. There is no refuse-first: a run inside a period always
+overwrites it, because the second run of every week targets the same
+path.
 
 ## Monthly rollups
 
@@ -397,7 +398,7 @@ both subcommands.
 - Free-text GitLab fields are wrapped in `<data>` markers in the prompt. The model is told explicitly never to follow instructions inside `<data>`. (OWASP LLM01:2025 mitigation.)
 - The customer report never sees MR/issue body text. The team report gets bodies, capped and `<data>`-wrapped.
 - File writes are atomic (`os.Rename` from `.tmp-*`). A crash mid-write leaves the previous good file untouched.
-- Output filenames encode the window. Re-runs land on different files; `--force` overwrites.
+- Output filenames encode the window, and each period gets its own directory, so a re-run overwrites that period in place and never touches another week's.
 
 ## Exit codes (cron-friendly)
 

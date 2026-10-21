@@ -21,7 +21,6 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 		Name:   "group-proj--7d--customer.md",
 		Period: "2026-W42",
 		Body:   []byte("week 42"),
-		Force:  true,
 	})
 	if err != nil {
 		t.Fatalf("publish W42: %v", err)
@@ -30,7 +29,6 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 		Name:   "group-proj--7d--customer.md",
 		Period: "2026-W43",
 		Body:   []byte("week 43"),
-		Force:  true,
 	})
 	if err != nil {
 		t.Fatalf("publish W43: %v", err)
@@ -71,7 +69,7 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 func TestLocalPublisher_SamePeriodOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	lp := NewLocal(dir)
-	req := Request{Name: "combined--rollup--7d--team.md", Period: "2026-W42", Force: true}
+	req := Request{Name: "combined--rollup--7d--team.md", Period: "2026-W42"}
 
 	if _, err := lp.Publish(context.Background(), withBody(req, "first")); err != nil {
 		t.Fatal(err)
@@ -96,7 +94,7 @@ func TestLocalPublisher_SamePeriodOverwrites(t *testing.T) {
 func TestLocalPublisher_NoTempFilesLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 	lp := NewLocal(dir)
-	ref, err := lp.Publish(context.Background(), Request{Name: "a--7d--team.md", Period: "2026-W42", Body: []byte("x"), Force: true})
+	ref, err := lp.Publish(context.Background(), Request{Name: "a--7d--team.md", Period: "2026-W42", Body: []byte("x")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +115,7 @@ func TestLocalPublisher_NoTempFilesLeftBehind(t *testing.T) {
 func TestLocalPublisher_EmptyPeriodIsFlat(t *testing.T) {
 	dir := t.TempDir()
 	lp := NewLocal(dir)
-	ref, err := lp.Publish(context.Background(), Request{Name: "x--7d--team.md", Body: []byte("x"), Force: true})
+	ref, err := lp.Publish(context.Background(), Request{Name: "x--7d--team.md", Body: []byte("x")})
 	if err != nil {
 		t.Fatal(err)
 	}

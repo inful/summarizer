@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +134,27 @@ func TestFrontmatter_PublicFlag(t *testing.T) {
 	body = string(fm.Render([]byte("hi")))
 	if !strings.Contains(body, "public: true") {
 		t.Errorf("Public true should emit 'public: true', got:\n%s", body)
+	}
+}
+
+// TestNewFrontmatter_AudienceIsAnAtomicToken: Request.Title is a human
+// label — "epics rollup for ACME customer", "monthly rollup customer".
+// It used to be passed as the audience slot, so every rollup shipped a
+// title reading "Cross-project rollup rollup customer report" and an
+// audience *tag* that was a sentence. Audience is its own field, and
+// the tag has to stay one searchable token.
+func TestNewFrontmatter_AudienceIsAnAtomicToken(t *testing.T) {
+	now := time.Now()
+	fm := NewFrontmatter("", "customer", "2026-09", KindRollup, now, []byte("x"), "")
+	for _, tag := range fm.Tags {
+		if strings.ContainsAny(tag, " \t") {
+			t.Errorf("tag %q contains whitespace; tags must be single tokens", tag)
+		}
+	}
+	if !slices.Contains(fm.Tags, "customer") {
+		t.Errorf("tags should include the audience, got %v", fm.Tags)
+	}
+	if want := "Cross-project rollup customer report — all subscribed projects, 2026-09"; fm.Title != want {
+		t.Errorf("title = %q,\n want %q", fm.Title, want)
 	}
 }

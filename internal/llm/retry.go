@@ -9,10 +9,15 @@ import (
 	"time"
 )
 
-// Retry policy, matching internal/gitlab's: a transient upstream
+// Retry policy. Same shape as internal/gitlab's — a transient upstream
 // failure must not abort a cron run that has already published files
 // for earlier projects, and a hostile Retry-After must not park the
 // process for a day.
+//
+// Deliberately NOT the same function: this copy has no jitter, because
+// the calls here are sequential within one process (see backoff). The
+// two implementations have drifted and each is right for its own
+// caller; the honest statement is "same shape", not "identical".
 const (
 	maxRetries           = 3
 	retryAfterCapDefault = 60 * time.Second
