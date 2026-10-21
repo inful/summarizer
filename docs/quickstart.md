@@ -30,9 +30,11 @@ A minimal config:
 ```yaml
 # summarizer.yaml — copy to ./summarizer.yaml or pass --config /path/
 gitlab_host: "https://gitlab.example.com"
-projects:
-  - group/subgroup/project
 ```
+
+The project set is a CLI flag, not a config key — `--project`,
+`--discover-group` or `--discover-by-topic`. See the README for all
+three.
 
 ## First run — dry
 

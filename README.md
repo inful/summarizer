@@ -297,9 +297,12 @@ summarizer/
 │   ├── events/            # NormalizedEvent — the port boundary
 │   ├── gitlab/            # net/http GitLab REST v4 client
 │   ├── llm/               # Provider interface + OpenAI + Anthropic
+│   ├── policy/            # D5 audience classifier (pure function)
 │   ├── prompt/            # embedded templates + render
+│   ├── publisher/         # local-disk + GitLab-MR sinks
 │   ├── run/               # pipeline orchestrator
-│   └── writer/            # atomic Markdown write
+│   ├── safety/            # prompt-injection guard port
+│   └── textutil/          # shared string helpers
 ├── examples/
 │   └── summarizer.yaml    # sample config
 └── README.md
@@ -307,7 +310,6 @@ summarizer/
 
 ## Out of scope (deliberately, for MVP)
 
-- Multi-project runs in one invocation.
 - Built-in scheduler / daemon mode.
 - Slack / email / wiki delivery.
 - DORA metrics / cycle-time analytics.

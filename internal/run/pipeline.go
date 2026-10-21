@@ -379,7 +379,10 @@ func eligibleProjects(aud prompt.Audience, projects []ProjectResult) []ProjectRe
 func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectResult, spec audienceInputs) ([]string, error) {
 	var files []string
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-		if len(eligibleProjects(aud, projects)) == 0 && aud == prompt.AudienceCustomer {
+		// No eligible projects for this audience → no file. For the team
+		// audience eligibleProjects is the whole run, so this only trips
+		// on an empty run (both callers already guarantee ≥1).
+		if len(eligibleProjects(aud, projects)) == 0 {
 			continue
 		}
 		system, user, err := spec.render(aud)
