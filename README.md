@@ -2,6 +2,48 @@
 
 One command turns a week of GitLab activity into two readable Markdown reports — one for the project's customers, one for the team and their peers.
 
+## Install
+
+### Binary
+
+Download the archive for your platform from the [latest release](https://github.com/inful/summarizer/releases/latest), extract, and place `summarizer` on your `$PATH`.
+
+### Docker
+
+```bash
+docker pull ghcr.io/inful/summarizer:latest
+docker run --rm ghcr.io/inful/summarizer --help
+```
+
+The image defaults to the `summarizer` entrypoint, so any of the documented subcommands work as arguments. To write reports into a host directory, mount it to the path you pass via `--output-dir`:
+
+```bash
+docker run --rm \
+  -v "$PWD/reports:/out" \
+  -e GITLAB_TOKEN=$GITLAB_TOKEN \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  ghcr.io/inful/summarizer:latest \
+    run --project group/sub/proj --since 7d --output-dir /out
+```
+
+A `:debug` tag is published alongside each release with a busybox shell layered in (CI use, or `docker exec` for debugging):
+
+```bash
+docker pull ghcr.io/inful/summarizer:debug
+```
+
+### From source
+
+```bash
+go install github.com/inful/summarizer/cmd/summarizer@latest
+```
+
+`@latest` builds a `dev` binary (no version baked in). To get a real version, build with `goreleaser release --snapshot --skip=publish --skip=docker`, or set ldflags explicitly:
+
+```bash
+go build -ldflags "-X main.version=vX.Y.Z -X main.commit=$(git rev-parse HEAD) -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -trimpath -o summarizer ./cmd/summarizer
+```
+
 ## Documentation
 
 | Document | Purpose |

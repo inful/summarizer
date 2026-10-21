@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.7
+#
+# Debug image for summarizer, consumed by GoReleaser dockers_v2
+# (second entry alongside the production Dockerfile).
+#
+# Same binary as the production image, but the runtime base is
+# gcr.io/distroless/static:debug-nonroot, which adds:
+#   - /busybox/sh and a small set of busybox utilities (ls, cat,
+#     cp, mv, env, id, mount, etc.) so the image can be `docker
+#     exec`'d into for debugging.
+#   - /etc/ssl/certs (the production image also has this; the
+#     -debug variant pulls it from a known-good source).
+#   - /etc/passwd with the `nonroot` user pre-declared (uid 65532).
+#
+# This image is intended for two cases:
+#   1. CI jobs that want to call the binary AND have a few shell
+#      tools available for diagnostics (`ls /`, `cat
+#      /etc/os-release`, `env | sort`, etc.) without switching
+#      images.
+#   2. Operators debugging a deployment: `docker run -it
+#      ghcr.io/inful/summarizer:debug /busybox/sh` for an
+#      interactive shell inside the same filesystem the binary
+#      ships in.
+#
+# Size: ~3 MB larger than the production image (busybox + debug
+# metadata). Same multi-arch support (linux/amd64, linux/arm64)
+# because the base image is a manifest list.
+#
+# If you only need the binary in production, prefer the non-debug
+# image: it is smaller and ships no shell.
+#
+# Note: ENTRYPOINT stays the same so this image is a drop-in
+# replacement when the user explicitly opts in with the `-debug` tag.
+
+FROM gcr.io/distroless/static:debug-nonroot AS runtime
+
+# Per-platform binary lives at $TARGETPLATFORM/summarizer inside
+# the build context that GoReleaser constructs.
+ARG TARGETPLATFORM
+COPY --chown=65532:65532 ${TARGETPLATFORM}/summarizer /usr/local/bin/summarizer
+
+# OCI labels are written by GoReleaser at build time (see
+# .goreleaser.yaml dockers_v2.annotations).
+
+# OCI exec form so the binary gets argv[0] rather than "sh -c".
+ENTRYPOINT ["/usr/local/bin/summarizer"]

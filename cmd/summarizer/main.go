@@ -38,7 +38,18 @@ import (
 	"github.com/inful/summarizer/internal/safety"
 )
 
-const version = "0.1.0"
+// Build-time variables, overridden via:
+//
+//	go build -ldflags "-X main.version=vX.Y.Z -X main.commit=$(git rev-parse HEAD) -X main.date=..."
+//
+// Default values are intentionally informational rather than empty
+// so a developer running `go run` sees what they're running. Goreleaser
+// injects the real values at release time (see .goreleaser.yaml).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -49,7 +60,7 @@ func main() {
 	case "run":
 		os.Exit(runCmd(os.Args[2:]))
 	case "version", "--version", "-v":
-		fmt.Println("summarizer", version)
+		fmt.Printf("summarizer %s (commit %s, %s)\n", version, commit, date)
 		os.Exit(0)
 	case "help", "--help", "-h":
 		usage()

@@ -1,0 +1,241 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+#
+# GoReleaser for github.com/inful/summarizer.
+#
+# Triggers: every `v*` tag push via .github/workflows/release.yml.
+# Locally: `goreleaser release --snapshot --clean --skip=publish --skip=docker`
+# exercises the build / archive / checksum / SBOM paths without
+# touching GitHub or any registry.
+#
+# Project name: summarizer
+# Build target: cmd/summarizer (entry point)
+# Output:      dist/ (goreleaser's default; pinned for the GitHub Action)
+#
+# Modelled on github.com/inful/repo-mr-file/.goreleaser.yaml with
+# the differences in this file being the project name, the build
+# entry point, and the OCI description. Anything that looks the same
+# as the other repos IS the same — copy/paste is the right call so
+# the conventions stay consistent.
+
+version: 2
+
+project_name: summarizer
+
+before:
+  hooks:
+    # Run vet and the race-enabled test suite so a release is blocked
+    # if those gates ever drift into a non-green state.
+    - go mod tidy
+    - go vet ./...
+    - go test -race -count=1 -timeout 60s ./...
+
+builds:
+  - main: ./cmd/summarizer
+    binary: summarizer
+    id: summarizer
+    env:
+      - CGO_ENABLED=0
+    flags:
+      # -trimpath strips the build-machine filesystem paths from the
+      # binary so the tool behaves identically regardless of who built
+      # it (matches the README's "go build -trimpath" recommendation).
+      - -trimpath
+    ldflags:
+      # -s strips the symbol table; -w strips DWARF debug info.
+      # Smaller binary, no functional change.
+      - -s -w
+      # Build-time variables wired in main.go:
+      #   main.version — set by goreleaser to the tag (e.g. v0.1.0).
+      #   main.commit  — the short commit SHA, for "summarizer version" output.
+      #   main.date    — RFC 3339 commit date.
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .CommitDate }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # windows/arm64 isn't generally usable; GitHub-hosted runners
+      # build it but the resulting binary is rare in the wild.
+      - goos: windows
+        goarch: arm64
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: default
+    formats: [tar.gz, zip]
+    # Archive name shape per platform. x86_64 / aarch64 on Linux
+    # matches what most users expect when downloading a release.
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      # Ship the README and LICENSE (if any) inside each archive so
+      # downstream consumers get the docs with the binary.
+      - README.md
+      - LICENSE*
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  # `goreleaser release --snapshot` produces binaries tagged with the
+  # next-patch version + '-next' suffix and a fake SHA. Useful for
+  # verifying the config locally without pushing a tag.
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  use: git
+  sort: asc
+  # Conventional-commit groups matched against the commit subject.
+  # Anything that doesn't match one of these regexes lands under
+  # "Other changes". Same groups GitHub itself defaults to.
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: 'Bug fixes'
+      regexp: "^fix"
+      order: 1
+    - title: 'Documentation changes'
+      regexp: "^docs"
+      order: 2
+    - title: 'Continuous integration'
+      regexp: "^ci"
+      order: 3
+    - title: 'Refactors'
+      regexp: "^refactor"
+      order: 4
+    - title: 'Tests'
+      regexp: "^test"
+      order: 5
+    - title: 'Build configuration'
+      regexp: "^chore|build|ci|style"
+      order: 6
+    - title: 'Performance'
+      regexp: "^perf"
+      order: 7
+    - title: 'Reverts'
+      regexp: "^revert"
+      order: 8
+
+release:
+  github:
+    owner: inful
+    name: summarizer
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+  header: |
+    ## summarizer v{{ .Version }}
+
+    Released {{ .Date }}.
+  footer: |
+    ## Installation
+
+    ### Binary
+
+    Download the archive for your platform from the assets below,
+    extract, and place `summarizer` on your `$PATH`.
+
+    ### Docker
+
+    ```bash
+    docker pull ghcr.io/inful/summarizer:{{ .Version }}
+    docker run --rm ghcr.io/inful/summarizer --help
+    ```
+
+    The image defaults to the `summarizer` entrypoint, so any of the
+    documented subcommands work as arguments. `summarizer run` writes
+    reports to a directory inside the container — mount a host path
+    to `--output-dir` or to a volume to retrieve them, or set up the
+    GitLab MR publisher (see `docs/runbook.md`).
+
+# Multi-arch Docker images (linux/amd64 + linux/arm64), built by
+# buildx and pushed to GitHub Container Registry. Same trigger as
+# the binary release — a single tag produces both the GitHub Release
+# assets AND the GHCR manifest lists.
+#
+#   Production image (no shell, ~3 MB base, smaller):
+#     ghcr.io/inful/summarizer:vX.Y.Z        (immutable, manifest list)
+#     ghcr.io/inful/summarizer:latest        (mutable, follows most recent)
+#
+#   Debug image (busybox shell + utilities, ~6 MB base):
+#     ghcr.io/inful/summarizer:vX.Y.Z-debug  (immutable, manifest list)
+#     ghcr.io/inful/summarizer:latest-debug  (mutable, follows most recent)
+#
+# Why dockers_v2 (since v2.12) instead of dockers (deprecated):
+#   - Single docker buildx call produces a manifest list that
+#     resolves to the right per-arch image automatically.
+#   - GoReleaser pre-builds the binaries and lays them out at
+#     builddir/linux/amd64/ and builddir/linux/arm64/ in the build
+#     context, so each Dockerfile just COPYs the matching
+#     $TARGETPLATFORM/summarizer — no QEMU, no in-image `go build`.
+#   - Annotations (OCI labels) render from templates without
+#     injecting them via --label docker build flags.
+#
+# Runtime base images:
+#   gcr.io/distroless/static:nonroot        (production, no shell)
+#   gcr.io/distroless/static:debug-nonroot (debug, busybox + shell)
+#   Both ship ca-certificates (required for HTTPS to GitLab and the
+#   LLM API endpoints) and run as uid 65532.
+dockers_v2:
+  - id: summarizer
+    images:
+      - ghcr.io/inful/summarizer
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    dockerfile: Dockerfile
+    annotations:
+      "index,manifest:org.opencontainers.image.title": "summarizer"
+      "index,manifest:org.opencontainers.image.description": "Reads a self-hosted GitLab project's activity over a rolling N-day window and writes two Markdown reports — one customer-facing, one team-facing — generated by an LLM. Optional GitLab MR publisher."
+      "index,manifest:org.opencontainers.image.source": "https://github.com/inful/summarizer"
+      "index,manifest:org.opencontainers.image.url": "https://github.com/inful/summarizer"
+      "index,manifest:org.opencontainers.image.documentation": "https://github.com/inful/summarizer/blob/main/README.md"
+      "index,manifest:org.opencontainers.image.licenses": "MIT"
+      "index,manifest:org.opencontainers.image.created": "{{ .Date }}"
+      "index,manifest:org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "index,manifest:org.opencontainers.image.version": "{{ .Version }}"
+
+  # Debug image. Same binary, same UID, but the runtime base is
+  # gcr.io/distroless/static:debug-nonroot which adds busybox + a
+  # shell. Lets CI jobs run the binary AND have `ls`/`cat`/etc.
+  # available without switching images, and lets operators
+  # `docker exec -it ... /busybox/sh` into a running container.
+  - id: summarizer-debug
+    images:
+      - ghcr.io/inful/summarizer
+    tags:
+      - "{{ .Version }}-debug"
+      - latest-debug
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    dockerfile: Dockerfile.debug
+    annotations:
+      "index,manifest:org.opencontainers.image.title": "summarizer-debug"
+      "index,manifest:org.opencontainers.image.description": "Debug variant of summarizer: same binary, same UID, but the runtime base (gcr.io/distroless/static:debug-nonroot) ships busybox + a shell so the image can be inspected interactively. Use this in CI jobs that want shell tools available alongside the binary, or to debug a running container with `docker exec`."
+      "index,manifest:org.opencontainers.image.source": "https://github.com/inful/summarizer"
+      "index,manifest:org.opencontainers.image.url": "https://github.com/inful/summarizer"
+      "index,manifest:org.opencontainers.image.documentation": "https://github.com/inful/summarizer/blob/main/README.md"
+      "index,manifest:org.opencontainers.image.licenses": "MIT"
+      "index,manifest:org.opencontainers.image.created": "{{ .Date }}"
+      "index,manifest:org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "index,manifest:org.opencontainers.image.version": "{{ .Version }}-debug"

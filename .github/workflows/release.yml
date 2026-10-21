@@ -1,0 +1,97 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: release
+
+# Workflow scope: tag-only. PRs are gated by the local lefthook
+# pre-commit (go test -race -count=1 + golangci-lint run) plus the
+# contribution policy in README.md.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-rc.*'
+      - 'v*.*.*-beta.*'
+
+# `contents: write` is required for goreleaser to publish a GitHub
+# Release (creating / updating the tag, uploading the assets).
+#
+# `packages: write` is required for the goreleaser `dockers_v2:` step
+# to push the multi-arch image to GitHub Container Registry
+# (ghcr.io/inful/summarizer). Without this scope the goreleaser push
+# returns a 403 against the registry.
+permissions:
+  contents: write
+  packages: write
+
+# Prevent the classic tag-push race: GitHub Actions occasionally
+# fires the workflow twice for a single `git push origin vX.Y.Z`,
+# and a second goreleaser run would try to re-create the release /
+# re-upload the same assets and 422-fail on every upload.
+#
+# `concurrency` serializes runs on the same ref: any later push of
+# the same tag waits for the current run to finish before starting.
+# We deliberately leave cancel-in-progress at its default (false) so
+# an in-flight release is never cancelled — losing a half-built
+# release is worse than a queued duplicate.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  goreleaser-release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 required by goreleaser for the conventional-
+          # commits changelog; without it `git log` returns just the
+          # single squashed commit and the changelog is empty.
+          fetch-depth: 0
+          # Pin to the same tag we're releasing so tests in CI match
+          # the tested commit. (Otherwise `actions/checkout@v4`
+          # defaults to the branch HEAD, which isn't yet the tag.)
+          ref: ${{ github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Match go.mod. Bump both together.
+          go-version-file: go.mod
+          cache: true
+
+      # Set up buildx with the docker-container driver so multi-arch
+      # image builds (linux/amd64 + linux/arm64) work end-to-end. The
+      # default `docker` driver GitHub Actions ships is single-platform
+      # only and fails with 'Multi-platform build is not supported for
+      # the docker driver'. The docker-container driver routes each
+      # build through a dedicated BuildKit container.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:v0.18.1
+
+      # Authenticate the built-in container registry login helper to
+      # GHCR. GoReleaser doesn't authenticate itself; it expects the
+      # runner to have already logged in via `docker login`. With
+      # GITHUB_TOKEN provided, buildx writes the credentials file
+      # before the goreleaser step runs.
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          # v2 line; allow patch updates.
+          version: '~> v2'
+          # --clean wipes dist/ before building; this workflow owns
+          # the release so a stale dist/ from a previous test shouldn't
+          # leak into the published artifact list.
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
