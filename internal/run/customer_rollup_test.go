@@ -78,6 +78,76 @@ func TestEpicRollup_SplitsCustomerAudienceByOrgLabel(t *testing.T) {
 	}
 }
 
+// TestEpicRollup_MultiCustomerEpicLandsInAllBuckets: an epic with
+// two org:: labels surfaces in both customer files — the whole
+// point of one epic spanning two customers. The assertion is
+// bucket → file, not bucket → file content (the LLM stub is opaque
+// to the bucketing logic).
+func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
+	sp := newSourcePipeline(t, nil, nil)
+	projects := []ProjectResult{
+		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
+			epic(1, "shared", "org::ACME", "org::GLOBEX"),
+		}},
+		{Project: "b", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
+			epic(2, "acme-only", "org::ACME"),
+		}},
+	}
+
+	files, err := sp.p.runEpicRollup(context.Background(), projects)
+	if err != nil {
+		t.Fatalf("runEpicRollup: %v", err)
+	}
+	// Expect: ACME file, GLOBEX file, team combined. No unlabelled
+	// epics in this test, so the customer combined file is skipped.
+	wantFiles := 3
+	if len(files) != wantFiles {
+		t.Fatalf("want %d files, got %d: %v", wantFiles, len(files), files)
+	}
+	// The bucketing decision is in which files exist, not what
+	// they say. Check by filename.
+	wantNames := map[string]bool{
+		"combined--epics-acme--7d--customer.md":   false,
+		"combined--epics-globex--7d--customer.md": false,
+		"combined--epics-rollup--7d--team.md":     false,
+	}
+	for _, w := range sp.pub.written {
+		name := strings.TrimPrefix(w.Name, "captured/")
+		if _, expected := wantNames[name]; expected {
+			wantNames[name] = true
+		}
+	}
+	for name, seen := range wantNames {
+		if !seen {
+			t.Errorf("missing expected file: %s", name)
+		}
+	}
+	// The LLM was called once per file (2 customer + 1 team). Each
+	// call has its own prompt; the shared epic's title was in the
+	// input prompt for both ACME's and GLOBEX's calls. Inspect
+	// those prompts to confirm the bucket shape, not the opaque
+	// "rendered" response.
+	// The first 2 LLM calls (call indices 0 and 1) are the customer
+	// files, in bucket order: ACME, then GLOBEX. The team combined
+	// follows. The labels in the LLM stub are not preserved
+	// through Publish, so we match on the prompt content: ACME's
+	// prompt is the only one that includes acme-only.
+	acme := sp.llm.promptAt(0)
+	globex := sp.llm.promptAt(1)
+	if !strings.Contains(acme, "shared") {
+		t.Errorf("ACME prompt should include the shared epic, got:\n%s", acme)
+	}
+	if !strings.Contains(globex, "shared") {
+		t.Errorf("GLOBEX prompt should include the shared epic, got:\n%s", globex)
+	}
+	if !strings.Contains(acme, "acme-only") {
+		t.Errorf("ACME prompt should include the acme-only epic, got:\n%s", acme)
+	}
+	if strings.Contains(globex, "acme-only") {
+		t.Errorf("GLOBEX prompt should NOT include the acme-only epic, got:\n%s", globex)
+	}
+}
+
 // TestEpicRollup_UnlabelledIsLast: the combined bucket sorts after the
 // customer codes so the branch file order is stable and the backlog
 // file lands in a predictable place.

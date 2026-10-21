@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/inful/summarizer/internal/config"
 	"github.com/inful/summarizer/internal/gitlab"
+	"github.com/inful/summarizer/internal/llm"
 	"github.com/inful/summarizer/internal/policy"
 	"github.com/inful/summarizer/internal/safety"
 )
@@ -30,9 +32,10 @@ import (
 // Returns the pipeline plus the fakes so tests can assert on LLM calls
 // and published files.
 type sourcePipeline struct {
-	p   *Pipeline
-	llm *countingLLM
-	pub *capturePublisher
+	p     *Pipeline
+	llm   *recordingLLM
+	pub   *capturePublisher
+	topic []string
 }
 
 func newSourcePipeline(t *testing.T, topics []string, projects []string) *sourcePipeline {
@@ -85,7 +88,7 @@ func newSourcePipeline(t *testing.T, topics []string, projects []string) *source
 	}))
 	t.Cleanup(srv.Close)
 
-	llmStub := &countingLLM{OnCall: func() string { return "rendered" }}
+	llmStub := &recordingLLM{}
 	pub := &capturePublisher{}
 	pipe := &Pipeline{
 		Cfg:       &config.Config{OutputDir: t.TempDir(), MaxEvents: 200},
@@ -98,7 +101,49 @@ func newSourcePipeline(t *testing.T, topics []string, projects []string) *source
 			Since:    168 * time.Hour,
 		},
 	}
-	return &sourcePipeline{p: pipe, llm: llmStub, pub: pub}
+	return &sourcePipeline{p: pipe, llm: llmStub, pub: pub, topic: topics}
+}
+
+// recordingLLM is a test double that captures every Complete call so
+// tests can assert on the prompts and response shapes, plus counts
+// audience-specific calls (audience is identified by the same marker
+// strings the per-project system prompt uses, so the team-audience
+// prompts — which contain "internal engineering" — and the
+// customer-audience prompts can be distinguished).
+type recordingLLM struct {
+	mu            sync.Mutex
+	calls         []recordedCall
+	customerCalls int
+	teamCalls     int
+}
+
+type recordedCall struct {
+	userPrompt string
+}
+
+func (r *recordingLLM) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, recordedCall{userPrompt: req.User})
+	if strings.Contains(req.System, "internal engineering") {
+		r.teamCalls++
+	} else {
+		r.customerCalls++
+	}
+	r.mu.Unlock()
+	return llm.Response{
+		Text:  "rendered",
+		Usage: llm.Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},
+	}, nil
+}
+
+// promptAt returns the user-prompt sent to the i-th LLM call (0-based).
+func (r *recordingLLM) promptAt(i int) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i < 0 || i >= len(r.calls) {
+		return ""
+	}
+	return r.calls[i].userPrompt
 }
 
 // TestRunOneProject_DiscoveredWithoutOptInIsTeamOnly: the headline case.
@@ -112,10 +157,10 @@ func TestRunOneProject_DiscoveredWithoutOptInIsTeamOnly(t *testing.T) {
 	if !pr.TeamOnly || pr.CustomerOn {
 		t.Errorf("discovered + no topics must be team-only; TeamOnly=%v CustomerOn=%v", pr.TeamOnly, pr.CustomerOn)
 	}
-	if got := sp.llm.customerCalls.Load(); got != 0 {
+	if got := sp.llm.customerCalls; got != 0 {
 		t.Errorf("customer LLM calls: want 0, got %d", got)
 	}
-	if got := sp.llm.teamCalls.Load(); got != 1 {
+	if got := sp.llm.teamCalls; got != 1 {
 		t.Errorf("team LLM calls: want 1, got %d", got)
 	}
 	for _, w := range sp.pub.written {
@@ -140,7 +185,7 @@ func TestRunOneProject_DiscoveredWithOptInIsCustomerOn(t *testing.T) {
 	if pr.TeamOnly || !pr.CustomerOn {
 		t.Errorf("discovered+summarize must be customer-on; TeamOnly=%v CustomerOn=%v", pr.TeamOnly, pr.CustomerOn)
 	}
-	if got := sp.llm.customerCalls.Load(); got != 1 {
+	if got := sp.llm.customerCalls; got != 1 {
 		t.Errorf("customer LLM calls: want 1, got %d", got)
 	}
 	sawPublic := false

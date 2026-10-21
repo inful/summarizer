@@ -1,69 +1,59 @@
 package policy
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
-// TestCustomerCode: the `org::CUSTOMER_CODE` label convention. Exact
-// `org::` prefix, case-sensitive like every other topic in this
-// package, so `ORG::ACME` and `org::acme-beta` don't silently bucket
-// into ACME.
-func TestCustomerCode(t *testing.T) {
+// TestCustomerCodes: the `org::CUSTOMER_CODE` label convention. An
+// epic can carry more than one org:: label (it spans more than one
+// customer), and every code returns. Code case is preserved; prefix
+// is case-sensitive.
+func TestCustomerCodes(t *testing.T) {
 	cases := []struct {
 		name   string
 		labels []string
-		want   string
-		wantOK bool
+		want   []string
 	}{
-		{"nil labels", nil, "", false},
-		{"empty labels", []string{}, "", false},
-		{"single match", []string{"org::ACME"}, "ACME", true},
-		{"match among others", []string{"bug", "org::ACME", "priority::high"}, "ACME", true},
-		{"no match", []string{"bug", "ruby"}, "", false},
-		{"prefix only, no code", []string{"org::"}, "", false},
-		{"prefix only, whitespace code", []string{"org:: "}, "", false},
-		{"wrong prefix", []string{"customer::ACME"}, "", false},
-		{"uppercase prefix is not a match", []string{"ORG::ACME"}, "", false},
-		{"mixed-case prefix is not a match", []string{"Org::ACME"}, "", false},
-		{"code case is preserved", []string{"org::Acme Corp"}, "Acme Corp", true},
-		{"similar topic does not match", []string{"org::ACME-beta"}, "ACME-beta", true},
-		{"double-colon inside code is kept whole", []string{"org::A::B"}, "A::B", true},
+		{"nil labels", nil, nil},
+		{"empty labels", []string{}, nil},
+		{"single match", []string{"org::ACME"}, []string{"ACME"}},
+		{"match among others", []string{"bug", "org::ACME", "priority::high"}, []string{"ACME"}},
+		{"no match", []string{"bug", "ruby"}, nil},
+		{"prefix only, no code", []string{"org::"}, nil},
+		{"prefix only, whitespace code", []string{"org:: "}, nil},
+		{"wrong prefix", []string{"customer::ACME"}, nil},
+		{"uppercase prefix is not a match", []string{"ORG::ACME"}, nil},
+		{"mixed-case prefix is not a match", []string{"Org::ACME"}, nil},
+		{"code case is preserved", []string{"org::Acme Corp"}, []string{"Acme Corp"}},
+		{"similar topic does not match", []string{"org::ACME-beta"}, []string{"ACME-beta"}},
+		{"double-colon inside code is kept whole", []string{"org::A::B"}, []string{"A::B"}},
+		{"two customers, all returned", []string{"org::ACME", "org::GLOBEX"}, []string{"ACME", "GLOBEX"}},
+		{"two customers, order is label order", []string{"org::GLOBEX", "org::ACME"}, []string{"GLOBEX", "ACME"}},
+		{"duplicate code is one entry", []string{"org::ACME", "org::ACME"}, []string{"ACME"}},
+		{"empty code among real ones is skipped", []string{"org::", "org::ACME", "org:: "}, []string{"ACME"}},
+		{"unrelated labels do not block", []string{"ruby", "billing", "org::ACME", "priority::high"}, []string{"ACME"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := CustomerCode(c.labels)
-			if ok != c.wantOK || got != c.want {
-				t.Errorf("CustomerCode(%v) = %q,%v; want %q,%v", c.labels, got, ok, c.want, c.wantOK)
+			got := CustomerCodes(c.labels)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("CustomerCodes(%v) = %v, want %v", c.labels, got, c.want)
 			}
 		})
 	}
 }
 
-// TestCustomerCode_MultipleMatchesFirstWins: an epic can legitimately
-// span two customers. Bucketing must be deterministic — GitLab
-// returns labels in a stable order, so taking the first is
-// reproducible rather than arbitrary.
-func TestCustomerCode_MultipleMatchesFirstWins(t *testing.T) {
-	got, ok := CustomerCode([]string{"org::ACME", "org::GLOBEX"})
-	if !ok || got != "ACME" {
-		t.Errorf("got %q,%v; want ACME,true (first match wins)", got, ok)
-	}
-	// Same input, same answer, every time.
-	for i := 0; i < 5; i++ {
-		if again, _ := CustomerCode([]string{"org::ACME", "org::GLOBEX"}); again != got {
-			t.Fatalf("non-deterministic: %q then %q", got, again)
-		}
-	}
-}
-
-// TestCustomerCode_DeterministicOrdering: because the caller sorts the
-// resulting bucket keys, an epic tagged with two customers must always
-// land in the same bucket across runs.
-func TestCustomerCode_DeterministicOrdering(t *testing.T) {
+// TestCustomerCodes_Deterministic: the same input yields the same
+// output, every time, so two runs of the same window produce the
+// same set of bucket memberships.
+func TestCustomerCodes_Deterministic(t *testing.T) {
 	labels := []string{"priority::high", "org::GLOBEX", "org::ACME"}
-	first, _ := CustomerCode(labels)
-	for i := 0; i < 3; i++ {
-		got, _ := CustomerCode(labels)
-		if got != first {
-			t.Fatalf("call %d gave %q, first gave %q", i, got, first)
+	first := CustomerCodes(labels)
+	for i := 0; i < 5; i++ {
+		got := CustomerCodes(labels)
+		if !reflect.DeepEqual(got, first) {
+			t.Fatalf("non-deterministic: %v then %v", first, got)
 		}
 	}
 }
