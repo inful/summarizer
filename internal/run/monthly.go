@@ -3,13 +3,13 @@ package run
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/inful/summarizer/internal/llm"
 	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/publisher"
+	"github.com/inful/summarizer/internal/safety"
 )
 
 // MonthlyReader is what a monthly run needs from a publisher: the
@@ -35,6 +35,7 @@ type MonthlyRunner struct {
 	Publisher publisher.Publisher
 	Reader    MonthlyReader // must be the same object as Publisher
 	LLM       llm.Provider
+	Guard     safety.Guard // injection guard; NoopGuard when disabled
 	Model     string
 	DryRun    bool
 
@@ -131,6 +132,9 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 				month, aud, len(weeks), len(user), user)
 			continue
 		}
+		if err := checkPrompt(ctx, r.Guard, "monthly-rollup/"+month+"/"+string(aud), system+"\n\n"+user); err != nil {
+			return res, err
+		}
 		resp, err := r.LLM.Complete(ctx, llm.Request{
 			System: system, User: user, Model: r.Model, MaxTokens: 2048,
 		})
@@ -226,29 +230,15 @@ func weeksInMonth(month string) ([]string, error) {
 }
 
 // parseMonth validates a "YYYY-MM" string and returns the year and
-// month number. Strict: exactly two digits each, month 1..12, and the
-// date must round-trip (which rejects 2026-02-30 and friends).
+// month number. time.Parse enforces exactly the rules we want — exact
+// "2006-01" layout, digits only, month 1-12 — and produces a clearer
+// error than a hand-rolled length-and-digits check.
 func parseMonth(s string) (year, month int, err error) {
-	if len(s) != len("2006-01") || s[4] != '-' {
+	t, err := time.Parse("2006-01", s)
+	if err != nil {
 		return 0, 0, fmt.Errorf("month %q: want YYYY-MM", s)
 	}
-	for i, c := range s {
-		if i == 4 {
-			continue
-		}
-		if c < '0' || c > '9' {
-			return 0, 0, fmt.Errorf("month %q: want YYYY-MM", s)
-		}
-	}
-	year, _ = strconv.Atoi(s[0:4])
-	month, _ = strconv.Atoi(s[5:7])
-	if month < 1 || month > 12 {
-		return 0, 0, fmt.Errorf("month %q: month out of range 1-12", s)
-	}
-	if time.Date(year, time.Month(month), 1, 0, 0, 0, 0, time.UTC).Month() != time.Month(month) {
-		return 0, 0, fmt.Errorf("month %q: not a real month", s)
-	}
-	return year, month, nil
+	return t.Year(), int(t.Month()), nil
 }
 
 // previousMonth returns the YYYY-MM before t's month, rolling back

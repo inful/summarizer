@@ -759,10 +759,46 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 	return getAll[Commit](ctx, c, fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q)
 }
 
+// cappedDiff is a diff body that truncates during JSON decoding rather
+// than after it.
+//
+// The naive version decodes `Diff` into a plain string and truncates
+// afterwards. That allocates the full multi-megabyte body first and
+// throws it away — so a vendor-bump MR with a 40 MB diff cost 40 MB
+// of string allocation per MR, times changeConcurrency concurrent
+// workers, on every run including the default --include-diffs=off one
+// that never uses the text.
+//
+// encoding/json hands a custom Unmarshaler a SUBSLICE of its input
+// buffer (d.data[start:end]), so nothing is copied: we convert at most
+// maxDiffRunesPer runes and the rest of the value is simply never
+// materialised as a string.
+type cappedDiff struct {
+	Text string
+}
+
+func (c *cappedDiff) UnmarshalJSON(b []byte) error {
+	// b is the raw JSON string literal, still escaped.
+	s, err := strconv.Unquote(string(b))
+	if err != nil {
+		// Not a string (null, or something unexpected). Treat as empty
+		// rather than failing the whole MR: a missing diff body is
+		// survivable, an unparseable one is not worth losing the
+		// aggregate over.
+		c.Text = ""
+		return nil
+	}
+	if r := []rune(s); len(r) > maxDiffRunesPerFile {
+		s = string(r[:maxDiffRunesPerFile]) + "...[truncated]"
+	}
+	c.Text = s
+	return nil
+}
+
 // FetchMRDetail calls GET /merge_requests/:iid/changes once and returns
 // BOTH the per-MR aggregate (file count, total additions/deletions) and
 // the per-file diff chunks, with each chunk's Diff capped at
-// maxDiffRunesPerFile so a multi-MB refactor diff can't blow up memory.
+// maxDiffRunesPerFile.
 //
 // One call, two consumers: the aggregate feeds the "+N/-M in K files"
 // suffix on every prompt line; the chunks feed the team prompt when the
@@ -774,16 +810,16 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 // One call per MR. Callers fetching N MRs should fan out concurrently
 // to keep total wall time bounded; the pipeline does this with a worker
 // pool.
+//
+// shortcut: the HTTP response body is still buffered whole by getJSON
+// before decoding, so peak memory is ~1x the /changes payload per
+// in-flight MR rather than being bounded outright. Streaming the decode
+// is the upgrade if a real MR ever ships a multi-GB diff; at 4-way
+// concurrency a 40 MB payload is ~160 MB, which is survivable.
 func (c *Client) FetchMRDetail(ctx context.Context, projectPath string, iid int) (ChangesSummary, []DiffChunk, error) {
 	chunks, err := c.fetchMRChangesRaw(ctx, projectPath, iid)
 	if err != nil {
 		return ChangesSummary{}, nil, err
-	}
-	// Truncate each chunk's Diff at maxDiffRunesPerFile.
-	for i := range chunks {
-		if r := []rune(chunks[i].Diff); len(r) > maxDiffRunesPerFile {
-			chunks[i].Diff = string(r[:maxDiffRunesPerFile]) + "...[truncated]"
-		}
 	}
 	return summarizeChunks(chunks), chunks, nil
 }
@@ -803,7 +839,7 @@ func (c *Client) fetchMRChangesRaw(ctx context.Context, projectPath string, iid 
 			RenamedFile bool   `json:"renamed_file"`
 			Additions   int    `json:"additions"`
 			Deletions   int    `json:"deletions"`
-			Diff        string `json:"diff"`
+			Diff        cappedDiff
 		} `json:"changes"`
 	}
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d/changes", url.PathEscape(projectPath), iid)
@@ -816,7 +852,7 @@ func (c *Client) fetchMRChangesRaw(ctx context.Context, projectPath string, iid 
 			Path:      filePath(f.OldPath, f.NewPath),
 			Additions: f.Additions,
 			Deletions: f.Deletions,
-			Diff:      f.Diff,
+			Diff:      f.Diff.Text,
 		})
 	}
 	return chunks, nil

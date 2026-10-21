@@ -43,6 +43,14 @@ type Usage struct {
 // half-empty report.
 var ErrEmptyResponse = errors.New("llm returned empty response")
 
+// maxResponseBytes caps how much of a response body is read into memory.
+// This is the one place the process talks to a host it does not control,
+// so an unbounded io.ReadAll is a remote-triggered OOM. 8 MB is orders
+// of magnitude above any Chat Completions response (a 2048-token
+// completion is roughly 8 KB) while still bounding a malfunctioning or
+// hostile endpoint.
+const maxResponseBytes = 8 << 20
+
 // resolveModel picks the actual model id to call. req.Model wins; the
 // adapter's default fills in if empty.
 func resolveModel(req, def string) string {

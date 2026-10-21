@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/inful/summarizer/internal/textutil"
 )
 
 // ListPeriodBranches returns the source branches this publisher created
@@ -105,7 +107,7 @@ func (g *GitLabPublisher) ReadReportFile(branch, path string) (string, error) {
 		return "", nil
 	case resp.status >= 400:
 		return "", fmt.Errorf("read %s on %s: %d %s",
-			path, branch, resp.status, truncate(string(resp.body), 200))
+			path, branch, resp.status, textutil.Truncate(string(resp.body), 200))
 	}
 
 	var fr fileResponse
@@ -130,7 +132,7 @@ func (g *GitLabPublisher) get(urlStr string) ([]byte, error) {
 		return nil, err
 	}
 	if resp.status >= 400 {
-		return nil, fmt.Errorf("GET %s: %d %s", urlStr, resp.status, truncate(string(resp.body), 300))
+		return nil, fmt.Errorf("GET %s: %d %s", urlStr, resp.status, textutil.Truncate(string(resp.body), 300))
 	}
 	return resp.body, nil
 }

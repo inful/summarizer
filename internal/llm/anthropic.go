@@ -1,11 +1,7 @@
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -29,6 +25,8 @@ func NewAnthropic(apiKey, model, baseURL string) *AnthropicProvider {
 	}
 }
 
+// Complete posts to the Messages endpoint and concatenates every text
+// block in the reply.
 func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response, error) {
 	body := map[string]any{
 		"model":      resolveModel(req.Model, a.Model),
@@ -36,23 +34,10 @@ func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 		"messages":   []map[string]string{{"role": "user", "content": req.User}},
 		"max_tokens": pickMaxTokens(req.MaxTokens, a.MaxTokens),
 	}
-	buf, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/v1/messages", bytes.NewReader(buf))
-	if err != nil {
-		return Response{}, err
-	}
-	httpReq.Header.Set("x-api-key", a.APIKey)
-	httpReq.Header.Set("anthropic-version", "2023-06-01")
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := doWithRetry(ctx, a.HTTP, httpReq, buf)
-	if err != nil {
-		return Response{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return Response{}, fmt.Errorf("anthropic: %d %s", resp.StatusCode, truncate(string(respBody), 300))
+	headers := map[string]string{
+		"Content-Type":      "application/json",
+		"x-api-key":         a.APIKey,
+		"anthropic-version": "2023-06-01",
 	}
 
 	var out struct {
@@ -65,8 +50,8 @@ func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 			OutputTokens int `json:"output_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return Response{}, fmt.Errorf("anthropic: decode: %w", err)
+	if err := postJSON(ctx, a.HTTP, a.BaseURL+"/v1/messages", "anthropic", headers, body, &out); err != nil {
+		return Response{}, err
 	}
 	var text string
 	for _, c := range out.Content {

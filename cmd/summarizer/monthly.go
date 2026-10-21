@@ -58,6 +58,9 @@ Example:
 		openaiKey     = fs.String("openai-key", "", "OpenAI API key (default: $OPENAI_API_KEY)")
 		openaiBaseURL = fs.String("openai-base-url", "", "OpenAI-compatible base URL (default from config/env)")
 		anthropicKey  = fs.String("anthropic-key", "", "Anthropic API key (default: $ANTHROPIC_API_KEY)")
+		safetyURL     = fs.String("safety-url", "", "decision API base URL for the prompt-injection guard (default from config safety.decision_url)")
+		safetyToken   = fs.String("safety-token", "", "decision API token (default: $SAFETY_DECISION_TOKEN env or config)")
+		safetyEnabled = fs.Bool("safety-enabled", false, "gate every LLM call through the prompt-injection detector; hard-fails on verdict. Off by default; config safety.enabled turns it on too.")
 	)
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
@@ -107,10 +110,20 @@ Example:
 		return llmCode
 	}
 
+	// The guard is not optional here: `summarizer monthly` feeds last
+	// month's published text straight back to the LLM, and that text is
+	// itself derived from GitLab issue and MR bodies. Same control as
+	// `run` — otherwise `safety.enabled: true` is a partial promise.
+	guard, guardCode := newGuard(cfg, *safetyEnabled, *safetyURL, *safetyToken)
+	if guardCode != exitOK {
+		return guardCode
+	}
+
 	runner := &run.MonthlyRunner{
 		Publisher:    glPub,
 		Reader:       glPub,
 		LLM:          llmProvider,
+		Guard:        guard,
 		Model:        cfg.Model,
 		DryRun:       *dryRun,
 		ReportPrefix: cfg.Publish.Prefix,

@@ -336,7 +336,7 @@ func (g *GitLabPublisher) readExistingUID(path, branch string) (uid, lastCommitI
 	case resp.StatusCode >= 400:
 		body, _ := io.ReadAll(resp.Body)
 		return "", "", fmt.Errorf("%s %s: %d %s",
-			http.MethodGet, urlStr, resp.StatusCode, truncate(string(body), 300))
+			http.MethodGet, urlStr, resp.StatusCode, textutil.Truncate(string(body), 300))
 	}
 
 	var fr fileResponse
@@ -471,12 +471,10 @@ func (g *GitLabPublisher) api(urlStr, method string, body []byte, out any) error
 	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("%s %s: %d %s", method, urlStr, resp.StatusCode, truncate(string(respBody), 300))
+		return fmt.Errorf("%s %s: %d %s", method, urlStr, resp.StatusCode, textutil.Truncate(string(respBody), 300))
 	}
 	if out != nil && len(respBody) > 0 {
 		return json.Unmarshal(respBody, out)
 	}
 	return nil
 }
-
-func truncate(s string, n int) string { return textutil.Truncate(s, n) }

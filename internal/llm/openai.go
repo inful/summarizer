@@ -31,6 +31,8 @@ func NewOpenAI(apiKey, model, baseURL string) *OpenAIProvider {
 	}
 }
 
+// Complete posts to the Chat Completions endpoint and decodes the
+// choice's content.
 func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, error) {
 	body := map[string]any{
 		"model": resolveModel(req.Model, o.Model),
@@ -40,28 +42,13 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 		},
 		"max_tokens": pickMaxTokens(req.MaxTokens, o.MaxTokens),
 	}
-	buf, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.BaseURL+"/v1/chat/completions", bytes.NewReader(buf))
-	if err != nil {
-		return Response{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	headers := map[string]string{"Content-Type": "application/json"}
 	// Local OpenAI-compatible servers (Ollama, vLLM, LM Studio) usually
 	// don't require auth. Sending "Authorization: Bearer " with an empty
 	// key is rejected by some of them, so omit the header entirely when
 	// no key is configured.
 	if o.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+o.APIKey)
-	}
-
-	resp, err := doWithRetry(ctx, o.HTTP, httpReq, buf)
-	if err != nil {
-		return Response{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return Response{}, fmt.Errorf("openai: %d %s", resp.StatusCode, truncate(string(respBody), 300))
+		headers["Authorization"] = "Bearer " + o.APIKey
 	}
 
 	var out struct {
@@ -76,8 +63,8 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 			TotalTokens      int `json:"total_tokens"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return Response{}, fmt.Errorf("openai: decode: %w", err)
+	if err := postJSON(ctx, o.HTTP, o.BaseURL+"/v1/chat/completions", "openai", headers, body, &out); err != nil {
+		return Response{}, err
 	}
 	if len(out.Choices) == 0 || out.Choices[0].Message.Content == "" {
 		return Response{}, ErrEmptyResponse
@@ -90,6 +77,43 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 			TotalTokens:      out.Usage.TotalTokens,
 		},
 	}, nil
+}
+
+// postJSON is the shared request half of both providers: marshal,
+// POST with retry, bound the response read, surface a status error with
+// the body quoted, then decode. Only the URL, the headers, the request
+// body and the response shape differ between providers — everything else
+// was duplicated, and the copies had already drifted once (OpenAI omits
+// an empty Authorization header so local servers accept it; Anthropic
+// always sends x-api-key).
+func postJSON(ctx context.Context, hc *http.Client, url, provider string, headers map[string]string, body, out any) error {
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("%s: encode: %w", provider, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := doWithRetry(ctx, hc, httpReq, buf)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// Bounded: this reads from a host we do not control, and the error
+	// path only keeps the first 300 bytes anyway.
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s: %d %s", provider, resp.StatusCode, textutil.Truncate(string(respBody), 300))
+	}
+	if err := json.Unmarshal(respBody, out); err != nil {
+		return fmt.Errorf("%s: decode: %w", provider, err)
+	}
+	return nil
 }
 
 func firstNonEmpty(a, b string) string {
@@ -108,5 +132,3 @@ func pickMaxTokens(req, def int) int {
 	}
 	return 1024
 }
-
-func truncate(s string, n int) string { return textutil.Truncate(s, n) }

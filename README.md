@@ -366,6 +366,11 @@ folded into the monthly summary. They're already split per customer;
 combining them into one blob would mix customers together, which is
 what that split exists to prevent.
 
+The monthly path applies the same prompt-injection guard as `run`: its
+input is last month's published text, which is itself derived from
+GitLab issue and MR bodies. `safety.enabled: true` in the config covers
+both subcommands.
+
 ## Schedule
 
 ```cron

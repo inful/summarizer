@@ -154,7 +154,15 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	// unbounded bill on an instance where everything was touched. The
 	// cap lands after discovery and opt-out (so it does not count
 	// projects that would never have run) and before any LLM call.
+	//
+	// Sort by path first. finalList is explicit --project entries in
+	// argument order, then discovered projects in API response order, so
+	// truncating it as-is keeps a fixed cohort that never varies —
+	// permanently summarising the same N projects and never the rest.
+	// Sorting makes the kept set reproducible and reviewable. It does
+	// NOT rotate; that is a policy decision, not a default.
 	if cap := p.Opts.maxProjects(); len(finalList) > cap {
+		sort.Strings(finalList)
 		dropped := finalList[cap:]
 		finalList = finalList[:cap]
 		fmt.Fprintf(os.Stderr, "summarizer: --max-projects %d — dropping %d project(s) that would have cost %d more LLM call(s):\n",
@@ -284,6 +292,19 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		all = append(all, events.Commit(c))
 	}
 
+	// Dry-run exits HERE, before the epic fetch. Epics are the most
+	// expensive thing this function does — one HTTP call per epic, per
+	// project — and a dry run throws the result away. Making the preview
+	// slower than the run it previews is how you stop people previewing.
+	if p.Opts.DryRun {
+		res.EventsFetched = len(all)
+		res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
+		fmt.Fprintf(os.Stderr, "summarizer dry-run: %s: %d events (%d mrs, %d issues, %d commits) in window [%s, %s]\n",
+			project, len(all), len(mrs), len(issues), len(commits),
+			since.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
+		return res, nil
+	}
+
 	epics, err := p.fetchProjectEpics(ctx, project, since, time.Now().UTC())
 	if err != nil {
 		// Epic failure is non-fatal: skip the epic section but keep the
@@ -294,14 +315,8 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		fmt.Fprintf(os.Stderr, "summarizer: WARN epics unavailable for %s — proceeding without epic section: %v\n", project, err)
 		epics = nil
 	}
-	if len(epics) > maxActiveEpics {
-		// Soft warning; if the project has more than the cap's worth
-		// of active epics, only the first maxActiveEpics surface in the
-		// report (caller already filtered to "had activity in window").
-		fmt.Fprintf(os.Stderr, "summarizer: %s: %d active epics in window, capping at %d\n",
-			project, len(epics), maxActiveEpics)
-		epics = epics[:maxActiveEpics]
-	}
+	// The cap already ran inside fetchProjectEpics, before the
+	// per-epic issue fetch, so there is nothing to trim here.
 	events.AttachEpics(all, epics)
 	res.EventsFetched = len(all)
 	res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
@@ -317,13 +332,6 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	// no epics don't add map entries.
 	if len(epics) > 0 {
 		p.lastActiveEpics[project] = epics
-	}
-
-	if p.Opts.DryRun {
-		fmt.Fprintf(os.Stderr, "summarizer dry-run: %s: %d events (%d mrs, %d issues, %d commits) in window [%s, %s]\n",
-			project, len(all), len(mrs), len(issues), len(commits),
-			since.Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339))
-		return res, nil
 	}
 
 	window := p.Opts.Since
@@ -768,16 +776,36 @@ func (o Options) forceOverwrite() bool {
 //     opinions verdict. Logged as a warning so the
 //     operator notices on the next cron run.
 func (p *Pipeline) checkPrompt(ctx context.Context, project string, aud prompt.Audience, prompt string) error {
-	verdict, score, err := p.Guard.Check(ctx, prompt)
+	return checkPrompt(ctx, p.Guard, project+"/"+string(aud), prompt)
+}
+
+// checkPrompt is the single entry point for the injection guard. It is a
+// free function rather than a Pipeline method because MonthlyRunner has
+// no Pipeline but must be guarded too — `summarizer monthly` feeds last
+// month's published text, which is itself LLM output derived from GitLab
+// issue and MR bodies. An unguarded path makes `safety.enabled: true` a
+// partial promise.
+//
+// label identifies the call in a log line ("group/proj/team",
+// "monthly-rollup/2026-09/customer").
+func checkPrompt(ctx context.Context, g safety.Guard, label, prompt string) error {
+	if g == nil {
+		// Defensive: a nil Guard is a wiring mistake, and panicking
+		// here would surface as an unrelated crash mid-run. Noop is
+		// the same behaviour as the guard being disabled, which is
+		// what a nil here always means.
+		g = safety.NoopGuard{}
+	}
+	verdict, score, err := g.Check(ctx, prompt)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "summarizer: WARN safety guard unavailable for %s/%s — proceeding without check: %v\n", project, aud, err)
+		fmt.Fprintf(os.Stderr, "summarizer: WARN safety guard unavailable for %s — proceeding without check: %v\n", label, err)
 		return nil
 	}
 	if verdict == safety.VerdictInjection {
-		fmt.Fprintf(os.Stderr, "summarizer: safety guard REJECTED prompt for %s/%s (score=%.3f >= threshold)\n", project, aud, score)
-		return fmt.Errorf("%w (score=%.3f): %s/%s", ErrInjection, score, project, aud)
+		fmt.Fprintf(os.Stderr, "summarizer: safety guard REJECTED prompt for %s (score=%.3f >= threshold)\n", label, score)
+		return fmt.Errorf("%w (score=%.3f): %s", ErrInjection, score, label)
 	}
-	fmt.Fprintf(os.Stderr, "summarizer: safety guard cleared %s/%s (score=%.3f)\n", project, aud, score)
+	fmt.Fprintf(os.Stderr, "summarizer: safety guard cleared %s (score=%.3f)\n", label, score)
 	return nil
 }
 
@@ -858,10 +886,31 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	// Fetch each epic's linked issues. nil-on-soft-degrade per epic:
-	// a single epic returning 403 doesn't kill the whole list; we
-	// just lose that one's issue map (its events would land in
-	// "Other activity").
+	// Sort by IID before anything else. GitLab makes no promise about
+	// the order /epics returns, and this slice is rendered into the
+	// prompt in this order — so without sorting, two runs over identical
+	// input produce different documents and the fingerprint flags churn
+	// that is not a real content change.
+	sort.Slice(raw, func(i, j int) bool { return raw[i].IID < raw[j].IID })
+
+	// Each epic's issues are one HTTP round-trip, so ordering of
+	// operations matters more than it looks:
+	//
+	//  1. Cap FIRST. Fetching issues for all N epics and then dropping
+	//     all but 20 made N sequential calls to produce a report that
+	//     uses 20 of them — the dominant cost of a run on a group with
+	//     many epics, and it grew every quarter.
+	//  2. Then filter by activity, which needs the issues we fetched.
+	//
+	// The cap trades coverage for wall time: the epics that survive are
+	// the 20 lowest IIDs rather than the 20 most recently active.
+	// maxActiveEpics sits far above the usual active count so this
+	// rarely bites, and the stderr line says so when it does.
+	if len(raw) > maxActiveEpics {
+		fmt.Fprintf(os.Stderr, "summarizer: %s: %d epics in group %s, considering the first %d by IID\n",
+			project, len(raw), ns.FullPath, maxActiveEpics)
+		raw = raw[:maxActiveEpics]
+	}
 	for i := range raw {
 		rawIssues, err := p.GitLab.FetchEpicIssues(ctx, ns.FullPath, raw[i].IID)
 		if err != nil {

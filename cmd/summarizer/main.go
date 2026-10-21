@@ -113,6 +113,35 @@ func resolveLLM(cfg *config.Config, openaiKey, anthropicKey string) (llm.Provide
 	}
 }
 
+// newGuard builds the prompt-injection guard for both `run` and
+// `monthly`. Shared so the monthly path cannot silently end up
+// unguarded while the config says safety.enabled: true.
+func newGuard(cfg *config.Config, enabled bool, url, token string) (safety.Guard, int) {
+	if !enabled && !cfg.Safety.Enabled {
+		return safety.NoopGuard{}, exitOK
+	}
+	decisionURL := url
+	if decisionURL == "" {
+		decisionURL = cfg.Safety.DecisionURL
+	}
+	if decisionURL == "" {
+		fmt.Fprintln(os.Stderr, "error: --safety-enabled but no decision URL (set --safety-url or config safety.decision_url)")
+		return nil, exitConfig
+	}
+	tokenEnv := cfg.Safety.DecisionTokenEnv
+	if tokenEnv == "" {
+		tokenEnv = "SAFETY_DECISION_TOKEN"
+	}
+	if token == "" {
+		token = os.Getenv(tokenEnv)
+	}
+	threshold := cfg.Safety.InjectionThreshold
+	if threshold <= 0 {
+		threshold = 0.7
+	}
+	return safety.NewDecide(decisionURL, token, threshold), exitOK
+}
+
 // newPublisher builds the publisher for both `run` and `monthly`.
 //
 // Shared so the two cannot drift: monthlyCmd was missing the
@@ -293,32 +322,11 @@ Env:
 		return code
 	}
 
-	// Safety guard. Disabled by default. When enabled, every LLM call is
-	// preceded by a prompt-injection check via the decide API.
-	var guard safety.Guard = safety.NoopGuard{}
-	safetyOn := *safetyEnabled || cfg.Safety.Enabled
-	if safetyOn {
-		decisionURL := *safetyURL
-		if decisionURL == "" {
-			decisionURL = cfg.Safety.DecisionURL
-		}
-		if decisionURL == "" {
-			fmt.Fprintln(os.Stderr, "error: --safety-enabled but no decision URL (set --safety-url or config safety.decision_url)")
-			return exitConfig
-		}
-		tokenEnv := cfg.Safety.DecisionTokenEnv
-		if tokenEnv == "" {
-			tokenEnv = "SAFETY_DECISION_TOKEN"
-		}
-		token := *safetyToken
-		if token == "" {
-			token = os.Getenv(tokenEnv)
-		}
-		threshold := cfg.Safety.InjectionThreshold
-		if threshold <= 0 {
-			threshold = 0.7
-		}
-		guard = safety.NewDecide(decisionURL, token, threshold)
+	// Safety guard. Disabled by default. When enabled, every LLM call
+	// is preceded by a prompt-injection check via the decide API.
+	guard, code := newGuard(cfg, *safetyEnabled, *safetyURL, *safetyToken)
+	if code != exitOK {
+		return code
 	}
 
 	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
@@ -348,7 +356,15 @@ Env:
 }
 
 func printSummary(res run.Result, err error, dryRun bool, window time.Duration) {
-	if err == nil && !dryRun {
+	// Print what was published whenever anything was, even when the run
+	// ended in an error. A partial run that published 24 of 25 projects
+	// is not a run that published nothing, and this summary line is what
+	// a cron wrapper greps — hiding the successes behind an error made a
+	// partial run indistinguishable from a total failure.
+	if !dryRun && (err == nil || len(res.Projects) > 0) {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "summarizer: PARTIAL — %d project(s) published before the run failed; see the WARN lines above for the ones that did not\n", len(res.Projects))
+		}
 		var totalEvents, usedEvents int
 		for _, p := range res.Projects {
 			totalEvents += p.EventsFetched
@@ -382,7 +398,6 @@ func printSummary(res run.Result, err error, dryRun bool, window time.Duration) 
 			fmt.Fprintf(os.Stderr, "  tokens[rollup/%s]: prompt=%d completion=%d total=%d\n",
 				aud, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
 		}
-		return
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "summarizer: %v\n", err)
