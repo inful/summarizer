@@ -22,7 +22,7 @@ import (
 type Config struct {
 	// Required: GitLab host (e.g. "https://gitlab.example.com"). Has no
 	// default — refusing to start without it is the correct behavior.
-	GitLabHost string
+	GitLabHost string `yaml:"gitlab_host"`
 
 	// Per-project default model for the chosen provider. Default: gpt-4o-mini.
 	// Provider-specific: an Anthropic model id if provider="anthropic".
@@ -49,22 +49,16 @@ type Config struct {
 	// normalizer accepts both bare-host and /v1-suffixed forms.
 	OpenAIBaseURL string `yaml:"openai_base_url"`
 
-	// Projects is the list of GitLab project paths to summarize in one run.
-	// CLI --project is repeatable; each occurrence adds to the slice. The
-	// YAML key accepts a list, e.g.:
-	//   projects:
-	//     - group/subgroup/project-a
-	//     - group/subgroup/project-b
-	// When len(Projects) > 1, the pipeline also writes a top-level
-	// rollup (combined--<since>d--customer.md and --team.md) by feeding
-	// the per-project reports to one extra LLM call per audience.
-	Projects []string `yaml:"projects"`
-
 	// InternalOnlyProjects is the operator-curated list of projects
 	// that should never produce customer-facing output. Same effect
-	// as the GitLab-side `summarizer-team-only` topic (D5) or the
+	// as the GitLab-side `summarize-team-only` topic (D5) or the
 	// --internal-only-project CLI flag — the three sources union
 	// together. See internal/policy for the classifier.
+	//
+	// There is deliberately no `projects:` list here: the project set
+	// comes from --project, --discover-group or --discover-by-topic.
+	// A config-file project list would be a second, silently-ignored
+	// way to say the same thing.
 	InternalOnlyProjects []string `yaml:"internal_only_projects"`
 
 	// Publish configures the optional GitLab MR-based publisher.

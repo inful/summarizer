@@ -1,9 +1,11 @@
 package events
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/inful/summarizer/internal/gitlab"
+	"github.com/inful/summarizer/internal/textutil"
 )
 
 // Cap constants — events are sent to an LLM. Bigger is wasteful and
@@ -93,23 +95,6 @@ func commitAuthor(g gitlab.Commit) string {
 	return g.AuthorName
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
+func truncate(s string, n int) string { return textutil.Truncate(s, n) }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
-}
+func itoa(n int) string { return strconv.Itoa(n) }

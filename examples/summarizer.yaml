@@ -40,12 +40,10 @@ max_events: 200
 # --team.md) by feeding the per-project reports to one extra LLM call
 # per audience. Per-project reports stay the same.
 #
-# CLI --project is repeatable and/or comma-separated; YAML projects:
-# is appended to the CLI list.
-projects:
-  - group/subgroup/project-a
-  - group/subgroup/project-b
-  - group/subgroup/project-c
+# There is no `projects:` list here on purpose. The project set comes
+# from --project (repeatable, comma-separated), --discover-group, or
+# --discover-by-topic. Pick one; a config-file project list would be a
+# second way to say the same thing that nothing reads.
 
 # Optional: publish to a GitLab project as MRs for review instead of
 # writing Markdown locally. Reports are committed per-period on a branch

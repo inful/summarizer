@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/inful/mdfm"
+	"github.com/inful/summarizer/internal/textutil"
 )
 
 // GitLabPublisher commits each report to a per-period source branch on
@@ -419,9 +420,4 @@ func (g *GitLabPublisher) api(urlStr, method string, body []byte, out any) error
 	return nil
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
+func truncate(s string, n int) string { return textutil.Truncate(s, n) }

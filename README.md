@@ -284,6 +284,8 @@ combined--<duration>d--team.md
 | 5    | LLM call failure                            |
 | 6    | File write failure (e.g. target exists)     |
 | 7    | Missing env var (token / API key)           |
+| 8    | Prompt-injection guard rejected a prompt    |
+| 1    | Unclassified failure (see stderr)           |
 
 ## Layout
 

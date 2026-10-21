@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -74,13 +75,15 @@ Run 'summarizer run --help' for run flags.
 
 // exit codes — distinct branches in a cron script can react to each.
 const (
-	exitOK     = 0
-	exitUsage  = 2
-	exitConfig = 3
-	exitGitLab = 4
-	exitLLM    = 5
-	exitWrite  = 6
-	exitEnv    = 7
+	exitOK        = 0
+	exitUsage     = 2
+	exitConfig    = 3
+	exitGitLab    = 4
+	exitLLM       = 5
+	exitWrite     = 6
+	exitEnv       = 7
+	exitInjection = 8
+	exitUnknown   = 1
 )
 
 func runCmd(args []string) int {
@@ -359,30 +362,29 @@ func printSummary(res run.Result, err error, dryRun bool, window time.Duration) 
 // a string-match pass. Tighten with typed sentinels if exit-code fidelity
 // becomes important.
 func classify(err error) int {
-	switch {
-	case err == nil:
+	if err == nil {
 		return exitOK
+	}
+	switch {
+	case errors.Is(err, run.ErrInjection):
+		return exitInjection
 	case errors.Is(err, publisher.ErrExists):
 		return exitWrite
 	}
 	msg := err.Error()
 	switch {
-	case contains(msg, "fetch "):
+	case strings.Contains(msg, "fetch "):
 		return exitGitLab
-	case contains(msg, "llm "):
+	case strings.Contains(msg, "llm "):
 		return exitLLM
-	case contains(msg, "write "):
+	case strings.Contains(msg, "write "):
 		return exitWrite
-	case contains(msg, "config"):
+	case strings.Contains(msg, "config"):
 		return exitConfig
-	case contains(msg, "render"):
+	case strings.Contains(msg, "render"):
 		return exitLLM
 	}
-	return 1
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && indexOf(s, sub) >= 0
+	return exitUnknown
 }
 
 // unionSlices merges two string slices, deduping on exact equality.
@@ -391,28 +393,13 @@ func contains(s, sub string) bool {
 func unionSlices(a, b []string) []string {
 	out := make([]string, 0, len(a)+len(b))
 	seen := make(map[string]bool, len(a)+len(b))
-	for _, s := range a {
-		if !seen[s] {
-			out = append(out, s)
-			seen[s] = true
-		}
-	}
-	for _, s := range b {
+	for _, s := range slices.Concat(a, b) {
 		if !seen[s] {
 			out = append(out, s)
 			seen[s] = true
 		}
 	}
 	return out
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
 
 // stringSliceFlag is a custom flag.Value that accepts both repeated

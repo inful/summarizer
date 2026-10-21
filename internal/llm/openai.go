@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/inful/summarizer/internal/textutil"
 )
 
 // OpenAIProvider calls the OpenAI Chat Completions API.
@@ -107,9 +109,4 @@ func pickMaxTokens(req, def int) int {
 	return 1024
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
+func truncate(s string, n int) string { return textutil.Truncate(s, n) }

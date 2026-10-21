@@ -50,14 +50,13 @@ const maxActiveEpics = 20
 // rollup step (when len(Projects) > 1) without re-reading from disk.
 type ProjectResult struct {
 	Project          string
-	Source           policy.ProjectSource // SourceDiscovered for --discover-group; SourceExplicit otherwise
 	EventsFetched    int
 	EventsUsed       int
 	CustomerText     string // rendered markdown for the customer audience (empty when TeamOnly)
 	TeamText         string // rendered markdown for the team audience
 	FilesWritten     []string
 	TokensByAudience map[string]llm.Usage
-	FromDiscovery    bool           // alias for Source == SourceDiscovered; retained for log readability
+	FromDiscovery    bool           // surfaced by --discover-group / --discover-by-topic
 	TeamOnly         bool           // true ⇒ no customer-facing content was produced for this project
 	CustomerOn       bool           // true ⇒ customer-facing content was produced (== !TeamOnly)
 	ActiveEpics      []*gitlab.Epic // active epics for this project (had issue activity in window); used by runEpicRollup
@@ -144,10 +143,18 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	// the partial-result contract is the same as the single-project
 	// path's.
 	for _, project := range finalList {
-		pr, err := p.runOneProject(ctx, project)
+		// A project's origin decides its audience default: discovered
+		// projects are team-only unless they carry the `summarize`
+		// opt-in. Passing the wrong source here silently publishes
+		// customer reports for untagged discovered projects.
+		source := policy.SourceExplicit
+		if discoveredSet[project] {
+			source = policy.SourceDiscovered
+		}
+		pr, err := p.runOneProject(ctx, project, source)
 		// Tag whether this project came from discovery. Consumed by
 		// the operator-visible summary so a wide-net run is auditable.
-		pr.FromDiscovery = discoveredSet[project]
+		pr.FromDiscovery = source == policy.SourceDiscovered
 		// Active epics were already fetched inside runOneProject
 		// (via fetchProjectEpics); carry them forward on the
 		// ProjectResult so runEpicRollup can publish the cross-
@@ -197,17 +204,16 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 // Explicit), the project's GitLab topics, and the three sources of
 // team-only override (config / CLI / topic) — see policy.Classify
 // for the truth table.
-func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectResult, error) {
+func (p *Pipeline) runOneProject(ctx context.Context, project string, source policy.ProjectSource) (ProjectResult, error) {
 	res := ProjectResult{
 		Project:          project,
-		Source:           policy.SourceExplicit, // overridden to SourceDiscovered in Run when applicable
 		FilesWritten:     []string{},
 		TokensByAudience: map[string]llm.Usage{},
 	}
 
 	inOverrideList := containsString(p.Opts.InternalOnlyProjects, project)
 	topics := p.projectTopics(ctx, project)
-	audience := policy.Classify(res.Source, topics, inOverrideList)
+	audience := policy.Classify(source, topics, inOverrideList)
 	res.TeamOnly = audience.TeamOnly
 	res.CustomerOn = audience.CustomerOn
 

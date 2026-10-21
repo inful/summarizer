@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/inful/summarizer/internal/textutil"
 )
 
 // Client is a single GitLab REST v4 client. Construct with New.
@@ -858,9 +860,4 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
+func truncate(s string, n int) string { return textutil.Truncate(s, n) }
