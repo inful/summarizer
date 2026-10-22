@@ -155,8 +155,8 @@ reports/
     other-proj--wk--team.md
     combined--rollup--wk--customer.md   # cross-project rollup (when ≥2 projects)
     combined--rollup--wk--team.md
-    combined--epics-rollup--wk--customer.md   # cross-project epic rollup (when ≥1 active epic)
-    combined--epics-rollup--wk--team.md
+    combined--epics-rollup--wk--team.md        # whole fleet, team only
+    combined--epics-<customer-slug>--wk--customer.md   # one per attributed customer
   2026-W43/
     ...
   2026-09/                             # `summarizer monthly` output
@@ -315,11 +315,14 @@ summarizer run --discover-group group/team-a \
 
 # When more than one project runs (whether explicit or discovered),
 # summarizer also writes a combined rollup
-# (combined--rollup--<days>d--customer.md and --team.md) by feeding
+# (combined--rollup--wk--customer.md and --team.md) by feeding
 # the per-project reports to one extra LLM call per audience. Active
-# epics add combined--epics-rollup--*, split per customer as
-# combined--epics-<customer-slug>--* when issues carry org::CODE
-# labels.
+# epics add one customer file per attributed customer,
+# combined--epics-<customer-slug>--*, where an epic or any of its
+# issues carries an org::CODE label. Epics nobody attributed appear in
+# the TEAM rollup only — customer output is opt-in everywhere else in
+# summarizer, and an unattributed epic is the least attributed thing
+# there is.
 
 # Period bucketing is by ISO week number, and the default window is
 # that same week. Every run inside one Mon-Sun week writes to
@@ -336,17 +339,16 @@ uses in the target repo:
 
 ```
 # Single-project run:
-<output_dir>/2026-W43/<project>--<duration>d--customer.md
-<output_dir>/2026-W43/<project>--<duration>d--team.md
+<output_dir>/2026-W43/<project>--wk--customer.md
+<output_dir>/2026-W43/<project>--wk--team.md
 
 # Multi-project run (additionally):
-<output_dir>/2026-W43/combined--rollup--<duration>d--customer.md
-<output_dir>/2026-W43/combined--rollup--<duration>d--team.md
+<output_dir>/2026-W43/combined--rollup--wk--customer.md
+<output_dir>/2026-W43/combined--rollup--wk--team.md
 
 # With active epics (additionally):
-<output_dir>/2026-W43/combined--epics-rollup--wk--customer.md
 <output_dir>/2026-W43/combined--epics-rollup--wk--team.md
-<output_dir>/2026-W43/combined--epics-<customer-slug>--<duration>d--customer.md
+<output_dir>/2026-W43/combined--epics-<customer-slug>--wk--customer.md
 ```
 
 Runs inside the same week overwrite in place (that is the point of

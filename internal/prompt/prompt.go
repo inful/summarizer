@@ -62,8 +62,9 @@ func dataBlock(v any) string {
 // Render produces a chat-ready (system, user) pair for the given audience.
 // system is the persistent instruction; user carries the events.
 //
-// IncludeTeamOnly controls whether TeamOnly.Description is included. The
-// customer report never sees it; the team report does.
+// The audience argument decides the TeamOnly handling: the customer
+// report never sees TeamOnly.Description, the team report does. There
+// is no flag for it.
 //
 // epics is the list of active epics for this project (already filtered
 // to "had an issue updated_at within the window"; caller is the
@@ -323,7 +324,7 @@ type EpicSummary struct {
 // detail. Cost: one extra LLM call per audience per run; value:
 // a single page sized for project-management and customer-facing
 // briefings that surfaces epic progress across the fleet.
-func RenderEpicRollup(aud Audience, project string, entries []EpicRollupEntry) (system, user string, err error) {
+func RenderEpicRollup(aud Audience, entries []EpicRollupEntry) (system, user string, err error) {
 	tplName := "epics-rollup-" + string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -355,13 +356,11 @@ func RenderEpicRollup(aud Audience, project string, entries []EpicRollupEntry) (
 
 	data := struct {
 		Window       string
-		Project      string
 		ProjectCount int
 		ProjectNames []string
 		ProjectViews []EpicRollupEntry
 	}{
 		Window:       WeekWindowLabel,
-		Project:      project,
 		ProjectCount: len(names),
 		ProjectNames: names,
 		ProjectViews: entries,
@@ -541,10 +540,10 @@ func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
 	if e.URL != "" {
 		fmt.Fprintf(buf, " — %s", e.URL)
 	}
-	if aud == AudienceTeam && e.TeamOnly != nil && e.TeamOnly.Description != "" {
+	if aud == AudienceTeam && e.TeamOnlyDescription != "" {
 		// Data marker: prompt explicitly forbids the model from obeying
 		// anything inside <data>. Mitigates OWASP LLM01:2025.
-		fmt.Fprintf(buf, "\n  body: %s", dataBlock(e.TeamOnly.Description))
+		fmt.Fprintf(buf, "\n  body: %s", dataBlock(e.TeamOnlyDescription))
 	}
 	if aud == AudienceTeam && len(e.DiffChunks) > 0 {
 		diff := formatDiffChunks(e.DiffChunks)
@@ -598,6 +597,9 @@ func joinLabels(ls []string) string { return strings.Join(ls, ", ") }
 // the template emits — title, URL and the count — so the budget tracks
 // the prompt rather than an estimate of it.
 func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
+	// Measured once, then subtracted as entries drop. Re-measuring the
+	// whole slice each time made this O(n²), and calling dataBlock in
+	// the measurement made the quadratic loop allocate too.
 	size := func(e EpicRollupEntry) int {
 		// Per entry: the "# Project: " heading and the <data> wrapper
 		// dataBlock adds. Per epic: the title and URL through
@@ -611,15 +613,15 @@ func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
 	}
 	kept := make([]EpicRollupEntry, len(entries))
 	copy(kept, entries)
-	for len(kept) > 1 {
-		sum := 0
-		for _, e := range kept {
-			sum += size(e)
-		}
-		if sum <= total {
-			break
-		}
-		kept = kept[1:]
+	sizes := make([]int, len(kept))
+	sum := 0
+	for i, e := range kept {
+		sizes[i] = size(e)
+		sum += sizes[i]
+	}
+	for len(kept) > 1 && sum > total {
+		sum -= sizes[0]
+		kept, sizes = kept[1:], sizes[1:]
 	}
 	return kept
 }

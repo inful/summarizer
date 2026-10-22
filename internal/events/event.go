@@ -35,11 +35,17 @@ type NormalizedEvent struct {
 	Created  time.Time `json:"created"`
 	Updated  time.Time `json:"updated,omitempty"`
 
-	// TeamOnly is excluded from the customer-facing prompt but included for
-	// the team-facing prompt. Bodies are a primary injection vector; data
-	// markers and length caps in the prompt builder are the second line of
-	// defense, the first is not putting this in customer events at all.
-	TeamOnly *TeamOnlyFields `json:"team_only,omitempty"`
+	// TeamOnlyDescription is the MR or issue body, excluded from the
+	// customer-facing prompt and included for the team-facing one.
+	// Bodies are a primary injection vector; data markers and length
+	// caps in the prompt builder are the second line of defence, the
+	// first is not putting this in customer events at all.
+	//
+	// A plain string, not a pointer to a one-field struct: it was
+	// constructed unconditionally and read only when non-empty, so nil
+	// and "set to nothing" were indistinguishable and the nil check in
+	// the renderer could never fire.
+	TeamOnlyDescription string `json:"team_only_description,omitempty"`
 
 	// Changes is the per-MR aggregate of files touched + line adds/dels.
 	// Nil for issues and commits (the /changes endpoint is MR-only). When
@@ -59,9 +65,5 @@ type NormalizedEvent struct {
 	// issue link) matches an issue on a known epic. Nil for events with
 	// no epic context. Used by the prompt renderer to group events under
 	// epic headers in the section that surfaces active epics.
-	Epic *gitlab.Epic `json:"-"` //nolint:unused // populated by AttachEpics, read by prompt
-}
-
-type TeamOnlyFields struct {
-	Description string `json:"description"` // MR/issue body, capped to TeamDescriptionCap runes
+	Epic *gitlab.Epic `json:"-"` // set by AttachEpics, read by the renderer
 }

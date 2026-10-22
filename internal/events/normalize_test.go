@@ -32,7 +32,7 @@ func TestMR_ActionAndRefs(t *testing.T) {
 	if e.Comments != 3 || len(e.Labels) != 2 {
 		t.Fatalf("comments/labels lost: %+v", e)
 	}
-	if e.TeamOnly == nil || e.TeamOnly.Description == "" {
+	if e.TeamOnlyDescription == "" {
 		t.Fatalf("team-only description not carried: %+v", e)
 	}
 	if e.Changes == nil || e.Changes.Files != 5 || e.Changes.Additions != 312 || e.Changes.Deletions != 47 {

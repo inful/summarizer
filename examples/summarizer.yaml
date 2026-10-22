@@ -33,7 +33,7 @@ max_events: 200
 # openai_base_url: "http://localhost:11434/v1"  # Ollama
 
 # Multi-project runs. When more than one project is listed, summarizer
-# writes a combined rollup (combined--<duration>d--customer.md and
+# writes a combined rollup (combined--rollup--wk--customer.md and
 # --team.md) by feeding the per-project reports to one extra LLM call
 # per audience. Per-project reports stay the same.
 #

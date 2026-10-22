@@ -12,8 +12,23 @@
 #
 # To reproduce locally: `lefthook install`. Hooks then run automatically
 # on every `git commit` (pre-commit), `git commit -m "..."` (commit-msg),
-# and `git push` (pre-push). Failures block the operation; CI also runs
-# the test+lint+govulncheck suite for the same reason as a safety net.
+# and `git push` (pre-push).
+#
+# CI covers only the Go suite: go vet, golangci-lint, go test -race and
+# govulncheck. The DOCUMENT hooks — markdownlint, docbuilder-lint, typos,
+# gitleaks, shellcheck, actionlint, hadolint — run on the author's
+# machine and nowhere else, so a contributor without lefthook installed
+# gets none of them. Two of those need care:
+#
+#   • docbuilder-lint validates docs/frontmatter-schema.md, the contract
+#     for the frontmatter every published file carries. It SKIPS SILENTLY
+#     when the `docbuilder` binary is missing or broken, which a bare
+#     mise shim with no pinned version is — so "✔️ docbuilder-lint" can
+#     mean "never ran". Check `docbuilder --version` yourself.
+#   • markdownlint and typos likewise need their binaries on PATH.
+#
+# Adding them to .github/workflows/ci.yml needs their install steps
+# pinned first; they are plain CLI tools, not something CI has today.
 
 min_version: 2.1.0
 

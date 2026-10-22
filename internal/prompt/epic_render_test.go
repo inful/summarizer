@@ -156,7 +156,7 @@ func TestRenderEpicRollup_IsBounded(t *testing.T) {
 			})
 		}
 	}
-	_, user, err := RenderEpicRollup(AudienceCustomer, "g/p", entries)
+	_, user, err := RenderEpicRollup(AudienceCustomer, entries)
 	if err != nil {
 		t.Fatalf("RenderEpicRollup: %v", err)
 	}

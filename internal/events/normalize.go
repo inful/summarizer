@@ -30,19 +30,19 @@ func MR(g gitlab.MergeRequest) NormalizedEvent {
 		updated = *g.ClosedAt
 	}
 	return NormalizedEvent{
-		Kind:       KindMR,
-		Action:     action,
-		Ref:        "#" + itoa(g.IID),
-		Title:      truncate(g.Title, TitleCap),
-		Author:     g.Author.Username,
-		URL:        g.WebURL,
-		Labels:     g.Labels,
-		Comments:   g.UserNotesCount,
-		Created:    g.CreatedAt,
-		Updated:    updated,
-		TeamOnly:   &TeamOnlyFields{Description: truncate(g.Description, DescriptionCap)},
-		Changes:    g.Changes,
-		DiffChunks: g.DiffChunks,
+		Kind:                KindMR,
+		Action:              action,
+		Ref:                 "#" + itoa(g.IID),
+		Title:               truncate(g.Title, TitleCap),
+		Author:              g.Author.Username,
+		URL:                 g.WebURL,
+		Labels:              g.Labels,
+		Comments:            g.UserNotesCount,
+		Created:             g.CreatedAt,
+		Updated:             updated,
+		TeamOnlyDescription: truncate(g.Description, DescriptionCap),
+		Changes:             g.Changes,
+		DiffChunks:          g.DiffChunks,
 	}
 }
 
@@ -56,17 +56,17 @@ func Issue(g gitlab.Issue) NormalizedEvent {
 		updated = *g.ClosedAt
 	}
 	return NormalizedEvent{
-		Kind:     KindIssue,
-		Action:   action,
-		Ref:      "#" + itoa(g.IID),
-		Title:    truncate(g.Title, TitleCap),
-		Author:   g.Author.Username,
-		URL:      g.WebURL,
-		Labels:   g.Labels,
-		Comments: g.UserNotesCount,
-		Created:  g.CreatedAt,
-		Updated:  updated,
-		TeamOnly: &TeamOnlyFields{Description: truncate(g.Description, DescriptionCap)},
+		Kind:                KindIssue,
+		Action:              action,
+		Ref:                 "#" + itoa(g.IID),
+		Title:               truncate(g.Title, TitleCap),
+		Author:              g.Author.Username,
+		URL:                 g.WebURL,
+		Labels:              g.Labels,
+		Comments:            g.UserNotesCount,
+		Created:             g.CreatedAt,
+		Updated:             updated,
+		TeamOnlyDescription: truncate(g.Description, DescriptionCap),
 	}
 }
 

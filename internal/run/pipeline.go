@@ -694,13 +694,10 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 }
 
 func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
-	// Pick a representative project name for the report header (the
-	// rollup spans N projects; we surface a single project path in the
-	// doc-builder frontmatter — first by sorted order for determinism).
-	repProject := ""
-	if len(projects) > 0 {
-		repProject = projects[0].Project
-	}
+	// No representative project name: the epic rollups name every
+	// project in the body and the frontmatter carries Project: "",
+	// because they span N projects. A "first project for determinism"
+	// used to be threaded into the prompt data and rendered by nothing.
 	return p.runAudienceRollups(ctx, projects, audienceInputs{
 		name: "epics-rollup",
 		parts: func(aud prompt.Audience) ([]rollupPart, error) {
@@ -717,7 +714,7 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 			}
 			parts := make([]rollupPart, 0, len(buckets))
 			for _, b := range buckets {
-				system, user, err := prompt.RenderEpicRollup(aud, repProject, b.Entries)
+				system, user, err := prompt.RenderEpicRollup(aud, b.Entries)
 				if err != nil {
 					return nil, fmt.Errorf("render epics rollup %s: %w", aud, err)
 				}

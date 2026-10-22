@@ -1018,3 +1018,64 @@ func TestGitLabPublisher_MemoDoesNotCreateASecondMR(t *testing.T) {
 		t.Errorf("attempted the MR create %d times, want 2 — a failed create must not be memoised", got)
 	}
 }
+
+// TestGitLabPublisher_EveryFileOfARepublishedWeekIsMarkedClosed:
+// the memo returned ("", nil) for a branch it knew was closed, so only
+// the FIRST file of a re-published week produced errPeriodClosed and
+// got Result.Closed. Every file after it was counted by printSummary
+// as published — so a 50-project re-run reported "100 file(s) written
+// (1 already published this week)" when nothing had reached main. That
+// is the exact sentence the feature was added to fix.
+func TestGitLabPublisher_EveryFileOfARepublishedWeekIsMarkedClosed(t *testing.T) {
+	f := &fakeGitLab{
+		mergeRequests: []mergeRequest{
+			{IID: 5, WebURL: "x", State: "merged",
+				SourceBranch: "summarizer/2026-10-19", TargetBranch: "main", Title: "old"},
+		},
+	}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+
+	const files = 5
+	for i := range files {
+		res, err := p.Publish(context.Background(), Request{
+			Name: fmt.Sprintf("f%d.md", i), Body: []byte("x"),
+			Period: "2026-10-19", Kind: KindPerProject,
+		})
+		if err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		if !res.Closed {
+			t.Errorf("file %d: Closed is false — a re-published week must mark EVERY file, "+
+				"not just the first", i)
+		}
+	}
+}
+
+// TestGitLabPublisher_MemoRemembersAPreExistingBranch: ensureBranch
+// learned the branch existed from the GET and then discarded it, so the
+// memo only paid off when this run created the branch — and not on a
+// re-run, a restart mid-week, or the second `summarizer run` of an
+// evening, which is when an operator iterates on a report.
+func TestGitLabPublisher_MemoRemembersAPreExistingBranch(t *testing.T) {
+	f := &fakeGitLab{}
+	// The branch already exists before the run starts.
+	f.branches.Store("summarizer/2026-10-19", struct{}{})
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+
+	const files = 4
+	for i := range files {
+		if _, err := p.Publish(context.Background(), Request{
+			Name: fmt.Sprintf("f%d.md", i), Body: []byte("x"),
+			Period: "2026-10-19", Kind: KindPerProject,
+		}); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	if got := f.branchExistsCount.Load(); got != 1 {
+		t.Errorf("branch-existence GET ran %d times for %d files on an existing branch, want 1", got, files)
+	}
+}

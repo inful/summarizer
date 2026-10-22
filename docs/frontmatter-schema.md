@@ -131,10 +131,19 @@ period, all under `<prefix>/<period>/`:
 
 | File shape | Audience | When it lands |
 |---|---|---|
-| `<project-sanitized>--<days>d--<aud>.md` | customer + team | one pair per project (always) |
-| `combined--rollup--<days>d--<aud>.md` | customer + team | when ≥2 projects run |
-| `combined--epics-rollup--<days>d--<aud>.md` | customer + team | when ≥1 active epic exists anywhere in the run |
-| `combined--epics-<customer-slug>--<days>d--customer.md` | customer only | one per `org::CODE` bucket, plus one with an empty slug for the unattributed backlog |
+| `<project-sanitized>--wk--<aud>.md` | customer + team | one pair per project (always) |
+| `combined--rollup--wk--<aud>.md` | customer + team | when ≥1 project runs |
+| `combined--epics-rollup--wk--team.md` | team only | when ≥1 active epic exists anywhere in the run |
+| `combined--epics-<customer-slug>--wk--customer.md` | customer only | one per `org::CODE` bucket |
+
+The window token is `wk`, not a day count: the window is the current ISO
+week and there is no flag to change it.
+
+There is no customer-side combined epic file. Unattributed epics — no
+`org::CODE` label on the epic or on any of its issues — are in the team
+rollup only, because customer output is opt-in everywhere else in
+summarizer and an unattributed epic is the least attributed thing there
+is.
 | `monthly--<YYYY-MM>--<aud>.md` | customer + team | `summarizer monthly` only, under its own `<YYYY-MM>` period directory |
 
 Every `combined--*` file carries its kind as an explicit segment, so a

@@ -403,6 +403,12 @@ func (g *GitLabPublisher) ensureBranch(ctx context.Context, branch string) error
 		return nil
 	}
 	if g.branchExists(ctx, branch) {
+		// Remember it. Without this the memo only pays off on the
+		// first run of a period, where this file creates the branch —
+		// and every re-run, restart or second `summarizer run` of the
+		// same week re-fetched per file, which is the case an operator
+		// hits while iterating on a report.
+		g.remember(branch, branchFacts{exists: true})
 		return nil
 	}
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches",
@@ -584,7 +590,16 @@ func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req
 	// One run publishes every file onto one branch, and all four of
 	// these queries answer the same question for all of them. Resolved
 	// once, then reused.
-	if f := g.recalled(branch); f.mrURL != "" || f.closed {
+	//
+	// "closed" has to come back as the SENTINEL, not as ("", nil).
+	// Publish sets Result.Closed only on the errPeriodClosed path, and
+	// printSummary counts from that — so returning a bare success here
+	// made every file after the first count as published, and the run
+	// reported "100 file(s) written (1 already published this week)"
+	// when nothing had reached main. The queries are still saved.
+	if f := g.recalled(branch); f.closed {
+		return "", fmt.Errorf("%w: %s", errPeriodClosed, req.Period)
+	} else if f.mrURL != "" {
 		return f.mrURL, nil
 	}
 
