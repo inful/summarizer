@@ -96,7 +96,3 @@ func Classify(topics []string, inList bool) ProjectPolicy {
 		CustomerOn: !teamOnly,
 	}
 }
-
-// hasTopic is an exact-token lookup. Empty input never matches.
-// Topic labels are tokens — substring or prefix matching would be
-// wrong (a topic "summarize-beta" should NOT match "summarize").

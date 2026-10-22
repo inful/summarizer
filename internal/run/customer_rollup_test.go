@@ -49,7 +49,12 @@ func TestEpicRollup_SplitsCustomerAudienceByOrgLabel(t *testing.T) {
 		codes = append(codes, b.Customer)
 	}
 	sort.Strings(codes)
-	want := []string{"", "ACME", "GLOBEX"}
+	// No "" bucket. This function only feeds the CUSTOMER audience,
+	// which is published with public: true. An epic nobody attributed
+	// to a customer is the least attributed thing in the system, and
+	// every other audience decision here is opt-in. It still reaches the
+	// team rollup through bucketAllEpics.
+	want := []string{"ACME", "GLOBEX"}
 	if strings.Join(codes, ",") != strings.Join(want, ",") {
 		t.Fatalf("buckets = %v, want %v", codes, want)
 	}
@@ -71,9 +76,7 @@ func TestEpicRollup_SplitsCustomerAudienceByOrgLabel(t *testing.T) {
 				t.Errorf("GLOBEX bucket wrong: %+v", b.Entries)
 			}
 		case "":
-			if len(b.Entries) != 1 || b.Entries[0].Epics[0].Epic.Title != "beta" {
-				t.Errorf("unlabelled bucket should hold only 'beta': %+v", b.Entries)
-			}
+			t.Errorf("an unattributed epic must not reach a customer bucket: %+v", b.Entries)
 		}
 	}
 }
@@ -105,19 +108,22 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
 
-	// Files published: ACME, customer combined, team combined.
-	// The customer combined holds ONLY the unlabelled epic
-	// (the one whose issues have no org:: label). shared-work
-	// is in the ACME file.
+	// Files published: ACME (customer) and the combined team rollup.
+	// There is no customer-side combined file any more: that bucket
+	// existed only to carry the unlabelled epic, and an unattributed
+	// epic is not customer-visible. shared-work is in the ACME file;
+	// backlog is in the team file only.
 	names := publishedNames(sp)
 	for _, want := range []string{
 		"combined--epics-acme--wk--customer.md",
-		"combined--epics-rollup--wk--customer.md",
 		"combined--epics-rollup--wk--team.md",
 	} {
 		if !slices.Contains(names, want) {
 			t.Errorf("missing file %q in %v", want, names)
 		}
+	}
+	if slices.Contains(names, "combined--epics-rollup--wk--customer.md") {
+		t.Errorf("no unattributed epic, so no customer combined file: %v", names)
 	}
 
 	// The first LLM call is for the ACME bucket. The shared-work
@@ -211,22 +217,31 @@ func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
 	}
 }
 
-// TestEpicRollup_UnlabelledIsLast: the combined bucket sorts after the
-// customer codes so the branch file order is stable and the backlog
-// file lands in a predictable place.
-func TestEpicRollup_UnlabelledIsLast(t *testing.T) {
+// TestEpicRollup_UnattributedIsNotACustomerBucket: there is no longer
+// an unlabelled customer bucket. The combined customer file existed
+// only to carry epics nobody attributed, and an unattributed epic is
+// not customer-visible — every other audience decision here is opt-in.
+// The team audience still sees the whole fleet, via bucketAllEpics.
+//
+// Customer codes sort lexically so the branch file order is stable.
+func TestEpicRollup_UnattributedIsNotACustomerBucket(t *testing.T) {
 	projects := []ProjectResult{{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
 		epic(1, "plain"),
 		epic(2, "z", "org::ZULU"),
 		epic(3, "a", "org::ALPHA"),
 	}}}
 	got := bucketEpicsByCustomer(projects)
-	if len(got) != 3 {
-		t.Fatalf("want 3 buckets, got %d", len(got))
+	if len(got) != 2 {
+		t.Fatalf("want 2 buckets (the unlabelled epic is not one of them), got %d", len(got))
 	}
-	if got[0].Customer != "ALPHA" || got[1].Customer != "ZULU" || got[2].Customer != "" {
-		t.Errorf("order = %q,%q,%q; want ALPHA,ZULU,<empty>",
-			got[0].Customer, got[1].Customer, got[2].Customer)
+	if got[0].Customer != "ALPHA" || got[1].Customer != "ZULU" {
+		t.Errorf("order = %q,%q; want ALPHA,ZULU",
+			got[0].Customer, got[1].Customer)
+	}
+	// And the unattributed epic is still reachable for the team.
+	if team := bucketAllEpics(projects); len(team) != 1 || len(team[0].Entries) != 1 ||
+		len(team[0].Entries[0].Epics) != 3 {
+		t.Errorf("the team audience should still see all three epics, got %+v", team)
 	}
 }
 
@@ -268,8 +283,15 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
-	if len(files) != 3 { // acme + combined, customer; combined, team
-		t.Fatalf("want 3 files, got %d: %v", len(files), files)
+	if len(files) != 2 { // acme, customer; combined, team
+		t.Fatalf("want 2 files, got %d: %v", len(files), files)
+	}
+	// "pub-plain" is unattributed, so it is team-only now — it must not
+	// be in the ACME customer file.
+	for _, w := range sp.pub.written {
+		if strings.Contains(w.Name, "customer") && strings.Contains(string(w.Body), "pub-plain") {
+			t.Errorf("unattributed epic reached a customer file: %s", w.Name)
+		}
 	}
 
 	for _, w := range sp.pub.written {
@@ -286,7 +308,9 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 	}
 
 	names := publishedNames(sp)
-	wantNames := []string{"combined--epics-acme--wk--customer.md", "combined--epics-rollup--wk--customer.md", "combined--epics-rollup--wk--team.md"}
+	// No customer-side combined file: it only ever carried unattributed
+	// epics, which are not customer-visible.
+	wantNames := []string{"combined--epics-acme--wk--customer.md", "combined--epics-rollup--wk--team.md"}
 	for _, w := range wantNames {
 		if !slices.Contains(names, w) {
 			t.Errorf("missing %s; got %v", w, names)
@@ -356,5 +380,74 @@ func TestEpicRollupFilename_ForCustomerCode(t *testing.T) {
 	want := "combined--epics-acme--wk--customer.md"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestEpicRollup_UnattributedEpicNeverReachesACustomerFile: the whole
+// point of finding 1. bucketEpicsByCustomer feeds the CUSTOMER
+// audience, which is published with public: true — so an epic that
+// nobody attributed to a customer was reaching a customer document,
+// while every other audience decision in summarizer is opt-in. Here the
+// only epic has no org:: label, so no customer file may exist at all.
+func TestEpicRollup_UnattributedEpicNeverReachesACustomerFile(t *testing.T) {
+	sp := newSourcePipeline(t, nil, nil)
+	projects := []ProjectResult{
+		{Project: "public", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
+			epic(1, "nobody-claimed-this"),
+		}},
+	}
+	if _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+		t.Fatalf("runEpicRollup: %v", err)
+	}
+	// The stub LLM returns a canned body, so the epic is asserted on
+	// the PROMPT — which is what decides what the model is shown.
+	sp.llm.mu.Lock()
+	calls := append([]recordedCall(nil), sp.llm.calls...)
+	sp.llm.mu.Unlock()
+
+	sawTeam := false
+	for i, c := range calls {
+		hasEpic := strings.Contains(c.userPrompt, "nobody-claimed-this")
+		if hasEpic && sawTeam {
+			t.Errorf("prompt %d carries the unattributed epic a second time", i)
+		}
+		sawTeam = sawTeam || hasEpic
+	}
+	if !sawTeam {
+		t.Error("the team rollup should still carry the unattributed epic")
+	}
+	// And no customer prompt mentions it at all — with only one
+	// unattributed epic there is no customer bucket to render.
+	for _, w := range sp.pub.written {
+		if strings.Contains(w.Name, "customer") {
+			t.Errorf("a customer epic file was published with no attributed epic: %s", w.Name)
+		}
+	}
+}
+
+// TestRun_OrdersRollupInputLeastActiveFirst: both rollup budgets drop
+// from the FRONT of res.Projects, so the order decides whose work is
+// omitted when the prompt exceeds its budget. The order arriving from
+// discovery was explicit-project first, then last_activity_at
+// DESCENDING — newest activity first — so "drop the first" silently
+// dropped the busiest project while both budgets documented it as
+// dropping the oldest.
+func TestRun_OrdersRollupInputLeastActiveFirst(t *testing.T) {
+	p, _ := twoProjectPipeline(t, "")
+	p.Opts.Projects = []string{"group/aaa", "group/zzz"}
+	p.Opts.Period = "2026-W43"
+
+	res, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// twoProjectPipeline serves both projects the same event count, so
+	// the tiebreak is the path — the cohort must be reproducible.
+	var got []string
+	for _, pr := range res.Projects {
+		got = append(got, pr.Project)
+	}
+	if len(got) != 2 || got[0] != "group/aaa" || got[1] != "group/zzz" {
+		t.Errorf("rollup input order = %v; want least-active-first, which for equal counts is path order", got)
 	}
 }

@@ -59,12 +59,17 @@ const DefaultMaxProjects = 50
 // ProjectResult describes what one project produced. Used to feed the
 // rollup step (when len(Projects) > 1) without re-reading from disk.
 type ProjectResult struct {
-	Project          string
-	EventsFetched    int
-	EventsUsed       int
-	CustomerText     string // rendered markdown for the customer audience (empty when TeamOnly)
-	TeamText         string // rendered markdown for the team audience
-	FilesWritten     []string
+	Project       string
+	EventsFetched int
+	EventsUsed    int
+	CustomerText  string // rendered markdown for the customer audience (empty when TeamOnly)
+	TeamText      string // rendered markdown for the team audience
+	FilesWritten  []string
+	// FilesClosed counts writes whose period was already published, so the
+	// file landed on a branch that will never merge again. Without it the
+	// summary says "ok — 4 file(s) written" for a re-run that published
+	// nothing to the default branch.
+	FilesClosed      int
 	TokensByAudience map[string]llm.Usage
 	FromDiscovery    bool           // surfaced by --discover-group / --discover-by-topic
 	TeamOnly         bool           // true ⇒ no customer-facing content was produced for this project
@@ -203,6 +208,27 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 		// silently read as a complete week.
 		return res, firstErr
 	}
+
+	// Order the rollup input LEAST-active first.
+	//
+	// Both rollup budgets (prompt.RenderRollup and prompt.capEpicEntries)
+	// drop from the front of this slice when the prompt exceeds its
+	// budget, so "the front" decides whose work is omitted. The slice
+	// arriving here was explicit --project entries followed by
+	// discovered projects in last_activity_at DESCENDING order — newest
+	// activity first — so "drop the first" meant "drop the busiest",
+	// while both functions documented it as dropping the oldest.
+	//
+	// EventsFetched is the project's activity in the window, already
+	// on ProjectResult, so ordering by it makes the policy legible:
+	// when the budget bites, the quiet projects go. Path breaks ties,
+	// so the cohort is reproducible.
+	sort.SliceStable(res.Projects, func(i, j int) bool {
+		if res.Projects[i].EventsFetched != res.Projects[j].EventsFetched {
+			return res.Projects[i].EventsFetched < res.Projects[j].EventsFetched
+		}
+		return res.Projects[i].Project < res.Projects[j].Project
+	})
 
 	if len(res.Projects) > 0 && !p.Opts.DryRun {
 		rollupFiles, err := p.runRollup(ctx, res.Projects)
@@ -399,6 +425,9 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			return res, fmt.Errorf("write %s: %w", aud, err)
 		}
 		res.FilesWritten = append(res.FilesWritten, res2.Ref)
+		if res2.Closed {
+			res.FilesClosed++
+		}
 	}
 
 	return res, nil
@@ -569,10 +598,21 @@ type epicRollupPart struct {
 // window produce the same file order on the branch. The unlabelled
 // bucket sorts last: it is the backlog, not a customer.
 func bucketEpicsByCustomer(projects []ProjectResult) []epicRollupPart {
+	// No "" bucket. An epic with no org::CODE label on it or on any of
+	// its issues is UNATTRIBUTED, and this function only feeds the
+	// customer audience, which is published with public: true. Every
+	// other audience decision in summarizer is opt-in — a project needs
+	// the `summarize` topic, an epic needs its org:: label — so an
+	// unattributed epic reaching a customer unconditionally was the
+	// one place the default ran permissive. Attributing an epic to a
+	// customer is a deliberate act; unattributed means nobody has made
+	// it.
+	//
+	// Unattributed epics are not lost: the team audience gets the whole
+	// fleet through bucketAllEpics, unfiltered. They show up there and
+	// nowhere else, which is the correct place for work nobody has
+	// decided is customer-visible.
 	byCode := make(map[string]*epicRollupPart)
-	// Touch the combined bucket first so it always exists and always
-	// appears last in the sorted output below.
-	byCode[""] = &epicRollupPart{}
 
 	for _, pr := range projects {
 		if len(pr.ActiveEpics) == 0 {
@@ -589,10 +629,9 @@ func bucketEpicsByCustomer(projects []ProjectResult) []epicRollupPart {
 			// is a property of the epic, not of the attribution.
 			n := pr.EpicEventCounts[e.IID]
 			if len(codes) == 0 {
-				// No org:: anywhere → the unlabelled bucket. The
-				// combined file becomes the "not yet attributed"
-				// report rather than a silent miss.
-				perCode[""] = append(perCode[""], prompt.EpicSummary{Epic: e, EventCount: n})
+				// No org:: anywhere → not this audience's business.
+				// Skipped rather than filed under a catch-all; see
+				// the note above.
 				continue
 			}
 			for _, code := range codes {
@@ -620,17 +659,15 @@ func bucketEpicsByCustomer(projects []ProjectResult) []epicRollupPart {
 	return out
 }
 
-// sortedCustomerCodes returns the bucket keys with the unlabelled
-// bucket last and the customer codes in lexical order.
+// sortedCustomerCodes returns the bucket keys in lexical order, so two
+// runs over identical input produce identical documents.
 func sortedCustomerCodes(byCode map[string]*epicRollupPart) []string {
 	keys := make([]string, 0, len(byCode))
 	for k := range byCode {
-		if k != "" {
-			keys = append(keys, k)
-		}
+		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return append(keys, "")
+	return keys
 }
 
 // bucketAllEpics puts every active epic in one part — the team

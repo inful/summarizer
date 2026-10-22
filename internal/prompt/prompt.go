@@ -51,8 +51,11 @@ func parseTemplate(name string, raw []byte) (*template.Template, error) {
 // LLM, and escaping for HTML would mangle ordinary engineering prose.
 func dataBlock(v any) string {
 	s := fmt.Sprint(v)
+	// & before <, so the output carries no entity that decodes back to a
+	// tag: "&lt;/data&gt;" is inert, and so is "&amp;lt;/data&gt;".
 	return "<data>" + strings.NewReplacer(
-		"<", "&lt;", // covers both <data> and </data>
+		"&", "&amp;",
+		"<", "&lt;",
 	).Replace(s) + "</data>"
 }
 
@@ -334,9 +337,12 @@ func RenderEpicRollup(aud Audience, project string, entries []EpicRollupEntry) (
 	// Bounded like its two siblings. This one was missing the cap: the
 	// ceiling is MaxProjects × maxActiveEpics, so a full instance
 	// renders 1,000 epic blocks at ~130 KB against the combined
-	// rollup's 16 KB, on the customer path, every week. Whole entries
-	// are dropped oldest-first rather than truncated mid-block, so the
-	// remaining ones stay complete.
+	// rollup's 16 KB, on the customer path, every week.
+	//
+	// Whole entries are dropped, never truncated mid-block, so the ones
+	// that remain stay complete. Dropped from the FRONT, which
+	// Pipeline.Run orders least-active-first — so the quiet projects
+	// are the ones that go.
 	entries = capEpicEntries(entries, rollupTotalCap)
 
 	// Flatten project list for the template's summary line.
@@ -593,9 +599,13 @@ func joinLabels(ls []string) string { return strings.Join(ls, ", ") }
 // the prompt rather than an estimate of it.
 func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
 	size := func(e EpicRollupEntry) int {
-		n := 0
+		// Per entry: the "# Project: " heading and the <data> wrapper
+		// dataBlock adds. Per epic: the title and URL through
+		// dataBlock, plus the fixed "(objective #N, state)", the URL
+		// line and the event-count line.
+		n := len(e.Project) + len(dataBlock(e.Project))
 		for _, ep := range e.Epics {
-			n += len(ep.Epic.Title) + len(ep.Epic.WebURL) + 48
+			n += len(dataBlock(ep.Epic.Title)) + len(ep.Epic.WebURL) + 72
 		}
 		return n
 	}
@@ -609,7 +619,7 @@ func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
 		if sum <= total {
 			break
 		}
-		kept = kept[:len(kept)-1]
+		kept = kept[1:]
 	}
 	return kept
 }

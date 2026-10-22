@@ -29,14 +29,19 @@ type fakeGitLab struct {
 	filePuts      atomic.Int64
 	// Flaky counters: the first N writes / MR creates answer 503, so a
 	// test can tell a retried write from a duplicated one.
-	flakyWrites      int
-	flakyMRCreates   int
-	filePutAttempts  atomic.Int64
-	mrCreateAttempts atomic.Int64
-	fileReads        atomic.Int64
-	mergeRequests    []mergeRequest
-	mrCreateCount    atomic.Int64
-	lastMRDesc       string
+	flakyWrites           int
+	flakyMRCreates        int
+	filePutAttempts       atomic.Int64
+	mrCreateAttempts      atomic.Int64
+	branchExistsCount     atomic.Int64
+	mergeRequestListCount atomic.Int64
+	// mrCreateFails makes the MR create always error, so a test can
+	// tell "memoised a failure" from "memoised a success".
+	mrCreateFails bool
+	fileReads     atomic.Int64
+	mergeRequests []mergeRequest
+	mrCreateCount atomic.Int64
+	lastMRDesc    string
 
 	// files pre-populates "branch -> path -> content" so read-before-write
 	// tests can put a file on the branch before the publisher's
@@ -83,6 +88,7 @@ func (f *fakeGitLab) handler() http.Handler {
 			http.Error(w, "method", http.StatusMethodNotAllowed)
 			return
 		}
+		f.branchExistsCount.Add(1)
 		name, err := url.PathUnescape(strings.TrimPrefix(r.URL.EscapedPath(),
 			"/api/v4/projects/group%2Freports/repository/branches/"))
 		if err != nil {
@@ -151,6 +157,7 @@ func (f *fakeGitLab) handler() http.Handler {
 	})
 	mux.HandleFunc("/api/v4/projects/group%2Freports/merge_requests", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
+			f.mergeRequestListCount.Add(1)
 			// Filter by ?state= query param so the publisher's two-list
 			// strategy works as expected on the wire.
 			q := r.URL.Query()
@@ -181,6 +188,10 @@ func (f *fakeGitLab) handler() http.Handler {
 		if f.flakyMRCreates > 0 {
 			f.flakyMRCreates--
 			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if f.mrCreateFails {
+			http.Error(w, "create refused", http.StatusUnprocessableEntity)
 			return
 		}
 		f.mrCreateCount.Add(1)
@@ -948,5 +959,62 @@ func TestGitLabPublisher_DoesNotRetryTheMRCreate(t *testing.T) {
 	}
 	if got := f.mrCreateAttempts.Load(); got != 1 {
 		t.Errorf("attempted the MR create %d times, want exactly 1", got)
+	}
+}
+
+// TestGitLabPublisher_MemoisesBranchScopedLookups: one run publishes
+// every file onto one branch, and four of the six requests in Publish
+// were branchExists plus three mergeRequests calls, all answering the
+// same question for every file. On a 50-project run that is ~400
+// requests re-asking what the first file already established.
+func TestGitLabPublisher_MemoisesBranchScopedLookups(t *testing.T) {
+	f := &fakeGitLab{}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+
+	const files = 5
+	for i := range files {
+		if _, err := p.Publish(context.Background(), Request{
+			Name: fmt.Sprintf("f%d.md", i), Body: []byte("x"),
+			Period: "2026-10-19", Kind: KindPerProject,
+		}); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+	branchGets := f.branchExistsCount.Load()
+	mrLists := f.mergeRequestListCount.Load()
+
+	if branchGets != 1 {
+		t.Errorf("branch-existence GET ran %d times for %d files on one branch, want 1", branchGets, files)
+	}
+	// One resolution: opened MR lookup, then merged + closed for the
+	// miss, then the create. Everything after that is cached.
+	if mrLists > 3 {
+		t.Errorf("merge-request list ran %d times for %d files on one branch, want at most 3", mrLists, files)
+	}
+	if got := f.mrCreateCount.Load(); got != 1 {
+		t.Errorf("created %d MRs for one branch, want exactly 1", got)
+	}
+}
+
+// TestGitLabPublisher_MemoDoesNotCreateASecondMR: the cache must never
+// record "there is no MR", or the second file would create one.
+func TestGitLabPublisher_MemoDoesNotCreateASecondMR(t *testing.T) {
+	f := &fakeGitLab{mrCreateFails: true}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+
+	for i := range 2 {
+		_, _ = p.Publish(context.Background(), Request{
+			Name: fmt.Sprintf("f%d.md", i), Body: []byte("x"),
+			Period: "2026-10-19", Kind: KindPerProject,
+		})
+	}
+	// The first create failed, so the second file must try again rather
+	// than trust a cached "none".
+	if got := f.mrCreateAttempts.Load(); got != 2 {
+		t.Errorf("attempted the MR create %d times, want 2 — a failed create must not be memoised", got)
 	}
 }

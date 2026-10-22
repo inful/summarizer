@@ -137,7 +137,12 @@ What you get:
 2. Each rendered report (per project, per audience) is committed to that branch under `<prefix>/<period>/<filename>`, wrapped in **docbuilder-format frontmatter** (`uid`, `title`, `date`, `lastmod`, `fingerprint`, `tags`, `categories`, `aliases`, plus `public: true` for customer-audience reports). docbuilder in your `reports` project indexes them automatically.
 3. A single MR is opened against `<default_branch>` with body: "Summarizer rollup 2026-W43".
 4. Re-runs for the same period accumulate commits on the same MR — no branch/MR sprawl.
-5. If a prior MR for the period is already merged, summarizer refuses rather than reopen it; pick a new period slug or merge yourself.
+5. If the period's MR was already **merged or closed**, the re-run still
+   writes — but onto a branch that will never merge again, so nothing
+   reaches `main`. That is a logged no-op, not a failure: it is the
+   normal response to a report that said the wrong thing. The run
+   summary says how many files fell in that case, e.g. `4 file(s)
+   written (2 already published this week)`.
 
 ### Resulting directory tree (after every week's MR is merged into `main`):
 

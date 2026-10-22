@@ -168,9 +168,23 @@ the MR listed in the run summary (`→ https://gitlab.example.com/group/reports/
 Approve and merge manually when you're happy with the content.
 
 A re-run on the same period pushes new commits to the same source
-branch — if the MR was already merged, summarizer **refuses to reopen**
-and exits non-zero. Open a new branch (change `source_branch_prefix`
-or wait for a new date) if you want to re-publish merged content.
+branch while its MR is open.
+
+**If the MR was already merged or closed**, the re-run writes to that
+branch and then stops — there is no MR to reopen and the branch will
+never merge again, so nothing reaches `<default_branch>`. This is a
+logged no-op, not a failure, and the run still exits zero:
+
+```
+summarizer: 2026-W43 was already published (period already published:
+2026-W43 is merged); group-proj--wk--customer.md was updated on
+summarizer/2026-W43 and will not reach main
+summarizer: ok — 2 project(s), 47 event(s) (47 used), 2 file(s) written (2 already published this week)
+```
+
+If you need those edits to land, open a fresh branch
+(`source_branch_prefix`, or wait for the next week) and copy the file
+across.
 
 ### "Token denied"
 

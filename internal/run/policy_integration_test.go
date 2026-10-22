@@ -157,8 +157,12 @@ func TestRunEpicRollup_MixedPolicy_FiltersForCustomer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
+	// One customer file (pr1 is CustomerOn, its epic attributed to
+	// ACME) plus the combined team file. There is no customer-side
+	// combined file: that bucket only ever carried unattributed epics,
+	// which are not customer-visible.
 	if len(files) != 2 {
-		t.Fatalf("expected 2 epic rollup files (customer+team), got %d", len(files))
+		t.Fatalf("expected 2 epic rollup files (acme customer + team combined), got %d: %v", len(files), files)
 	}
 	customerBody := ""
 	for _, w := range p.Publisher.(*capturePublisher).written {
@@ -177,8 +181,12 @@ func TestRunEpicRollup_MixedPolicy_FiltersForCustomer(t *testing.T) {
 // pr1Epic / pr2Epic return minimal *gitlab.Epic values. The
 // pipeline's prompt code reads IID/Title/State/WebURL — the rest of
 // the fields are zero-valued; we don't have to construct them.
+// pr1Epic carries an org:: label because the customer audience is
+// bucketed per customer: an epic nobody attributed produces no customer
+// file at all, which is a different test.
 func pr1Epic() *gitlab.Epic {
-	return &gitlab.Epic{IID: 1, Title: "public-epic", State: "opened", WebURL: "u/1"}
+	return &gitlab.Epic{IID: 1, Title: "public-epic", State: "opened", WebURL: "u/1",
+		Labels: []string{"org::ACME"}}
 }
 func pr2Epic() *gitlab.Epic {
 	return &gitlab.Epic{IID: 2, Title: "secret-epic", State: "opened", WebURL: "u/2"}

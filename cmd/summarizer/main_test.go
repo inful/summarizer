@@ -168,3 +168,47 @@ func TestConfigExampleIsLoadable(t *testing.T) {
 		t.Error("example config sets gitlab_host but the loader did not bind it")
 	}
 }
+
+// TestPrintSummary_CountsAlreadyPublishedSeparately: re-running a week
+// whose MR was already merged writes the file onto a branch that will
+// never merge again. The publisher sets Result.Closed for those, and
+// the summary has to say so — "ok — 4 file(s) written" for a run that
+// published nothing to the default branch is the exact confusion the
+// no-op was introduced to remove.
+func TestPrintSummary_CountsAlreadyPublishedSeparately(t *testing.T) {
+	res := run.Result{
+		Projects: []run.ProjectResult{
+			// Both files landed, but on a merged branch.
+			{Project: "a", EventsFetched: 10, EventsUsed: 10, CustomerOn: true,
+				FilesWritten: []string{"a-customer.md", "a-team.md"}, FilesClosed: 2},
+		},
+		RollupFiles: []string{"r1", "r2"},
+	}
+	out := captureStderr(t, func() { printSummary(res, nil, false, time.Now()) })
+	if strings.Contains(out, "4 file(s) written (") || strings.Contains(out, "4 file(s) written\n") {
+		t.Errorf("a fully re-published run must not claim 4 fresh writes:\n%s", out)
+	}
+	if !strings.Contains(out, "2 file(s) written") {
+		t.Errorf("want 2 files counted as published:\n%s", out)
+	}
+	if !strings.Contains(out, "2 already published this week") {
+		t.Errorf("the re-published files must be named as such:\n%s", out)
+	}
+}
+
+// TestPrintSummary_NoAlreadyPublishedNoteWhenNoneWereClosed: the note
+// only appears when it is true, so a normal run reads normally.
+func TestPrintSummary_NoAlreadyPublishedNoteWhenNoneWereClosed(t *testing.T) {
+	res := run.Result{
+		Projects: []run.ProjectResult{
+			{Project: "a", EventsFetched: 1, EventsUsed: 1, FilesWritten: []string{"a.md"}},
+		},
+	}
+	out := captureStderr(t, func() { printSummary(res, nil, false, time.Now()) })
+	if strings.Contains(out, "already published") {
+		t.Errorf("a normal run should not carry the note:\n%s", out)
+	}
+	if !strings.Contains(out, "1 file(s) written") {
+		t.Errorf("want 1 file:\n%s", out)
+	}
+}

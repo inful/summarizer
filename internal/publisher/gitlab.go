@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/inful/mdfm"
@@ -106,6 +107,70 @@ type GitLabPublisher struct {
 	DefaultBranch      string // typically "main"; MR target
 	SourceBranchPrefix string // e.g. "summarizer"; full branch is "<prefix>/<period>"
 	HTTP               *http.Client
+
+	// Per-branch memo, so a run that publishes a hundred files onto one
+	// branch asks GitLab about that branch once. Four of every six
+	// requests in Publish were branchExists plus three mergeRequests
+	// calls, all returning the same answer for every file.
+	//
+	// Guarded because Publisher is documented as concurrency-safe.
+	// Keyed by branch, so it cannot go stale: a new period is a new
+	// branch name, and the CLI builds a fresh publisher per process.
+	mu    sync.Mutex
+	cache map[string]branchFacts
+}
+
+// branchFacts is what one branch lookup established: whether it existed,
+// and the MR URL if it had one.
+type branchFacts struct {
+	exists bool
+	// mrURL is cached only on a POSITIVE outcome — an MR was found, or
+	// one was created. A miss is never cached, so the first file of a
+	// fresh period queries and creates, and the rest reuse the URL. That
+	// asymmetry is deliberate: caching "there is none" would make the
+	// second file create a second MR.
+	mrURL string
+	// closed records that the period's MR is merged or closed, so the
+	// branch will never merge again. Worth caching: a re-run of an
+	// already-published week would otherwise pay three queries per file
+	// to rediscover it.
+	closed bool
+}
+
+// branchKnown reports whether this branch was already confirmed to
+// exist earlier in the run.
+func (g *GitLabPublisher) branchKnown(branch string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cache[branch].exists
+}
+
+// remember records a fact about a branch for the rest of the run.
+func (g *GitLabPublisher) remember(branch string, f branchFacts) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cache == nil {
+		g.cache = map[string]branchFacts{}
+	}
+	prev := g.cache[branch]
+	// Never let a later partial observation erase what we know.
+	if !f.exists {
+		f.exists = prev.exists
+	}
+	if f.mrURL == "" {
+		f.mrURL = prev.mrURL
+	}
+	if !f.closed {
+		f.closed = prev.closed
+	}
+	g.cache[branch] = f
+}
+
+// recalled returns what is already known about a branch.
+func (g *GitLabPublisher) recalled(branch string) branchFacts {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cache[branch]
 }
 
 // NewGitLab constructs a publisher. host + token + project are required;
@@ -334,6 +399,9 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 // branch name, and one run publishes many files into one period — so
 // the naive POST-every-time version died on the second report.
 func (g *GitLabPublisher) ensureBranch(ctx context.Context, branch string) error {
+	if g.branchKnown(branch) {
+		return nil
+	}
 	if g.branchExists(ctx, branch) {
 		return nil
 	}
@@ -343,13 +411,23 @@ func (g *GitLabPublisher) ensureBranch(ctx context.Context, branch string) error
 		Branch: branch,
 		Ref:    g.DefaultBranch,
 	})
-	return g.api(ctx, urlStr, "POST", body, nil, true)
+	if err := g.api(ctx, urlStr, "POST", body, nil, true); err != nil {
+		return err
+	}
+	g.remember(branch, branchFacts{exists: true})
+	return nil
 }
 
 // branchExists treats only 200 as "yes"; every other status (404, 403,
 // transport) falls through to the create attempt, which surfaces the
 // real error rather than swallowing it here.
 func (g *GitLabPublisher) branchExists(ctx context.Context, branch string) bool {
+	g.mu.Lock()
+	known := g.cache[branch].exists
+	g.mu.Unlock()
+	if known {
+		return true
+	}
 	urlStr := fmt.Sprintf("%s/api/v4/projects/%s/repository/branches/%s",
 		g.Host, url.PathEscape(g.Project), pathEscape(branch))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
@@ -503,11 +581,19 @@ var errPeriodClosed = errors.New("period already published")
 // decline to re-open it and return an error naming that state; the
 // caller surfaces it.
 func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req Request) (string, error) {
+	// One run publishes every file onto one branch, and all four of
+	// these queries answer the same question for all of them. Resolved
+	// once, then reused.
+	if f := g.recalled(branch); f.mrURL != "" || f.closed {
+		return f.mrURL, nil
+	}
+
 	mrs, err := g.mergeRequests(ctx, branch, "opened")
 	if err != nil {
 		return "", err
 	}
 	if len(mrs) > 0 {
+		g.remember(branch, branchFacts{mrURL: mrs[0].WebURL})
 		return mrs[0].WebURL, nil
 	}
 
@@ -524,6 +610,7 @@ func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req
 	}
 	all := append(nonOpen, closedMRs...)
 	if len(all) > 0 {
+		g.remember(branch, branchFacts{closed: true})
 		return "", fmt.Errorf("%w: %s is %s", errPeriodClosed, req.Period, all[0].State)
 	}
 
@@ -544,8 +631,11 @@ func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req
 	})
 	var mr mergeRequest
 	if err := g.api(ctx, createURL, "POST", body, &mr, false); err != nil {
+		// Deliberately NOT remembered: the next file must be free to
+		// try again, since we do not know whether the POST landed.
 		return "", err
 	}
+	g.remember(branch, branchFacts{mrURL: mr.WebURL})
 	return mr.WebURL, nil
 }
 

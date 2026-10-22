@@ -383,8 +383,10 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 		// run would produce: team-only projects write one file, and the
 		// epic rollups are separate.
 		fileCount := len(res.RollupFiles) + len(res.EpicRollupFiles)
+		closedCount := 0
 		for _, p := range res.Projects {
 			fileCount += len(p.FilesWritten)
+			closedCount += p.FilesClosed
 		}
 		// The elapsed hours matter more than the dates. A cron on
 		// Monday produces a correct-looking two-day range covering three
@@ -392,8 +394,17 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 		// makes the difference visible on the one line an operator
 		// reads after a run.
 		now := time.Now().UTC()
-		fmt.Fprintf(os.Stderr, "summarizer: ok — %d project(s), %d event(s) (%d used), %d file(s) written (window=%s)\n",
-			len(res.Projects), totalEvents, usedEvents, fileCount,
+		// Re-running an already-published week writes to a branch whose MR
+		// is already merged, so those files never reach the default branch.
+		// Saying so here keeps "ok" honest: a run that published nothing to
+		// main must not look like one that published everything.
+		summary := fmt.Sprintf("summarizer: ok — %d project(s), %d event(s) (%d used), %d file(s) written",
+			len(res.Projects), totalEvents, usedEvents, fileCount-closedCount)
+		if closedCount > 0 {
+			summary += fmt.Sprintf(" (%d already published this week)", closedCount)
+		}
+		fmt.Fprintf(os.Stderr, "%s (window=%s)\n",
+			summary,
 			fmt.Sprintf("this ISO week %s → %s (%s elapsed)",
 				weekStart.Format("2006-01-02"), now.Format("2006-01-02 15:04"),
 				now.Sub(weekStart).Truncate(time.Minute)))

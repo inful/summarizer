@@ -164,10 +164,12 @@ func TestRenderEpicRollup_IsBounded(t *testing.T) {
 		t.Errorf("prompt is %d bytes for %d entries, over the %d budget; "+
 			"the epic renderer is the only one without a cap", n, len(entries), rollupTotalCap)
 	}
-	if strings.Contains(user, "p49") {
-		t.Error("the last entries should have been dropped oldest-first")
+	// Dropped from the FRONT, which Pipeline.Run orders
+	// least-active-first — so the quiet projects are the ones that go.
+	if strings.Contains(user, "p00") {
+		t.Error("the first entry should have been dropped, not the last")
 	}
-	if !strings.Contains(user, "p00") {
-		t.Error("the oldest project should be kept")
+	if !strings.Contains(user, "p49") {
+		t.Error("the last entry should be kept")
 	}
 }
