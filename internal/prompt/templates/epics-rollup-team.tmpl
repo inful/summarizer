@@ -20,7 +20,7 @@ Projects in this epic rollup: {{.ProjectCount}}
 # Project: {{data .Project}}
 
 {{range .Epics}}
-## Epic #{{.Epic.IID}}: {{.Epic.Title}} ({{.Epic.State}})
+## Epic #{{.Epic.IID}}: {{data .Epic.Title}} ({{.Epic.State}})
 URL: {{.Epic.WebURL}}
 Activity in window: {{.EventCount}} events
 {{end}}

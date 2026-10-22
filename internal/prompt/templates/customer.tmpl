@@ -6,11 +6,11 @@ Rules:
 - Do not include URLs in the body unless they are clearly useful to a customer.
 - Output Markdown only. No preamble, no "Here is the report:". Start directly with the update.
 
+<data>
 Window: {{.Window}}
-Project: {{.Project}}
+Project: {{data .Project}}
 {{if .Truncated}}Events truncated: showing {{.Used}} of {{.Total}} ({{.Dropped}} dropped due to cap).{{end}}
 
-<data>
 {{.Events}}
 </data>
 

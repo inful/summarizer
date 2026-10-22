@@ -7,11 +7,11 @@ Rules:
 - When per-file diff text is provided in <data>, USE it to infer what each MR does — its kind (feature / bugfix / refactor / chore / docs / test), its scope, and any cross-file pattern (e.g. "this MR adds a new retry layer across the LLM provider interface"). PARAPHRASE in your own words. NEVER paste code, identifiers, or file paths verbatim from the diff into the report.
 - Output Markdown only. No preamble. Start with a short summary paragraph.
 
+<data>
 Window: {{.Window}}
-Project: {{.Project}}
+Project: {{data .Project}}
 {{if .Truncated}}Events truncated: showing {{.Used}} of {{.Total}} ({{.Dropped}} dropped due to cap).{{end}}
 
-<data>
 {{.Events}}
 </data>
 
