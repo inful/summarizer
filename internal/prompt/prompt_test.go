@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -262,4 +263,100 @@ func TestFormatDiffChunks_BudgetIsHonoured(t *testing.T) {
 		t.Errorf("b.go was dropped although only %d of %d bytes were used",
 			strings.Count(out, "x"), diffMaxPerMR)
 	}
+}
+
+// TestRenderRollup_DisclosesDroppedProjects: capBodies holds the rollup
+// to rollupTotalCap, so on a wide run most projects never reach it. The
+// header used to claim every project and list every name while carrying
+// only the few that fit — measured at 20 projects, 8 bodies, and no
+// indication that the other 12 were missing. The published file is what
+// a human reads; a model inferring the gap from missing bodies is not
+// disclosure.
+//
+// Mirrors what RenderEpicRollup has done since its silent truncation
+// was fixed, and uses the same wording so the two files read alike.
+func TestRenderRollup_DisclosesDroppedProjects(t *testing.T) {
+	// 20 projects at ~2 KB each: under the 4 KB per-body cap, so the
+	// only thing dropping them is the 16 KB total.
+	projects := make([]ProjectReport, 0, 20)
+	for i := 0; i < 20; i++ {
+		projects = append(projects, ProjectReport{
+			Name: fmt.Sprintf("group/proj-%02d", i),
+			Body: strings.Repeat("y", 2000),
+		})
+	}
+	_, user, err := RenderRollup(AudienceTeam, projects)
+	if err != nil {
+		t.Fatalf("RenderRollup: %v", err)
+	}
+	shown := strings.Count(user, "# Project: ")
+	if shown >= len(projects) {
+		t.Skipf("fixture no longer trips the cap: %d of %d shown", shown, len(projects))
+	}
+	dropped := len(projects) - shown
+	if !strings.Contains(user, fmt.Sprintf("%d shown, %d omitted for size", shown, dropped)) {
+		t.Errorf("the prompt carries %d of %d project bodies and says nothing about the "+
+			"%d it dropped:\n%s", shown, len(projects), dropped, headerOf(user))
+	}
+	// The count of the whole run must still be there: the header is a
+	// disclosure, not a replacement.
+	if !strings.Contains(user, fmt.Sprintf("Projects in this rollup: %d", len(projects))) {
+		t.Errorf("the total project count went missing:\n%s", headerOf(user))
+	}
+	// Every input is still named, so the model can see which lost their
+	// body — capBodies deliberately leaves `names` whole.
+	for _, p := range projects {
+		if !strings.Contains(user, p.Name) {
+			t.Errorf("%s is no longer named at all", p.Name)
+		}
+	}
+}
+
+// TestRenderRollup_NoDropClauseWhenNothingIsDropped: the disclosure is
+// conditional. A small run must not carry a "(N shown, 0 omitted)"
+// tail that reads like a caveat about a run with no caveat.
+func TestRenderRollup_NoDropClauseWhenNothingIsDropped(t *testing.T) {
+	projects := []ProjectReport{
+		{Name: "group/a", Body: strings.Repeat("y", 1000)},
+		{Name: "group/b", Body: strings.Repeat("y", 1000)},
+	}
+	_, user, err := RenderRollup(AudienceTeam, projects)
+	if err != nil {
+		t.Fatalf("RenderRollup: %v", err)
+	}
+	if strings.Contains(user, "omitted for size") {
+		t.Errorf("nothing was dropped, so nothing should be said about dropping:\n%s", headerOf(user))
+	}
+	if !strings.Contains(user, "Projects in this rollup: 2") {
+		t.Errorf("header = %q", headerOf(user))
+	}
+}
+
+// TestRenderRollup_CustomerAudienceDisclosesToo: the customer rollup is
+// published public: true, so the one audience where a human outside the
+// team reads it must not be the one that hides the gap.
+func TestRenderRollup_CustomerAudienceDisclosesToo(t *testing.T) {
+	projects := make([]ProjectReport, 0, 20)
+	for i := 0; i < 20; i++ {
+		projects = append(projects, ProjectReport{
+			Name: fmt.Sprintf("group/proj-%02d", i),
+			Body: strings.Repeat("y", 2000),
+		})
+	}
+	_, user, err := RenderRollup(AudienceCustomer, projects)
+	if err != nil {
+		t.Fatalf("RenderRollup: %v", err)
+	}
+	if !strings.Contains(user, "omitted for size") {
+		t.Errorf("the public rollup hid its drop:\n%s", headerOf(user))
+	}
+}
+
+func headerOf(prompt string) string {
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.HasPrefix(line, "Projects in this rollup") {
+			return line
+		}
+	}
+	return "(no header found)"
 }

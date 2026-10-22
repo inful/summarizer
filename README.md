@@ -227,6 +227,13 @@ The diff text is always wrapped in `<data>` markers (same OWASP LLM01:2025 mitig
 | Per-MR diff total (prompt-time) | 4000 runes | `internal/prompt/prompt.go` `diffMaxPerMR` |
 | Active epics per project in the epic rollup | 20 | `internal/run/pipeline.go` `maxActiveEpics` |
 | Rollup body, per input / total | 4000 / 16000 runes, oldest inputs dropped first | `internal/prompt/prompt.go` `rollupPerBodyCap` / `rollupTotalCap` |
+
+The 16000-rune total is the rollup's whole budget across every input,
+so on a wide run most projects never reach it — measured at 20 projects
+and ~2 KB reports, 8 bodies carried and 12 dropped. The prompt header
+says so explicitly (`Projects in this rollup: 20 (8 shown, 12 omitted
+for size)`) and every input is still named, so the published file
+cannot read as a complete week when it is not.
 | Wire cost | One extra `/changes` call per MR | worker pool, 4 concurrent |
 
 `capEvents` keeps the most recently **updated** events, not the first

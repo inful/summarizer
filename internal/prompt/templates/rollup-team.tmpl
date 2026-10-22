@@ -10,7 +10,7 @@ Rules:
 
 Window: {{.Window}}
 <data>
-Projects in this rollup: {{.ProjectCount}}
+Projects in this rollup: {{.ProjectCount}}{{if .DroppedCount}} ({{.ShownCount}} shown, {{.DroppedCount}} omitted for size){{end}}
 {{range .ProjectNames}}  - {{data .}}
 {{end}}
 

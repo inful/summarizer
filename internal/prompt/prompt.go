@@ -182,11 +182,23 @@ func RenderRollup(aud Audience, projects []ProjectReport) (system, user string, 
 	data := struct {
 		Window        string
 		ProjectCount  int
+		DroppedCount  int
+		ShownCount    int
 		ProjectNames  []string
 		ProjectBodies map[string]string
 	}{
-		Window:        WeekWindowLabel,
-		ProjectCount:  len(projects),
+		Window:       WeekWindowLabel,
+		ProjectCount: len(projects),
+		// capBodies mutated `bodies` above; `names` is deliberately left
+		// whole so the prompt still names every input and the model can
+		// see which ones lost their body. That is the model's cue, but
+		// it is invisible to a human reading the published file, which
+		// claimed to cover all N projects while carrying ~8 of them.
+		// Count it here and say so in the header — the same disclosure
+		// RenderEpicRollup has had since the epic rollup's silent
+		// truncation was fixed.
+		DroppedCount:  len(names) - len(bodies),
+		ShownCount:    len(bodies),
 		ProjectNames:  names,
 		ProjectBodies: bodies,
 	}
