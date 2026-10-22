@@ -1074,3 +1074,111 @@ func TestGitLabPublisher_MemoRemembersAPreExistingBranch(t *testing.T) {
 		t.Errorf("branch-existence GET ran %d times for %d files on an existing branch, want 1", got, files)
 	}
 }
+
+// mergedWeekRepo models a reports repo whose last week was merged and
+// whose source branch was then deleted — GitLab's "delete source
+// branch on merge" project setting, or a human ticking that box in the
+// merge dialog. The file and its uid survive on the default branch;
+// nothing is left on summarizer/<period>.
+type mergedWeekRepo struct {
+	uidOnMain   string
+	lastCommit  string
+	branches    map[string]bool // which branches exist
+	publishedID string          // uid observed in the last PUT
+	reads       []string        // refs the file was read from
+}
+
+func (m *mergedWeekRepo) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/projects/"+url.PathEscape("group/reports")+"/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		// Creating a branch in GitLab forks it from the default
+		// branch, so it immediately carries main's tree. The file
+		// handler below relies on this.
+		var req branchReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		m.branches[req.Branch] = true
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"name":"` + req.Branch + `"}`))
+	})
+	mux.HandleFunc("/api/v4/projects/"+url.PathEscape("group/reports")+"/repository/branches/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v4/projects/group%2Freports/repository/branches/")
+		n, _ := url.PathUnescape(name)
+		if m.branches[n] {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"name":"` + n + `"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/"+url.PathEscape("group/reports")+"/repository/files/", func(w http.ResponseWriter, r *http.Request) {
+		ref := r.URL.Query().Get("ref")
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			var req fileReq
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			raw, _ := base64.StdEncoding.DecodeString(req.Content)
+			for _, line := range strings.Split(string(raw), "\n") {
+				if strings.HasPrefix(line, "uid: ") {
+					m.publishedID = strings.TrimPrefix(line, "uid: ")
+				}
+			}
+			if r.Method == http.MethodPut {
+				_, _ = w.Write([]byte(`{"file_path":"x"}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"file_path":"x"}`))
+			return
+		}
+		m.reads = append(m.reads, ref)
+		// The file is on main. A branch that exists carries main's
+		// tree, so a read on any existing branch resolves it too; a
+		// branch that does not exist 404s along with everything on it.
+		if ref != "main" && !m.branches[ref] {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body := "---\nuid: " + m.uidOnMain + "\ntitle: t\n---\n\nlast week's report\n"
+		b, _ := json.Marshal(body)
+		_, _ = w.Write([]byte(`{"encoding":"text","content":` + string(b) +
+			`,"last_commit_id":"` + m.lastCommit + `"}`))
+	})
+	mux.HandleFunc("/api/v4/projects/"+url.PathEscape("group/reports")+"/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"iid":1,"web_url":"https://gitlab.example.com/mr/1"}]`))
+	})
+	return mux
+}
+
+// TestPublish_KeepsTheUIDWhenTheSourceBranchWasDeleted: re-running a
+// merged week is the ordinary response to a report that said the wrong
+// thing. The branch read used to happen before ensureBranch, so a week
+// whose branch was cleaned up looked like a first publish and got a
+// fresh UUID — silently breaking every /_uid/ link to a document that
+// was live on main.
+func TestPublish_KeepsTheUIDWhenTheSourceBranchWasDeleted(t *testing.T) {
+	const uidOnMain = "0192b6a0-72cd-7abc-8def-0123456789ab"
+	repo := &mergedWeekRepo{
+		uidOnMain:  uidOnMain,
+		lastCommit: "abc1234",
+		branches:   map[string]bool{}, // summarizer/2026-W43 is gone
+	}
+	srv := httptest.NewServer(repo.handler())
+	defer srv.Close()
+
+	g := NewGitLab(srv.URL, "glpat-x", "group/reports", "reports", "main", "summarizer")
+	if _, err := g.Publish(context.Background(), Request{
+		Name: "g_p--wk--team.md", Body: []byte("this week's report"),
+		Kind: KindPerProject, Period: "2026-W43", Audience: "team", Project: "g/p",
+	}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if repo.publishedID != uidOnMain {
+		t.Errorf("published uid = %q, want the one already on main (%q) — the "+
+			"document keeps its identity or every /_uid/ link to it breaks",
+			repo.publishedID, uidOnMain)
+	}
+	if !repo.branches["summarizer/2026-W43"] {
+		t.Error("the period branch should have been recreated from main")
+	}
+}

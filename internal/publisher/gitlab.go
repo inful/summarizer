@@ -293,14 +293,35 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 	branch := g.PeriodBranch(req.Period)
 	path := g.targetPath(req.Period, req.Name)
 
-	// Read-before-write: preserve the existing docbuilder UID (when the
-	// file is already on this branch from an earlier run) so the
+	// 1. Ensure the per-period source branch exists — BEFORE reading the
+	// file, which is the order that decides whether the document keeps
+	// its identity.
+	//
+	// It used to run after. That made the read a read of whatever the
+	// branch happened to hold, and a week whose MR was merged and whose
+	// branch was then deleted — GitLab's "delete source branch on merge"
+	// setting, or a human ticking that box — has nothing on the branch
+	// and everything on the default branch. The read 404'd, was taken as
+	// "first publish", and NewFrontmatter minted a fresh UUID; the PUT
+	// then overwrote a document whose uid was live on main, breaking
+	// every /_uid/ link to it with nothing in the output saying so.
+	//
+	// ensureBranch creates the branch FROM the default branch, so once
+	// it has run the branch holds main's content and the read below
+	// finds the real uid — and the real lastCommitID, which is what the
+	// PUT has to authorise against. Same request count: the branch check
+	// and the file read were always both made.
+	if err := g.ensureBranch(ctx, branch); err != nil {
+		return Result{}, fmt.Errorf("ensure branch %s: %w", branch, err)
+	}
+
+	// Read-before-write: preserve the existing docbuilder UID so the
 	// cross-project link identity (the docbuilder invariant) survives
-	// re-runs. When the file is absent — fresh period or first publish —
-	// existingUID is "" and NewFrontmatter will mint via mdid. The
-	// lastCommitID returned alongside is what the PUT body needs to
-	// authorise an update; for a new file it's "" and `omitempty`
-	// drops it.
+	// re-runs. When the file is genuinely absent — a fresh period, or a
+	// week whose reports were never merged — existingUID is "" and
+	// NewFrontmatter mints via mdid. The lastCommitID returned alongside
+	// is what the PUT body needs to authorise an update; for a new file
+	// it's "" and `omitempty` drops it.
 	existingUID, lastCommitID, err := g.readExistingUID(ctx, path, branch)
 	if err != nil {
 		return Result{}, fmt.Errorf("read existing %s@%s: %w", path, branch, err)
@@ -316,11 +337,6 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 	fm.Public = req.Public
 	finalBody := fm.Render(req.Body)
 	encoded := base64.StdEncoding.EncodeToString(finalBody)
-
-	// 1. Ensure the per-period source branch exists.
-	if err := g.ensureBranch(ctx, branch); err != nil {
-		return Result{}, fmt.Errorf("ensure branch %s: %w", branch, err)
-	}
 
 	// 2. Create-or-update the file. GitLab's API has two endpoints
 	// with different semantics:
@@ -674,7 +690,7 @@ func projectLine(req Request) string {
 }
 
 func commitMessage(req Request) string {
-	if req.Kind == KindRollup {
+	if req.Kind == KindRollup || req.Kind == KindMonthly {
 		return fmt.Sprintf("summarizer: rollup %s for %s", req.Period, req.Name)
 	}
 	return fmt.Sprintf("summarizer: %s for %s", req.Period, req.Name)

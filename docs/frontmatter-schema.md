@@ -57,9 +57,13 @@ report is refined in place across seven runs but keeps one identity.
 | per-project, team | `summarizer, team, <period>, per-project, <project>` | *(omitted)* |
 | rollup, customer | `summarizer, customer, <period>, rollup` | `true` |
 | rollup, team | `summarizer, team, <period>, rollup` | *(omitted)* |
+| monthly rollup, customer | `summarizer, customer, <month>, rollup, monthly` | `true` |
+| monthly rollup, team | `summarizer, team, <month>, rollup, monthly` | *(omitted)* |
 
 The per-project tag is dropped on rollups because there's no single
-project; subscribers filter by `rollup` instead.
+project; subscribers filter by `rollup` instead. Monthly rollups carry
+`monthly` too, so a subscriber can select "a whole month" and "a single
+month" apart without parsing the period slug.
 
 ## Title format
 
@@ -67,7 +71,7 @@ project; subscribers filter by `rollup` instead.
 |---|---|---|
 | per-project | `Weekly <audience> report — <project>, <period>` | `Weekly customer report — group/proj, 2026-W43` |
 | rollup | `Cross-project rollup <audience> report — all subscribed projects, <period>` | `Cross-project rollup team report — all subscribed projects, 2026-W43` |
-| monthly rollup | `Month-end <audience> rollup — <month>` | `Month-end customer rollup — 2026-09` |
+| monthly rollup | `Monthly cross-project rollup <audience> report — all subscribed projects, <month>` | `Monthly cross-project rollup customer report — all subscribed projects, 2026-09` |
 
 `<period>` is the ISO-8601 week slug (`YYYY-Www`) of the run, computed
 in UTC. Every run inside the same Mon–Sun week shares one period slug,
@@ -98,6 +102,16 @@ in a week targets the same `(project, audience, period)` path, so
 refuse-first would break the cron from the second run of the week. The
 UID survives because it is read back from the existing file before the
 new one is written.
+
+**The read happens after the branch is created, on purpose.** GitLab
+forks a new branch from the default branch, so a merged week whose
+source branch was then deleted — GitLab's "delete source branch on
+merge" project setting, or a human ticking that box in the merge
+dialog — still has the file and its UID on `main`. Ensuring the branch
+first means it carries `main`'s tree and the read finds the real UID.
+Reading first would 404, look like a first publish, and mint a fresh
+UUID over a document whose identity was live — breaking every
+`/_uid/<uid>/` link to it, silently.
 
 ## Fingerprint vs UID — why both
 
