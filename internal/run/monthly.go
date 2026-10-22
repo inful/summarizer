@@ -227,19 +227,20 @@ func weeklyRollupName(aud prompt.Audience) string {
 	return fmt.Sprintf("combined--rollup--wk--%s.md", aud)
 }
 
-// pathFor rebuilds the repo-relative path the publisher writes to.
-// It mirrors GitLabPublisher.targetPath; kept as a method so the
-// monthly runner works against either publisher.
+// pathFor rebuilds the repo-relative path the publisher writes to, so a
+// month's read lands on the same files a week's write created.
+//
+// The branch name carries the period as its last segment; the rest of
+// the assembly is publisher.TargetPath's, shared with the writer rather
+// than copied — the prefix half of this exact string had already shipped
+// as a bug, where "reports/" wrote to reports/… and read from reports//…
+// so every week 404'd and the month reported itself empty.
 func (r *MonthlyRunner) pathFor(branch, name string) string {
-	// Strip the source-branch prefix to get back the period slug.
 	period := branch
 	if i := strings.LastIndex(branch, "/"); i >= 0 {
 		period = branch[i+1:]
 	}
-	if r.ReportPrefix == "" {
-		return period + "/" + name
-	}
-	return r.ReportPrefix + "/" + period + "/" + name
+	return publisher.TargetPath(r.ReportPrefix, period, name)
 }
 
 // weeksInMonth returns the ISO week slugs whose Monday falls inside

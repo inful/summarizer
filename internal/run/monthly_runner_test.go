@@ -465,3 +465,64 @@ func TestMonthlyRunner_PrefixMatchesThePublisherItReadsFrom(t *testing.T) {
 		t.Errorf("read %d weeks, want %d — the reader and writer disagree on the prefix", len(res.Weeks), len(weeks))
 	}
 }
+
+// TestPathFor_RebuildsWhatThePublisherWrites: `summarizer monthly` reads
+// back the paths `summarizer run` wrote, so pathFor has to reproduce
+// publisher.TargetPath exactly for the same inputs. It had no test at
+// all — its assembly was a hand-copy of the writer's — and the prefix
+// half of this exact string had already shipped as a bug: "reports/"
+// wrote to reports/… and read from reports//…, so every week 404'd,
+// ReadReportFile returned "" by design, and the month ended as "no
+// weekly rollups found", pointing at the target repo instead of at the
+// config line.
+//
+// The branch carries the period as its last segment, so this also pins
+// the strip: "summarizer/2026-W42" → "2026-W42", and a bare "2026-W42"
+// (no prefix configured) must survive unchanged.
+func TestPathFor_RebuildsWhatThePublisherWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prefix  string
+		branch  string
+		want    string
+		comment string
+	}{
+		{"prefixed", "reports", "summarizer/2026-W42",
+			"reports/2026-W42/combined--rollup--wk--customer.md", ""},
+		{"unprefixed repo", "", "summarizer/2026-W42",
+			"2026-W42/combined--rollup--wk--customer.md", ""},
+		{"unprefixed branch too", "", "2026-W42",
+			"2026-W42/combined--rollup--wk--customer.md",
+			"no source_branch_prefix configured, so PeriodBranch returns a bare slug"},
+		{"nested report prefix", "reports/archive", "summarizer/2026-W42",
+			"reports/archive/2026-W42/combined--rollup--wk--customer.md", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &MonthlyRunner{ReportPrefix: tc.prefix}
+			name := weeklyRollupName(prompt.AudienceCustomer)
+			if got := r.pathFor(tc.branch, name); got != tc.want {
+				t.Errorf("pathFor(%q, %q) = %q, want %q %s", tc.branch, name, got, tc.want, tc.comment)
+			}
+		})
+	}
+}
+
+// The reader must land on the same string the writer produced, and the
+// writer is publisher.TargetPath — one shared function now, so this
+// checks the shared half is right rather than that two copies agree.
+func TestPathFor_AgreesWithTheWriterOnTheSameInputs(t *testing.T) {
+	for _, prefix := range []string{"", "reports"} {
+		for _, period := range []string{"2026-W42", "2026-09"} {
+			r := &MonthlyRunner{ReportPrefix: prefix}
+			for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
+				name := weeklyRollupName(aud)
+				read := r.pathFor("summarizer/"+period, name)
+				written := publisher.TargetPath(prefix, period, name)
+				if read != written {
+					t.Errorf("prefix=%q period=%q %s: monthly reads %q but a run writes %q",
+						prefix, period, aud, read, written)
+				}
+			}
+		}
+	}
+}

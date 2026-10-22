@@ -192,7 +192,7 @@ func (g *GitLabPublisher) PeriodBranch(period string) string {
 	return g.SourceBranchPrefix + "/" + period
 }
 
-// targetPath builds the repo-relative file path for one report, with a
+// TargetPath builds the repo-relative file path for one report, with a
 // per-period subdirectory so each week's reports stay grouped together.
 // After every week's MR is merged into the default branch, the target
 // repo's main tree looks like:
@@ -206,11 +206,23 @@ func (g *GitLabPublisher) PeriodBranch(period string) string {
 //
 // Browsable week-by-week in the GitLab UI; docbuilder indexes recursively
 // so all weeks are reachable from the search.
-func (g *GitLabPublisher) targetPath(period, name string) string {
-	if g.Prefix == "" {
+//
+// Exported and free of a receiver because `summarizer monthly` READS
+// these paths back and has to rebuild the identical string. It used to
+// keep its own copy of this assembly in run.MonthlyRunner.pathFor, with
+// no test on either side — the prefix half of it had already shipped as
+// a bug once, where "reports/" wrote to reports/… and read from
+// reports//… so every week 404'd and the month reported itself empty.
+// One function cannot drift from itself, so there is now one.
+//
+// prefix is the publisher's configured Prefix, already normalised by
+// NewGitLab (TrimSpace, then strip "/") — the reader passes the
+// publisher's own value for exactly that reason.
+func TargetPath(prefix, period, name string) string {
+	if prefix == "" {
 		return period + "/" + name
 	}
-	return g.Prefix + "/" + period + "/" + name
+	return prefix + "/" + period + "/" + name
 }
 
 // pathEscape calls url.PathEscape (/) → (%2F); GitLab's Files API takes
@@ -283,7 +295,7 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 	}
 
 	branch := g.PeriodBranch(req.Period)
-	path := g.targetPath(req.Period, req.Name)
+	path := TargetPath(g.Prefix, req.Period, req.Name)
 
 	// 1. Ensure the per-period source branch exists — BEFORE reading the
 	// file, which is the order that decides whether the document keeps
