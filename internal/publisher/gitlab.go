@@ -424,6 +424,20 @@ func (g *GitLabPublisher) ensureBranch(ctx context.Context, branch string) error
 		Ref:    g.DefaultBranch,
 	})
 	if err := g.api(ctx, urlStr, "POST", body, nil, true); err != nil {
+		// The create POST is retried, and a retry is only safe if the
+		// first attempt cannot have succeeded. This one can: a proxy or a
+		// GitLab pod restart after the write turns a 201 into a 502, the
+		// retry lands, and GitLab answers 400 "has already been taken"
+		// for a branch that exists. branchExists above guards the
+		// PRE-check, not the retry, so that 400 used to abort the whole
+		// publish on a run where everything had actually worked.
+		//
+		// One extra GET, only on the failure path. The branch being
+		// there is the answer either way, so ask.
+		if g.branchExists(ctx, branch) {
+			g.remember(branch, branchFacts{exists: true})
+			return nil
+		}
 		return err
 	}
 	g.remember(branch, branchFacts{exists: true})
@@ -699,12 +713,18 @@ func commitMessage(req Request) string {
 // response into out (or discards). Handles auth + JSON content-type for
 // write paths.
 //
-// retry says whether a 429 or 5xx is worth another attempt. It is safe
-// for every call here EXCEPT the merge-request create: GitLab does not
-// de-duplicate those, so a retried POST that actually succeeded the
-// first time opens two MRs for one week. Branch create is guarded by
-// branchExists and the file write by the last_commit_id dispatch, so
-// both are safe to repeat.
+// retry says whether a 429 or 5xx is worth another attempt.
+//
+// The file write is idempotent because it carries the last_commit_id
+// dispatch, so repeating it replaces the file rather than duplicating
+// it. The merge-request create is NOT safe: GitLab does not de-duplicate
+// those, so a retried POST that actually succeeded the first time opens
+// two MRs for one week.
+//
+// Branch create is in between — the write is not idempotent, but a
+// duplicate is harmless if it is recognised as one. ensureBranch
+// re-checks after a failed POST and treats "it is there now" as success,
+// so the retry costs a GET rather than losing the week.
 //
 // This asymmetry existed because reads went through internal/gitlab's
 // doJSON, which has retried 429/5xx all along, while every write came

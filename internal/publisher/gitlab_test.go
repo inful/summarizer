@@ -1270,3 +1270,104 @@ func TestGitLabPublisher_ConcurrentPublishAcrossBranchesIsRaceFree(t *testing.T)
 			got, periods)
 	}
 }
+
+// TestGitLabPublisher_EnsureBranchSurvivesAmbiguousCreateRetry: the
+// create POST is retried on 5xx, and a retry is only safe if the first
+// attempt cannot have succeeded. This one can — a proxy or a GitLab pod
+// restart after the write turns a 201 into a 502.
+//
+// Before this was handled, the run lost the whole week with an error
+// naming the wrong problem:
+//
+//	branch existed at start = false, posts = 2
+//	ensureBranch err = POST .../repository/branches: 400
+//	                   {"message":{"name":["has already been taken"]}}
+//
+// The branch was there. The 400 was GitLab answering the retry.
+//
+// The memo is asserted too: without it, every subsequent file in the
+// period re-enters ensureBranch and pays the same failed POST, which is
+// what made one ambiguous retry cost the run rather than one request.
+func TestGitLabPublisher_EnsureBranchSurvivesAmbiguousCreateRetry(t *testing.T) {
+	var posts, gets atomic.Int32
+	branchLive := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/repository/branches") && r.Method == http.MethodPost:
+			if posts.Add(1) == 1 {
+				branchLive = true // the write landed; the proxy ate the 201
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":{"name":["has already been taken"]}}`))
+		case strings.Contains(r.URL.Path, "/repository/branches/"):
+			gets.Add(1)
+			if branchLive {
+				w.WriteHeader(http.StatusOK)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+
+	g := &GitLabPublisher{
+		Host: srv.URL, Project: "g/p", Token: "tok", DefaultBranch: "main",
+		HTTP: &http.Client{Timeout: 5 * time.Second},
+	}
+	const branch = "summarizer/2026-W43"
+	if err := g.ensureBranch(context.Background(), branch); err != nil {
+		t.Fatalf("ensureBranch: %v — the branch exists, a 400 from the retry is not a failure", err)
+	}
+	if !branchLive {
+		t.Fatal("test setup: the branch should be live by now")
+	}
+	if !g.branchKnown(branch) {
+		t.Error("branch not memoised — every later file in the period would re-POST and 400 again")
+	}
+	// And the memo must actually pay off: no further requests at all.
+	before := gets.Load() + posts.Load()
+	if err := g.ensureBranch(context.Background(), branch); err != nil {
+		t.Fatalf("second ensureBranch: %v", err)
+	}
+	if got := gets.Load() + posts.Load(); got != before {
+		t.Errorf("memoised branch still cost %d request(s)", got-before)
+	}
+}
+
+// TestGitLabPublisher_EnsureBranchStillReportsRealFailures: the
+// re-check is on the failure path only, so a create that genuinely
+// failed must NOT be laundered into success by the branch's absence
+// from the GET.
+func TestGitLabPublisher_EnsureBranchStillReportsRealFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/repository/branches") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":{"name":["is invalid"]}}`))
+		default: // the branch GET: still absent
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	g := &GitLabPublisher{
+		Host: srv.URL, Project: "g/p", Token: "tok", DefaultBranch: "main",
+		HTTP: &http.Client{Timeout: 5 * time.Second},
+	}
+	err := g.ensureBranch(context.Background(), "summarizer/2026-W43")
+	if err == nil {
+		t.Fatal("a create that did not happen must still be reported")
+	}
+	if !strings.Contains(err.Error(), "422") {
+		t.Errorf("err = %v, want the original 422 rather than a re-check result", err)
+	}
+	if g.branchKnown("summarizer/2026-W43") {
+		t.Error("a branch that was never created must not be memoised as existing")
+	}
+}
