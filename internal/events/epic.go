@@ -9,24 +9,41 @@ import (
 )
 
 // AttachEpics annotates each Issue-kind event with the Epic it's part
-// of, building a lookup from issue IID to epic. Other event kinds
+// of, building a lookup from issue to epic. Other event kinds
 // (MR, Commit) are deliberately left alone — commits don't carry
 // issue linkage in this code path, and MR-closes-issue correlation
 // would require a deeper API surface that summarizer doesn't fetch
 // today. If a future operator wants MRs grouped, that's a separate
 // cross-reference fetch.
 //
-// On duplicate IID across epics (an operator-side mistake in GitLab
-// itself), the first epic wins. The cost of ambiguous data is just
-// "this issue is grouped under the first epic that claims it" —
+// project is the project whose events these are, and it is load-bearing
+// rather than documentation. Issue IIDs are unique per PROJECT, while
+// epics are group-scoped: `/groups/:id/epics/:iid/issues` returns every
+// issue in the epic across the whole group. Keyed on the IID alone,
+// project A's issue #10 and project B's issue #10 collide, and A's work
+// gets filed under whichever epic B's issue happens to sit in — which
+// then mis-counts the epic's activity and can attribute one customer's
+// work to another, in a file published public: true.
+//
+// An issue with no project reference cannot be placed in this project
+// and is skipped. That is the safe direction: GitLab has sent
+// references.full on this endpoint since 11.0, and a mis-attribution
+// costs a customer their own work.
+//
+// On duplicate (project, IID) across epics — an operator-side mistake
+// in GitLab itself — the first epic wins. The cost of ambiguous data is
+// just "this issue is grouped under the first epic that claims it" —
 // predictable beats undefined.
-func AttachEpics(es []NormalizedEvent, epics []*gitlab.Epic) {
+func AttachEpics(es []NormalizedEvent, epics []*gitlab.Epic, project string) {
 	if len(epics) == 0 {
 		return
 	}
 	byIID := make(map[int]*gitlab.Epic, 64)
 	for _, e := range epics {
 		for _, iss := range e.Issues {
+			if iss.Project() != project {
+				continue
+			}
 			if _, seen := byIID[iss.IID]; seen {
 				continue
 			}

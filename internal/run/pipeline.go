@@ -403,7 +403,9 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 	}
 	// The cap already ran inside fetchProjectEpics, before the
 	// per-epic issue fetch, so there is nothing to trim here.
-	events.AttachEpics(all, epics)
+	// The epics list is the GROUP's, so AttachEpics filters its issues
+	// down to this project — IIDs are unique per project, not per group.
+	events.AttachEpics(all, epics, project)
 	res.EventsFetched = len(all)
 	res.EventsUsed = min(len(all), p.Cfg.MaxEvents)
 	// Count each epic's events now, while `all` is in scope, so the

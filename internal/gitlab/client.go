@@ -99,6 +99,7 @@ type ChangesSummary struct {
 type Issue struct {
 	IID            int        `json:"iid"`
 	Title          string     `json:"title"`
+	References     IssueRef   `json:"references"`
 	Description    string     `json:"description"`
 	State          string     `json:"state"`
 	Author         User       `json:"author"`
@@ -108,6 +109,30 @@ type Issue struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	ClosedAt       *time.Time `json:"closed_at"`
+}
+
+// IssueRef is GitLab's cross-project reference to an issue.
+type IssueRef struct {
+	Short string `json:"short"` // "#42"
+	Full  string `json:"full"`  // "group/sub/project#42"
+}
+
+// Project is the issue's OWN project path, or "" when GitLab sent no
+// reference.
+//
+// It is not decoration. Issue IIDs are unique per PROJECT, not per
+// group, and an epic's issues are fetched group-wide — so "#10" from
+// project A and "#10" from project B are different issues that this
+// package must never confuse. Every caller that correlates an issue by
+// IID across a group has to filter on this first.
+func (i Issue) Project() string {
+	if i.References.Full == "" {
+		return ""
+	}
+	if k := strings.LastIndexByte(i.References.Full, '#'); k >= 0 {
+		return i.References.Full[:k]
+	}
+	return ""
 }
 
 // Commit is the subset of GitLab's /repository/commits response shape we use.

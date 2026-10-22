@@ -52,6 +52,8 @@ have to guess which of two coexisting files was current.
    │ FetchProjectNamespace (auto-detects group kind/full_path)      │
    │ FetchEpics         ─┐ (group-scoped, Premium/Ultimate feature) │
    │ FetchEpicIssues      (per-epic issues pull; soft-degrades 403) │
+   │                       ── group-wide, so each issue keeps its own│
+   │                          project: GitLab IIDs are per-project   │
    └──────────────────────────────┬───────────────────────────────┘
                                   │ []MergeRequest / []Issue / []Commit / []Epic
                                   ▼

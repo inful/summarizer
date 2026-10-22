@@ -1,21 +1,35 @@
 package events
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/inful/summarizer/internal/gitlab"
 )
 
-// TestAttachEpics_AnnotatesMatchingIssue: the issue-IID-keyed epic map
-// is the primary correlation path. An Issue event with a matching IID
-// gets Epic populated.
+// proj is the project the events in this file belong to. Every issue
+// fixture carries a matching reference, because AttachEpics now
+// correlates on (project, IID) rather than IID alone.
+const proj = "group/app"
+
+// issue builds an epic issue that belongs to proj.
+func issue(iid int, title string) gitlab.Issue {
+	return gitlab.Issue{
+		IID: iid, Title: title,
+		References: gitlab.IssueRef{Full: proj + "#" + strconv.Itoa(iid)},
+	}
+}
+
+// TestAttachEpics_AnnotatesMatchingIssue: the issue-keyed epic map is
+// the primary correlation path. An Issue event matching a project-local
+// issue gets Epic populated.
 func TestAttachEpics_AnnotatesMatchingIssue(t *testing.T) {
 	epic := &gitlab.Epic{
 		IID: 7, Title: "Deploy v2", WebURL: "u/7",
 		Issues: []gitlab.Issue{
-			{IID: 100, Title: "Wire up auth"},
-			{IID: 101, Title: "Roll out token refresh"},
+			issue(100, "Wire up auth"),
+			issue(101, "Roll out token refresh"),
 		},
 	}
 
@@ -24,7 +38,7 @@ func TestAttachEpics_AnnotatesMatchingIssue(t *testing.T) {
 		{Kind: KindIssue, Ref: "#102", Title: "Unrelated"},
 	}
 
-	AttachEpics(events, []*gitlab.Epic{epic})
+	AttachEpics(events, []*gitlab.Epic{epic}, proj)
 
 	if events[0].Epic == nil {
 		t.Fatal("matching issue event should have Epic populated")
@@ -41,11 +55,11 @@ func TestAttachEpics_AnnotatesMatchingIssue(t *testing.T) {
 // multiple epics (operator error in GitLab), the first epic wins.
 // Predictable behavior beats undefined behavior.
 func TestAttachEpics_FirstMatchOnly(t *testing.T) {
-	first := &gitlab.Epic{IID: 1, Title: "First", Issues: []gitlab.Issue{{IID: 5}}}
-	second := &gitlab.Epic{IID: 2, Title: "Second", Issues: []gitlab.Issue{{IID: 5}}}
+	first := &gitlab.Epic{IID: 1, Title: "First", Issues: []gitlab.Issue{issue(5, "dup")}}
+	second := &gitlab.Epic{IID: 2, Title: "Second", Issues: []gitlab.Issue{issue(5, "dup")}}
 
 	events := []NormalizedEvent{{Kind: KindIssue, Ref: "#5"}}
-	AttachEpics(events, []*gitlab.Epic{first, second})
+	AttachEpics(events, []*gitlab.Epic{first, second}, proj)
 
 	if events[0].Epic == nil || events[0].Epic.IID != 1 {
 		t.Errorf("expected first epic to win on duplicate IID, got %+v", events[0].Epic)
@@ -58,7 +72,7 @@ func TestAttachEpics_FirstMatchOnly(t *testing.T) {
 func TestAttachEpics_IssueRefParsing(t *testing.T) {
 	epic := &gitlab.Epic{
 		IID: 99, Title: "Single",
-		Issues: []gitlab.Issue{{IID: 42}},
+		Issues: []gitlab.Issue{issue(42, "only")},
 	}
 	cases := []struct {
 		name string
@@ -74,7 +88,7 @@ func TestAttachEpics_IssueRefParsing(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			events := []NormalizedEvent{{Kind: KindIssue, Ref: tc.ref}}
-			AttachEpics(events, []*gitlab.Epic{epic})
+			AttachEpics(events, []*gitlab.Epic{epic}, proj)
 			got := events[0].Epic != nil
 			if got != tc.want {
 				t.Errorf("ref=%q Epic attached = %v, want %v", tc.ref, got, tc.want)
@@ -90,13 +104,13 @@ func TestAttachEpics_IssueRefParsing(t *testing.T) {
 func TestAttachEpics_CommitsNotAnnotated(t *testing.T) {
 	epic := &gitlab.Epic{
 		IID: 7, Title: "Deploy v2",
-		Issues: []gitlab.Issue{{IID: 100}},
+		Issues: []gitlab.Issue{issue(100, "commit-ish")},
 	}
 	events := []NormalizedEvent{{
 		Kind: KindCommit, Ref: "100", Title: "fix typo",
 		Author: "bob", Created: time.Now(),
 	}}
-	AttachEpics(events, []*gitlab.Epic{epic})
+	AttachEpics(events, []*gitlab.Epic{epic}, proj)
 	if events[0].Epic != nil {
 		t.Errorf("commit event should never be annotated with an epic, got %+v", events[0].Epic)
 	}
@@ -154,5 +168,50 @@ func TestFilterActiveEpics_NoIssuesIsInactive(t *testing.T) {
 	got := FilterActiveEpics(epics, since, until)
 	if len(got) != 0 {
 		t.Errorf("empty epic should not be active, got %+v", got)
+	}
+}
+
+// TestAttachEpics_DoesNotConfuseProjects: GitLab issue IIDs are unique
+// per PROJECT, and an epic's issues come back group-wide. So "#10" in
+// project A and "#10" in project B are different issues, and keying the
+// lookup on the IID alone filed A's work under B's epic.
+//
+// The consequences were not cosmetic: the epic's per-project event
+// count came out wrong, and policy.EpicCustomerCodes reads the wrong
+// epic's org:: labels — so ACME's activity could be counted and billed
+// under GLOBEX, in a rollup published public: true.
+func TestAttachEpics_DoesNotConfuseProjects(t *testing.T) {
+	platform := &gitlab.Epic{IID: 1, Title: "Platform", Issues: []gitlab.Issue{
+		{IID: 10, Title: "A's login breaks", References: gitlab.IssueRef{Full: "g/a#10"}},
+	}}
+	billing := &gitlab.Epic{IID: 2, Title: "Billing", Issues: []gitlab.Issue{
+		{IID: 10, Title: "B's invoice fails", References: gitlab.IssueRef{Full: "g/b#10"}},
+	}}
+
+	// Billing comes first, so first-wins used to pick it for A.
+	evs := []NormalizedEvent{{Kind: KindIssue, Ref: "#10", Title: "A's login breaks"}}
+	AttachEpics(evs, []*gitlab.Epic{billing, platform}, "g/a")
+	if evs[0].Epic == nil || evs[0].Epic.Title != "Platform" {
+		t.Fatalf("project a's issue #10 got epic %+v, want Platform", evs[0].Epic)
+	}
+
+	// And the other way round: B's own issue still resolves to Billing,
+	// so the filter is not just refusing every non-first epic.
+	evsB := []NormalizedEvent{{Kind: KindIssue, Ref: "#10", Title: "B's invoice fails"}}
+	AttachEpics(evsB, []*gitlab.Epic{billing, platform}, "g/b")
+	if evsB[0].Epic == nil || evsB[0].Epic.Title != "Billing" {
+		t.Fatalf("project b's issue #10 got epic %+v, want Billing", evsB[0].Epic)
+	}
+}
+
+// TestAttachEpics_SkipsIssuesWithNoProjectReference: an issue GitLab
+// sent no reference for cannot be placed in this project. Skipping it
+// costs a grouping; guessing costs a customer their own work.
+func TestAttachEpics_SkipsIssuesWithNoProjectReference(t *testing.T) {
+	epic := &gitlab.Epic{IID: 1, Title: "Deploy v2", Issues: []gitlab.Issue{{IID: 7}}}
+	evs := []NormalizedEvent{{Kind: KindIssue, Ref: "#7"}}
+	AttachEpics(evs, []*gitlab.Epic{epic}, proj)
+	if evs[0].Epic != nil {
+		t.Errorf("an issue with no project reference must not be correlated: %+v", evs[0].Epic)
 	}
 }
