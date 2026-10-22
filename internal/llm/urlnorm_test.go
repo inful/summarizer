@@ -47,3 +47,39 @@ func TestIsOpenAIHost(t *testing.T) {
 		}
 	}
 }
+
+// TestIsOpenAIHost_ComparesTheOrigin: the path is not what decides
+// where a request goes, so a base URL that merely looks like a typo
+// of OpenAI's own must still be recognised as OpenAI. Missing it means
+// the key is treated as an optional local-server convenience and the
+// rendered prompt — GitLab issue titles and bodies — is posted with no
+// Authorization header.
+func TestIsOpenAIHost_ComparesTheOrigin(t *testing.T) {
+	openai := []string{
+		"",
+		"https://api.openai.com",
+		"https://api.openai.com/",
+		"https://api.openai.com/v1",
+		"https://api.openai.com/v1/",
+		"https://api.openai.com/v1beta",
+		"https://api.openai.com/v2",
+		"HTTPS://API.OPENAI.COM",
+	}
+	for _, raw := range openai {
+		if !IsOpenAIHost(raw) {
+			t.Errorf("IsOpenAIHost(%q) = false, want true", raw)
+		}
+	}
+	// A host that merely contains the string, or is a lookalike.
+	other := []string{
+		"http://localhost:11434/v1",
+		"https://api.openai.com.evil.test",
+		"https://notapi.openai.com",
+		"https://openai.com",
+	}
+	for _, raw := range other {
+		if IsOpenAIHost(raw) {
+			t.Errorf("IsOpenAIHost(%q) = true, want false", raw)
+		}
+	}
+}

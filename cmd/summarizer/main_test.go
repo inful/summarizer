@@ -440,3 +440,44 @@ func TestPrintSummary_ReportsAFilesEvenWhenEveryProjectFailed(t *testing.T) {
 		t.Errorf("a file listed in the output must also be counted:\n%s", out)
 	}
 }
+
+// TestClassify_PinsEveryBranch: classify is a substring table over the
+// whole wrapped error, upstream response bodies included, so the ORDER
+// of its cases is load-bearing — "llm " has to be checked before
+// "fetch " or an OpenAI-compatible gateway's `failed to fetch upstream
+// model` body reports an LLM outage as a GitLab failure. That inversion
+// happened once already.
+//
+// Each case below is a real error string the run can produce. Pinning
+// them means a future reordering fails here rather than silently
+// reclassifying a cron wrapper's exit code.
+func TestClassify_PinsEveryBranch(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, exitOK},
+		{"injection is a sentinel, not a substring", errStub("anything at all"), exitUnknown},
+		// An LLM error whose body happens to say "fetch".
+		{"llm beats fetch", errStub(`llm chat: 502 {"error":"failed to fetch upstream model"}`), exitLLM},
+		{"gitlab fetch", errStub("fetch projects g/p: 500 boom"), exitGitLab},
+		{"write", errStub("write out/a.md: disk full"), exitWrite},
+		{"config", errStub("config: output_dir is empty"), exitConfig},
+		{"bad month flag", errStub(`parseMonth "2026-13": want YYYY-MM`), exitConfig},
+		{"unknown", errStub("something nobody has wrapped"), exitUnknown},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := classify(c.err); got != c.want {
+				t.Errorf("classify(%q) = %d, want %d", c.err, got, c.want)
+			}
+		})
+	}
+}
+
+// errStub is an error carrying a message and nothing else — classify
+// only ever reads err.Error() apart from the injection sentinel.
+type errStub string
+
+func (e errStub) Error() string { return string(e) }
