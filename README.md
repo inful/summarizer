@@ -247,14 +247,16 @@ and ~2 KB reports, 8 bodies carried and 12 dropped. The prompt header
 says so explicitly (`Projects in this rollup: 20 (8 shown, 12 omitted
 for size)`) and every input is still named, so the published file
 cannot read as a complete week when it is not.
-| Wire cost | One extra `/changes` call per MR | worker pool, 4 concurrent |
+| Wire cost | One `/changes` call per MR, made either way | worker pool, 4 concurrent |
 
 `capEvents` keeps the most recently **updated** events, not the first
 N in fetch order — MRs, issues and commits arrive as three separate
 batches, so a head-slice would starve commits whenever MRs and issues
 already filled the budget.
 
-For a project with 50 MRs, `--include-diffs` adds one extra HTTP round-trip per MR (50 calls, ~50s parallel-ish at 4-concurrency). The model already produces the team report; the diff lands in the existing prompt context, so no extra LLM call is added.
+`--include-diffs` adds **no** API calls. The `/changes` call is made for every MR regardless, because the team prompt renders a `+N/-M in K files` aggregate from the same response; the flag only decides whether the diff text is kept. Turning it off saves nothing on the wire and costs the team report its code-level detail. It adds no LLM call either — the diff lands in the existing prompt context.
+
+That call is the run's largest wire cost by a wide margin. Measured against a 25-project fleet with 20 MRs each: **676 requests, 500 of them `/changes` — 74%**, one per MR. It is bounded by `max_events`, which the pipeline applies *before* the fetch, so an MR the cap would drop anyway never costs a request. `--dry-run` stops before it, so a preview understates a real run by roughly three-quarters.
 
 ## Run
 

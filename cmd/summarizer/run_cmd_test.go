@@ -179,3 +179,44 @@ func writeConfig(t *testing.T, body string) string {
 	}
 	return p
 }
+
+// TestIncludeDiffsFlagHelpDoesNotClaimAnAPICall: the help said "adds one
+// API call per MR". It adds none. fillMRDetail calls FetchMRDetail for
+// every merge request unconditionally — wantDiffs only decides whether
+// the returned chunks are kept — because prompt.Render needs the
+// +N/-M in K files aggregate either way.
+//
+// The claim appeared in three places an operator reads (this help, the
+// README caps table, the README prose) while the code comment above
+// fillMRDetail and CHANGELOG.md:66 both said the opposite. Documentation
+// is not policed by anything, so this pins the one sentence that made it
+// actionable: the cost, stated as a cost.
+func TestIncludeDiffsFlagHelpDoesNotClaimAnAPICall(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	var help string
+	for _, line := range strings.Split(string(src), "\n") {
+		if strings.Contains(line, `fs.Bool("include-diffs"`) {
+			help = line
+			break
+		}
+	}
+	if help == "" {
+		t.Fatal("could not find the --include-diffs flag declaration in main.go")
+	}
+	for _, claim := range []string{
+		"adds one API call",
+		"adds one extra",
+		"one API call per MR",
+	} {
+		if strings.Contains(help, claim) {
+			t.Errorf("the --include-diffs help still claims %q — the /changes call is "+
+				"made either way, so the flag costs no requests at all:\n%s", claim, help)
+		}
+	}
+	if !strings.Contains(help, "no API calls") {
+		t.Errorf("the help should state the actual cost — that it adds none:\n%s", help)
+	}
+}

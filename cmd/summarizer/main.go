@@ -239,7 +239,7 @@ Env:
 		maxEvents      = fs.Int("max-events", 0, "hard cap on events sent to the LLM (default 200)")
 		maxProjects    = fs.Int("max-projects", 0, "hard cap on projects fed to the LLM, applied after discovery and opt-out (default 50). Each project costs two completions, so this bounds the per-run bill. Dropped projects are listed on stderr.")
 		dryRun         = fs.Bool("dry-run", false, "fetch GitLab data and print a summary; no LLM call, no file write")
-		includeDiffs   = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds one API call per MR)")
+		includeDiffs   = fs.Bool("include-diffs", false, "fetch per-MR diff text and feed it into the team prompt so the model can reason about code changes (default off; adds no API calls — the per-MR /changes call is made either way, for the +N/-M in K files aggregate, and is the run's largest wire cost)")
 		safetyURL      = fs.String("safety-url", "", "decision API base URL for prompt-injection guard (default from config safety.decision_url)")
 		safetyToken    = fs.String("safety-token", "", "decision API token (default from $SAFETY_DECISION_TOKEN env or config). Prefer env var.")
 		safetyEnabled  = fs.Bool("safety-enabled", false, "gate every LLM call through the prompt-injection detector; hard-fails the run on verdict (default off)")
