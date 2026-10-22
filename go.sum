@@ -1,7 +1,7 @@
 github.com/inful/decide v0.0.0-20261008064855-f78fd7ad59b9 h1:0rj/5hZyEM42NCBEknr/CYxP20aSmchxCh3lLx/Q1HM=
 github.com/inful/decide v0.0.0-20261008064855-f78fd7ad59b9/go.mod h1:5mu+1jXGKzP6MBbsolWA8tF62xujZQw/6spMIV+GA/s=
-github.com/inful/mdfm v0.1.3 h1:ZbkRsdp4tdSDMH4GolmadxL9k4feF0QyDFf8p9Bg2r4=
-github.com/inful/mdfm v0.1.3/go.mod h1:D8RVg6Zzz4bekTwuvr8pKDRb3QvIaV9/VQ4c1Y0nNTo=
+github.com/inful/mdfm v0.3.0 h1:QrLIa63jm4o64W2+Gm34zI3aAsgnqI7WC7jxj9bEfAE=
+github.com/inful/mdfm v0.3.0/go.mod h1:D8RVg6Zzz4bekTwuvr8pKDRb3QvIaV9/VQ4c1Y0nNTo=
 github.com/inful/mdfp v1.3.0 h1:g714OO5tshxw85QoQM64hKTfcqB9PVEwqgIx2q/CYnc=
 github.com/inful/mdfp v1.3.0/go.mod h1:P1CLAPrUwbXBq4Da68yH8X4y5Tf9T/yatxpiucz5ah4=
 github.com/inful/mdid v0.3.0 h1:YXlwZLmYZqZZlWBfiXT6SfU6ACy68jpaIm/gjDLrt7M=

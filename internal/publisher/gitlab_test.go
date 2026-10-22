@@ -1371,3 +1371,55 @@ func TestGitLabPublisher_EnsureBranchStillReportsRealFailures(t *testing.T) {
 		t.Error("a branch that was never created must not be memoised as existing")
 	}
 }
+
+// TestGitLabPublisher_PreservesUIDBehindAByteOrderMark: a UTF-8 BOM in
+// front of the frontmatter used to make the parser see no frontmatter at
+// all, so readExistingUID took the !HasFrontmatter branch, warned, and
+// minted a fresh UID. Nothing announced that as a failure — the run
+// reported success and every /_uid/<uid>/ link already pointing at the
+// document quietly stopped resolving.
+//
+// Measured across the mdfm upgrade that introduced the fix:
+//
+//	                 hasFrontmatter  uid
+//	mdfm v0.1.3            false      ""
+//	mdfm v0.3.0            true      "019200a0-72cd-7abc-8def-0123456789ab"
+//
+// The BOM is not something summarizer writes; it arrives when a report
+// is opened and re-saved in a Windows editor, which is exactly the round
+// trip an operator does when they fix a typo in a merged report. So this
+// pins a dependency behaviour that summarizer's UID contract depends on
+// and that had no coverage here at all.
+func TestGitLabPublisher_PreservesUIDBehindAByteOrderMark(t *testing.T) {
+	const existingUID = "019200a0-72cd-7abc-8def-0123456789ab"
+
+	f := &fakeGitLab{}
+	// Same shape as TestGitLabPublisher_PreservesExistingUID's file, with
+	// "\ufeff" prepended — what a Windows re-save leaves behind.
+	f.files.Store("reports/2026-10-19/x.md", "\ufeff"+fmt.Sprintf(`---
+uid: %s
+title: "x"
+date: 2026-10-19T09:00:00Z
+aliases:
+  - /_uid/%s/
+---
+
+old body`, existingUID, existingUID))
+
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
+	_, err := p.Publish(context.Background(), Request{
+		Name: "x.md", Body: []byte("\ufeffnew body"), Period: "2026-10-19",
+		Kind: KindPerProject, Project: "group/proj", Public: true,
+	})
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	got := f.lastPutContent.Load().(string)
+	if !strings.Contains(got, "uid: "+existingUID) {
+		t.Errorf("the BOM hid the uid and a fresh one was minted; every existing "+
+			"/_uid/%s/ link now dangles:\n%s", existingUID, got)
+	}
+}
