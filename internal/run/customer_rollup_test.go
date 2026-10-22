@@ -13,6 +13,7 @@ import (
 
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
+	"github.com/inful/summarizer/internal/policy"
 	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/publisher"
 )
@@ -20,6 +21,32 @@ import (
 // epic builds an active epic carrying the given labels.
 func epic(iid int, title string, labels ...string) *gitlab.Epic {
 	return &gitlab.Epic{IID: iid, Title: title, State: "opened", WebURL: "u/" + title, Labels: labels}
+}
+
+// active builds a customer-on ProjectResult whose epics all counted
+// one event in this project, split by each epic's own org:: codes.
+//
+// The count has to be there. ActiveEpics is the GROUP's list — epics
+// are group-scoped — so in production a project carries epics that own
+// none of their issues, and the rollups skip those on a zero count.
+// A fixture with ActiveEpics and no EpicEventCounts is a state the
+// pipeline cannot produce, and asserting on it tests nothing real.
+func active(pr ProjectResult, epics ...*gitlab.Epic) ProjectResult {
+	pr.ActiveEpics = epics
+	pr.EpicEventCounts = map[int]EpicEvents{}
+	for _, e := range epics {
+		ev := EpicEvents{Total: 1, ByCustomer: map[string]int{}}
+		for _, code := range policy.EpicCustomerCodes(e) {
+			ev.ByCustomer[code]++
+		}
+		pr.EpicEventCounts[e.IID] = ev
+	}
+	return pr
+}
+
+// on is active for a customer-on project.
+func on(project string, epics ...*gitlab.Epic) ProjectResult {
+	return active(ProjectResult{Project: project, CustomerOn: true}, epics...)
 }
 
 // names extracts the filename from each captured publish. We just
@@ -38,14 +65,8 @@ func publishedNames(sp *sourcePipeline) []string {
 // has labelled yet.
 func TestEpicRollup_SplitsCustomerAudienceByOrgLabel(t *testing.T) {
 	projects := []ProjectResult{
-		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-			epic(1, "alpha", "org::ACME"),
-			epic(2, "beta"),
-		}},
-		{Project: "b", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-			epic(3, "gamma", "org::ACME", "priority::high"),
-			epic(4, "delta", "org::GLOBEX"),
-		}},
+		on("a", epic(1, "alpha", "org::ACME"), epic(2, "beta")),
+		on("b", epic(3, "gamma", "org::ACME", "priority::high"), epic(4, "delta", "org::GLOBEX")),
 	}
 
 	got := bucketEpicsByCustomer(projects)
@@ -106,7 +127,7 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 		{IID: 20, Labels: []string{"ruby"}}, // no org::
 	}
 	projects := []ProjectResult{
-		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{epicShared, epicBacklog}},
+		on("a", epicShared, epicBacklog),
 	}
 
 	_, _, err := sp.p.runEpicRollup(context.Background(), projects)
@@ -161,12 +182,8 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
 	projects := []ProjectResult{
-		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-			epic(1, "shared", "org::ACME", "org::GLOBEX"),
-		}},
-		{Project: "b", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-			epic(2, "acme-only", "org::ACME"),
-		}},
+		on("a", epic(1, "shared", "org::ACME", "org::GLOBEX")),
+		on("b", epic(2, "acme-only", "org::ACME")),
 	}
 
 	files, _, err := sp.p.runEpicRollup(context.Background(), projects)
@@ -231,11 +248,9 @@ func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
 //
 // Customer codes sort lexically so the branch file order is stable.
 func TestEpicRollup_UnattributedIsNotACustomerBucket(t *testing.T) {
-	projects := []ProjectResult{{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-		epic(1, "plain"),
-		epic(2, "z", "org::ZULU"),
-		epic(3, "a", "org::ALPHA"),
-	}}}
+	projects := []ProjectResult{
+		on("a", epic(1, "plain"), epic(2, "z", "org::ZULU"), epic(3, "a", "org::ALPHA")),
+	}
 	got := bucketEpicsByCustomer(projects)
 	if len(got) != 2 {
 		t.Fatalf("want 2 buckets (the unlabelled epic is not one of them), got %d", len(got))
@@ -255,8 +270,8 @@ func TestEpicRollup_UnattributedIsNotACustomerBucket(t *testing.T) {
 // picture in one file, unlabelled epics included.
 func TestEpicRollup_TeamAudienceIsNotSplit(t *testing.T) {
 	projects := []ProjectResult{
-		{Project: "a", ActiveEpics: []*gitlab.Epic{epic(1, "alpha", "org::ACME")}},
-		{Project: "b", ActiveEpics: []*gitlab.Epic{epic(2, "plain")}},
+		on("a", epic(1, "alpha", "org::ACME")),
+		on("b", epic(2, "plain")),
 	}
 	got := bucketAllEpics(projects)
 	if len(got) != 1 {
@@ -277,12 +292,9 @@ func TestEpicRollup_TeamAudienceIsNotSplit(t *testing.T) {
 func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
 	projects := []ProjectResult{
-		{Project: "public", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-			epic(1, "pub-acme", "org::ACME"), epic(2, "pub-plain"),
-		}},
-		{Project: "secret", TeamOnly: true, CustomerOn: false, ActiveEpics: []*gitlab.Epic{
-			epic(3, "SECRET-ACME", "org::ACME"), epic(4, "secret-plain"),
-		}},
+		on("public", epic(1, "pub-acme", "org::ACME"), epic(2, "pub-plain")),
+		active(ProjectResult{Project: "secret", TeamOnly: true, CustomerOn: false},
+			epic(3, "SECRET-ACME", "org::ACME"), epic(4, "secret-plain")),
 	}
 
 	files, _, err := sp.p.runEpicRollup(context.Background(), projects)
@@ -329,9 +341,7 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 // internal-only default or vice versa.
 func TestEpicRollup_PublicFlagPerAudience(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
-	projects := []ProjectResult{{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-		epic(1, "x", "org::ACME"), epic(2, "y"),
-	}}}
+	projects := []ProjectResult{on("a", epic(1, "x", "org::ACME"), epic(2, "y"))}
 	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -442,9 +452,7 @@ func TestEpicRollupFilename_ForCustomerCode(t *testing.T) {
 func TestEpicRollup_UnattributedEpicNeverReachesACustomerFile(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
 	projects := []ProjectResult{
-		{Project: "public", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-			epic(1, "nobody-claimed-this"),
-		}},
+		on("public", epic(1, "nobody-claimed-this")),
 	}
 	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
@@ -591,19 +599,11 @@ func TestEpicRollup_TeamAudienceKeepsTheTotal(t *testing.T) {
 // them whatever its org:: labels say. The team file is internal and
 // keeps it.
 func TestEpicRollup_ConfidentialEpicNeverReachesACustomerFile(t *testing.T) {
-	projects := []ProjectResult{{
-		Project:    "g/p",
-		CustomerOn: true,
-		ActiveEpics: []*gitlab.Epic{
-			epic(1, "public work", "org::ACME"),
-			func() *gitlab.Epic {
-				e := epic(2, "under NDA", "org::ACME")
-				e.Confidential = true
-				return e
-			}(),
-		},
-		EpicEventCounts: map[int]EpicEvents{},
-	}}
+	underNDA := epic(2, "under NDA", "org::ACME")
+	underNDA.Confidential = true
+	projects := []ProjectResult{
+		on("g/p", epic(1, "public work", "org::ACME"), underNDA),
+	}
 
 	for _, b := range bucketEpicsByCustomer(projects) {
 		for _, ent := range b.Entries {
@@ -637,10 +637,7 @@ func TestEpicRollup_ConfidentialEpicNeverReachesACustomerFile(t *testing.T) {
 // customer a document belonged to.
 func TestEpicRollup_PerCustomerFrontmatterNamesTheCustomer(t *testing.T) {
 	projects := []ProjectResult{
-		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
-			epic(1, "alpha", "org::ACME"),
-			epic(2, "beta", "org::GLOBEX"),
-		}},
+		on("a", epic(1, "alpha", "org::ACME"), epic(2, "beta", "org::GLOBEX")),
 	}
 	sp := newSourcePipeline(t, nil, nil)
 	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
@@ -684,4 +681,49 @@ func tagsOf(sp *sourcePipeline, slug string) string {
 		}
 	}
 	return ""
+}
+
+// TestEpicRollup_GroupScopedEpicOnlyAppearsWhereItHasEvents:
+// ActiveEpics is the GROUP's list, because epics are group-scoped in
+// GitLab — /groups/:id/epics. Every project in the group therefore
+// carries the same epics, including projects that own none of the
+// epic's issues. Without an event-count filter the epic was listed
+// under all of them, on a file published public: true, claiming
+// "Activity in window: 0 events".
+func TestEpicRollup_GroupScopedEpicOnlyAppearsWhereItHasEvents(t *testing.T) {
+	// The epic's issues all live in "a". "b" shares the group, so it
+	// sees the epic, but nothing of it happened in "b".
+	inA := active(ProjectResult{Project: "a", CustomerOn: true},
+		epic(1, "Only in A", "org::ACME"))
+	inB := ProjectResult{Project: "b", CustomerOn: true, ActiveEpics: inA.ActiveEpics}
+	projects := []ProjectResult{inA, inB}
+
+	for _, b := range bucketAllEpics(projects) {
+		for _, ent := range b.Entries {
+			for _, s := range ent.Epics {
+				if ent.Project == "b" {
+					t.Errorf("team rollup: epic %q listed under %s, which owns none of it",
+						s.Epic.Title, ent.Project)
+				}
+			}
+		}
+	}
+	for _, b := range bucketEpicsByCustomer(projects) {
+		for _, ent := range b.Entries {
+			for _, s := range ent.Epics {
+				if ent.Project == "b" {
+					t.Errorf("customer rollup: epic %q listed under %s, which owns none of it",
+						s.Epic.Title, ent.Project)
+				}
+			}
+		}
+	}
+
+	// And it is still there for "a", where it does belong — the fix
+	// filters on the count, it does not filter the epic away.
+	team := bucketAllEpics(projects)
+	if len(team) != 1 || len(team[0].Entries) != 1 || team[0].Entries[0].Project != "a" ||
+		len(team[0].Entries[0].Epics) != 1 {
+		t.Fatalf("the epic should remain under a: %+v", team)
+	}
 }

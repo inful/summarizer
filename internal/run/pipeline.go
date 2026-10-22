@@ -715,12 +715,26 @@ func bucketEpicsByCustomer(projects []ProjectResult) []epicRollupPart {
 			// with public: true, so ACME's file must not report how
 			// many events GLOBEX's issues contributed.
 			ev := pr.EpicEventCounts[e.IID]
+			if ev.Total == 0 {
+				// ActiveEpics is the GROUP's list, so this project
+				// may own none of the epic's issues. Without the
+				// count check the epic appears here with
+				// "Activity in window: 0 events", on a file
+				// published public: true.
+				continue
+			}
 			for _, code := range codes {
 				perCode[code] = append(perCode[code], prompt.EpicSummary{
 					Epic:       e,
 					EventCount: ev.ByCustomer[code],
 				})
 			}
+		}
+		if len(perCode) == 0 {
+			// None of this project's active epics counted an event
+			// here, so it has no business in a customer document —
+			// same rule as bucketAllEpics, and the same reason.
+			continue
 		}
 		for code, summaries := range perCode {
 			b := byCode[code]
@@ -764,13 +778,29 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 		}
 		summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
 		for _, e := range pr.ActiveEpics {
-			// The whole fleet's view, so the epic's full total —
+			// Only epics with events in THIS project. ActiveEpics is
+			// the group's list (epics are group-scoped), so a
+			// 40-project group carried the same 20 epics on every
+			// ProjectResult — including projects with none of the
+			// epic's issues, which then appeared in the rollup with
+			// "Activity in window: 0 events".
+			//
+			// The count is the filter. formatEventsGroupedByEpic has
+			// always skipped an epic with no events in the per-project
+			// report; the rollups have to agree with it or the same
+			// epic is present in one document and absent from the
+			// other.
+			n := pr.EpicEventCounts[e.IID].Total
+			if n == 0 {
+				continue
+			}
+			// The whole fleet's view, so the epic's total —
 			// internal readers want the whole picture, which is the
 			// reason this audience is not split per customer.
-			summaries = append(summaries, prompt.EpicSummary{
-				Epic:       e,
-				EventCount: pr.EpicEventCounts[e.IID].Total,
-			})
+			summaries = append(summaries, prompt.EpicSummary{Epic: e, EventCount: n})
+		}
+		if len(summaries) == 0 {
+			continue
 		}
 		entries = append(entries, prompt.EpicRollupEntry{Project: pr.Project, Epics: summaries})
 	}

@@ -169,7 +169,7 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 		out, err := r.Publisher.Publish(ctx, publisher.Request{
 			Name:     monthlyRollupFilename(month, aud),
 			Body:     []byte(resp.Text),
-			Kind:     publisher.KindRollup,
+			Kind:     publisher.KindMonthly,
 			Period:   monthlySlug(month),
 			Audience: string(aud),
 			Project:  "",

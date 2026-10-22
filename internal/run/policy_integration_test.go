@@ -142,17 +142,8 @@ func TestRunRollup_MixedPolicy_FiltersForCustomer(t *testing.T) {
 // epic entries.
 func TestRunEpicRollup_MixedPolicy_FiltersForCustomer(t *testing.T) {
 	p, _, _ := newTeamOnlyPipeline(t)
-	pr1 := ProjectResult{
-		Project:     "group/public",
-		CustomerOn:  true,
-		ActiveEpics: []*gitlab.Epic{pr1Epic()},
-	}
-	pr2 := ProjectResult{
-		Project:     "group/secret",
-		CustomerOn:  false,
-		TeamOnly:    true,
-		ActiveEpics: []*gitlab.Epic{pr2Epic()},
-	}
+	pr1 := active(ProjectResult{Project: "group/public", CustomerOn: true}, pr1Epic())
+	pr2 := active(ProjectResult{Project: "group/secret", TeamOnly: true}, pr2Epic())
 	files, _, err := p.runEpicRollup(context.Background(), []ProjectResult{pr1, pr2})
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)

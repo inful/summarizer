@@ -311,7 +311,10 @@ summarizer run --discover-group group/team-a \
 # issues carries an org::CODE label. Epics nobody attributed appear in
 # the TEAM rollup only — customer output is opt-in everywhere else in
 # summarizer, and an unattributed epic is the least attributed thing
-# there is.
+# there is. An epic only appears under a project that actually saw
+# activity on it: epics are group-scoped, so every project in a group
+# sees the same epic list, and the rollups skip the ones with no events
+# here rather than listing them as "0 events".
 
 # Period bucketing is by ISO week number, and the default window is
 # that same week. Every run inside one Mon-Sun week writes to
