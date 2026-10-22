@@ -859,6 +859,16 @@ const maxBackoff = 30 * time.Second
 // instance-wide scan where only the first few pages matter. Reports
 // whether it stopped early so the caller can say so rather than
 // presenting a truncated scan as complete.
+//
+// Only FetchActiveProjects reads that bool, and it is the only endpoint
+// where truncation loses something the caller wanted: the scan pages
+// the whole instance and the cap decides how many candidates were ever
+// considered. The five callers that discard it — FetchMRs, FetchIssues,
+// FetchCommits, FetchEpicIssues, FetchEpics — page a single project or a
+// single group and stop at maxEventPages, whose shortcut: marker names
+// the limit and why the pages it drops are the oldest, i.e. the ones
+// capEvents would have cut anyway. Adding a warning at each of those
+// five would report a decision the codebase has already made.
 func getAll[T any](ctx context.Context, c *Client, path string, q url.Values, maxPages int, soft ...int) ([]T, bool, error) {
 	var out []T
 	for page := 1; maxPages == 0 || page <= maxPages; page++ {
