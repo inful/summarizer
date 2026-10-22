@@ -31,10 +31,17 @@ func TestRenderMonthlyRollup_LabelsWeeksNotProjects(t *testing.T) {
 	if !strings.Contains(user, "2026-09") {
 		t.Error("month missing from the prompt")
 	}
-	// The window header must say weeks too — "Window: last 168h0m0s"
-	// would be nonsense here.
-	if strings.Contains(user, "Window:") {
-		t.Error("monthly prompt should not carry a rolling-window header")
+	// The prompt must name the weeks it covers. Asserting the presence
+	// of the header rather than the absence of the old one: "not
+	// Window:" passes just as happily on a prompt with no header at
+	// all, which is the case this is here to catch.
+	for _, w := range []string{"2026-W37", "2026-W38", "2026-W39"} {
+		if !strings.Contains(user, "  - "+w+"\n") {
+			t.Errorf("monthly prompt must list %s under the week manifest:\n%s", w, user)
+		}
+	}
+	if !strings.Contains(user, "Weeks in this rollup: 3") {
+		t.Error("monthly prompt must state how many weeks it covers")
 	}
 	if system == "" {
 		t.Error("system prompt must not be empty")
