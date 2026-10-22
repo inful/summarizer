@@ -19,11 +19,28 @@ import (
 // for weekly runs — "summarizer/2026-W42" and friends — in the order
 // GitLab returns them.
 //
-// The filter is deliberately narrow: the branch must start with the
-// configured SourceBranchPrefix AND end in a weekly slug matching
-// YYYY-Wnn. That keeps out the target's own default branch, branches
-// from other tools, and a person's feature work, none of which are
-// summarizer's weekly rollups.
+// The filter keeps out the target's own default branch, branches from
+// other tools, and a person's feature work, because the branch name —
+// after the prefix — must be exactly a weekly slug matching YYYY-Wnn.
+//
+// How much work the prefix does depends on SourceBranchPrefix, which has
+// no default and which Validate does not require:
+//
+//   - prefix set ("summarizer"): the branch must be "summarizer/YYYY-Wnn".
+//     Nothing else in the repo can match, so nothing else is claimed.
+//   - prefix empty: HasPrefix(name, "") is true for every name, so the
+//     slug test does all the work — and it is stricter than it looks,
+//     because isWeekSlug requires the WHOLE name to be 8 characters.
+//     "other-tool/2026-W41" is excluded on length even with no prefix.
+//     What is claimed is a branch named exactly "YYYY-Wnn", which in
+//     this configuration is precisely what PeriodBranch produces for
+//     summarizer's own weeks.
+//
+// So the empty-prefix case is self-consistent and only stops short of
+// distinguishing a bare week-shaped branch from another tool's, which
+// would have to be named exactly like one. Requiring the prefix would
+// buy that and would break every config that omits it and works today —
+// the worse trade.
 //
 // Used by `summarizer monthly`, which rolls up last month's weeks.
 func (g *GitLabPublisher) ListPeriodBranches(ctx context.Context) ([]string, error) {
