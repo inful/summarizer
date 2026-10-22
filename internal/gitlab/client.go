@@ -409,7 +409,7 @@ func (c *Client) ProbeProjectActivity(ctx context.Context, projectPath string, s
 
 // probeHasAny is one side of the activity gate: did the project have
 // any record of the given kind updated in [since, now]? The shared
-// shape lets ProbeProjectActivity compose two of them cheaply.
+// shape lets ProbeProjectActivity compose all three of them cheaply.
 func (c *Client) probeHasAny(ctx context.Context, projectPath, kind string, since time.Time) (bool, error) {
 	u := c.baseURL + fmt.Sprintf("/projects/%s/%s", url.PathEscape(projectPath), kind) +
 		"?updated_after=" + url.QueryEscape(since.UTC().Format(time.RFC3339)) +

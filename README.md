@@ -299,6 +299,10 @@ summarizer run --discover-by-topic --discover-group group/team-a
 # project. Three sources can force team-only and they union
 # together: --internal-only-project, summarizer.yaml's
 # internal_only_projects block, and the `summarize-team-only` topic.
+# Project paths are matched case-insensitively and YAML values are
+# trimmed, because GitLab's own project routes are: a spelling
+# difference between --project and --internal-only-project would
+# otherwise mark the same project both ways at once.
 summarizer run --discover-group group/team-a \
     --internal-only-project group/team-a/internal-tool
 
