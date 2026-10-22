@@ -70,12 +70,3 @@ func TestCommit_AuthorFromEmail(t *testing.T) {
 		t.Fatalf("commit author should be username-shaped, got %q", e.Author)
 	}
 }
-
-func TestTruncate(t *testing.T) {
-	if got := truncate("hello", 10); got != "hello" {
-		t.Errorf("short string should pass through, got %q", got)
-	}
-	if got := truncate("hello world", 5); got != "hello..." {
-		t.Errorf("expected truncation, got %q", got)
-	}
-}

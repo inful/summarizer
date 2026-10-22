@@ -32,15 +32,15 @@ func MR(g gitlab.MergeRequest) NormalizedEvent {
 	return NormalizedEvent{
 		Kind:                KindMR,
 		Action:              action,
-		Ref:                 "#" + itoa(g.IID),
-		Title:               truncate(g.Title, TitleCap),
+		Ref:                 "#" + strconv.Itoa(g.IID),
+		Title:               textutil.Truncate(g.Title, TitleCap),
 		Author:              g.Author.Username,
 		URL:                 g.WebURL,
 		Labels:              g.Labels,
 		Comments:            g.UserNotesCount,
 		Created:             g.CreatedAt,
 		Updated:             updated,
-		TeamOnlyDescription: truncate(g.Description, DescriptionCap),
+		TeamOnlyDescription: textutil.Truncate(g.Description, DescriptionCap),
 		Changes:             g.Changes,
 		DiffChunks:          g.DiffChunks,
 	}
@@ -58,15 +58,15 @@ func Issue(g gitlab.Issue) NormalizedEvent {
 	return NormalizedEvent{
 		Kind:                KindIssue,
 		Action:              action,
-		Ref:                 "#" + itoa(g.IID),
-		Title:               truncate(g.Title, TitleCap),
+		Ref:                 "#" + strconv.Itoa(g.IID),
+		Title:               textutil.Truncate(g.Title, TitleCap),
 		Author:              g.Author.Username,
 		URL:                 g.WebURL,
 		Labels:              g.Labels,
 		Comments:            g.UserNotesCount,
 		Created:             g.CreatedAt,
 		Updated:             updated,
-		TeamOnlyDescription: truncate(g.Description, DescriptionCap),
+		TeamOnlyDescription: textutil.Truncate(g.Description, DescriptionCap),
 	}
 }
 
@@ -75,7 +75,7 @@ func Commit(g gitlab.Commit) NormalizedEvent {
 		Kind:    KindCommit,
 		Action:  "pushed",
 		Ref:     g.ShortID,
-		Title:   truncate(g.Title, TitleCap),
+		Title:   textutil.Truncate(g.Title, TitleCap),
 		Author:  commitAuthor(g),
 		URL:     g.WebURL,
 		Created: g.CreatedAt,
@@ -94,7 +94,3 @@ func commitAuthor(g gitlab.Commit) string {
 	}
 	return g.AuthorName
 }
-
-func truncate(s string, n int) string { return textutil.Truncate(s, n) }
-
-func itoa(n int) string { return strconv.Itoa(n) }
