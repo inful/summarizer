@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/llm"
+	"github.com/inful/summarizer/internal/publisher"
 	"github.com/inful/summarizer/internal/safety"
 )
 
@@ -260,5 +262,44 @@ func TestRun_PeriodIsNotRecomputedPerPublish(t *testing.T) {
 		if req.Period != "2026-W43" {
 			t.Errorf("file %q published under period %q, want 2026-W43", req.Name, req.Period)
 		}
+	}
+}
+
+// closedPeriodPublisher reports every write as landing on a branch
+// whose MR is already merged — the ordinary response to re-running a
+// week that was already published.
+type closedPeriodPublisher struct{ mu sync.Mutex }
+
+func (c *closedPeriodPublisher) Publish(_ context.Context, req publisher.Request) (publisher.Result, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return publisher.Result{Ref: "blob/summarizer/2026-W43/" + req.Name, Closed: true}, nil
+}
+
+// TestRun_CountsRollupsThatReachedNoBranch: printSummary can only
+// discount a rollup that landed on a closed branch if the pipeline
+// tells it. runAudienceRollups used to discard Result.Closed, so a
+// re-run of a merged week reported its rollups as published.
+func TestRun_CountsRollupsThatReachedNoBranch(t *testing.T) {
+	p, _ := twoProjectPipeline(t, "")
+	p.Publisher = &closedPeriodPublisher{}
+	p.Opts.Period = "2026-W43"
+	p.Opts.Projects = []string{"group/aaa"}
+
+	res, err := p.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.RollupFiles) == 0 {
+		t.Fatal("expected a rollup file; a single-project run still publishes one")
+	}
+	if res.RollupFilesClosed != len(res.RollupFiles) {
+		t.Errorf("RollupFilesClosed = %d, want %d — every rollup landed on a "+
+			"branch that will never merge", res.RollupFilesClosed, len(res.RollupFiles))
+	}
+	// And the per-project side is still counted, so printSummary's
+	// arithmetic has both halves to work with.
+	if len(res.Projects) != 1 || res.Projects[0].FilesClosed != 1 {
+		t.Errorf("per-project closed count wrong: %+v", res.Projects)
 	}
 }

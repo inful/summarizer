@@ -73,3 +73,66 @@ func TestRenderRollup_CapsIndividualBody(t *testing.T) {
 		t.Errorf("expected individual body to be truncated, got: %s", user)
 	}
 }
+
+// TestCapBodies_DropsFromTheFrontAndKeepsTheNameList: the disclosure
+// contract both rollups share. `names` is the full input and keeps its
+// order, so the template still names every project; `bodies` loses its
+// front entries until the total fits. At least one body survives.
+func TestCapBodies_DropsFromTheFrontAndKeepsTheNameList(t *testing.T) {
+	// Five entries at the per-body cap is 20 KB against a 16 KB budget,
+	// so exactly one is dropped. Four would land on the cap exactly and
+	// keep everything.
+	names := []string{"a", "b", "c", "d", "e"}
+	bodies := map[string]string{
+		"a": string(make([]byte, rollupPerBodyCap)),
+		"b": string(make([]byte, rollupPerBodyCap)),
+		"c": string(make([]byte, rollupPerBodyCap)),
+		"d": string(make([]byte, rollupPerBodyCap)),
+		"e": string(make([]byte, rollupPerBodyCap)),
+	}
+	before := len(names)
+
+	capBodies(names, bodies)
+
+	if len(names) != before {
+		t.Errorf("names shrank from %d to %d; the model must still see every "+
+			"project so it can tell a subset from the whole", before, len(names))
+	}
+	if names[0] != "a" || names[len(names)-1] != "e" {
+		t.Errorf("names reordered: %v", names)
+	}
+	if len(bodies) == 0 {
+		t.Fatal("every body was dropped; the template would render nothing")
+	}
+	if len(bodies) >= len(names) {
+		t.Errorf("nothing was dropped: %d of %d bodies kept under a %d cap",
+			len(bodies), len(names), rollupTotalCap)
+	}
+	if _, ok := bodies["a"]; ok {
+		t.Error("a is the front of the list and the first to go, but its body survived")
+	}
+	if _, ok := bodies["e"]; !ok {
+		t.Error("e is last and must never be the one dropped")
+	}
+}
+
+// TestCapBodies_UnderTheCapChangesNothing: the ordinary case.
+func TestCapBodies_UnderTheCapChangesNothing(t *testing.T) {
+	names := []string{"a", "b"}
+	bodies := map[string]string{"a": "small", "b": "small"}
+	capBodies(names, bodies)
+	if len(bodies) != 2 {
+		t.Errorf("bodies = %v, want both kept", bodies)
+	}
+}
+
+// TestCapBodies_KeepsOneEvenWhenOneAloneExceedsTheCap: a single
+// oversized body must not leave the template empty.
+func TestCapBodies_KeepsOneEvenWhenOneAloneExceedsTheCap(t *testing.T) {
+	names := []string{"only"}
+	bodies := map[string]string{"only": string(make([]byte, rollupTotalCap*2))}
+	capBodies(names, bodies)
+	if len(bodies) != 1 {
+		t.Errorf("bodies = %v, want the one entry kept", bodies)
+	}
+}

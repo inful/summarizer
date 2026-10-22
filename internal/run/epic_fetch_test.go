@@ -362,3 +362,69 @@ func TestFetchProjectEpics_CacheIsPerGroup(t *testing.T) {
 		t.Errorf("two groups cost %d epics-list fetches, want 2", srv.epicCalls)
 	}
 }
+
+// TestRun_ResetsPerRunStateBetweenRuns: groupEpics and runUntil are
+// the package's only mutable per-run state, and they have three
+// separate seeding paths — New, the top of Run, and a lazy guard in
+// fetchProjectEpics because Pipeline's fields are exported and a
+// struct literal is a legal construction. None of it is tested.
+//
+// The failure it protects against is silent: a Pipeline reused for a
+// second week would serve week one's epics from groupEpics and filter
+// week two's against week one's runUntil, and the report would be
+// wrong with nothing in the log.
+func TestRun_ResetsPerRunStateBetweenRuns(t *testing.T) {
+	p, _ := newEpicPipeline(t, 2)
+	p.Opts.Projects = []string{"g/p1", "g/p2"} // same group, so the cache is exercised
+	p.Opts.DryRun = false                      // a dry run returns before the epic fetch
+	p.Opts.Since = weekStart()
+	p.Opts.Period = "2026-W43"
+
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if len(p.groupEpics) == 0 {
+		t.Fatal("the first Run should have populated the per-group epic cache")
+	}
+	firstUntil := p.runUntil
+
+	// A second run, a moment later. The window start stays put — this
+	// is about the per-run state being reset, not about the window.
+	time.Sleep(2 * time.Millisecond)
+	p.Opts.Period = "2026-W44"
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+
+	if !p.runUntil.After(firstUntil) {
+		t.Errorf("runUntil did not move: %v then %v — the second run's epics "+
+			"would be filtered against the first run's upper bound",
+			firstUntil, p.runUntil)
+	}
+	if p.runUntil.Before(p.Opts.Since) {
+		t.Errorf("runUntil %v precedes the window start %v", p.runUntil, p.Opts.Since)
+	}
+	// Refilled, not left holding the first run's slice.
+	if len(p.groupEpics) == 0 {
+		t.Error("the second Run should have refilled the cache")
+	}
+}
+
+// TestFetchProjectEpics_StructLiteralPipelineStillWorks: Pipeline's
+// fields are exported, so &Pipeline{...} is a legitimate constructor
+// and arrives with nil maps. A write to a nil map panics, and
+// runUntil left zero filters every epic against the year 1.
+func TestFetchProjectEpics_StructLiteralPipelineStillWorks(t *testing.T) {
+	p, _ := newEpicPipeline(t, 2)
+	p.groupEpics = nil
+	p.runUntil = time.Time{}
+
+	since, until := time.Now().Add(-7*24*time.Hour), time.Now()
+	epics, err := p.fetchProjectEpics(context.Background(), "g/p", since, until)
+	if err != nil {
+		t.Fatalf("a zero-valued Pipeline must not fail: %v", err)
+	}
+	if len(epics) == 0 {
+		t.Error("want the group's epics; a zero runUntil filters everything out")
+	}
+}

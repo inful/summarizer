@@ -128,7 +128,12 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 		titlePrefix = "Cross-project rollup"
 	}
 	projectLabel := project
-	if kind == KindRollup {
+	if projectLabel == "" && kind == KindRollup {
+		// A rollup that spans the fleet says so. One that does NOT is
+		// per-customer (the epic rollups carry the org:: code in
+		// Request.Project), and forcing the fleet label onto it gave
+		// every customer's public document the same title and left
+		// nothing in the index but the filename to tell them apart.
 		projectLabel = "all subscribed projects"
 	}
 	title := fmt.Sprintf("%s %s report — %s, %s", titlePrefix, audience, projectLabel, period)

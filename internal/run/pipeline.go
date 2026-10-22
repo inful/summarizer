@@ -5,6 +5,8 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -93,10 +95,17 @@ type ProjectResult struct {
 // EpicRollupFiles holds combined-epics--{audience}.md when ≥1 active epic
 // was found across any project.
 type Result struct {
-	Projects         []ProjectResult
-	RollupFiles      []string
-	EpicRollupFiles  []string
-	TokensByAudience map[string]llm.Usage // rollup token usage, when applicable
+	Projects        []ProjectResult
+	RollupFiles     []string
+	EpicRollupFiles []string
+	// RollupFilesClosed counts rollup writes that landed on a branch
+	// whose MR is already merged or closed, so nothing reached the
+	// default branch. The per-project path has always reported this
+	// (ProjectResult.FilesClosed); the rollup path used to discard
+	// Result.Closed, so a re-run of a merged week reported its rollups
+	// as published.
+	RollupFilesClosed int
+	TokensByAudience  map[string]llm.Usage // rollup token usage, when applicable
 
 	// PartialFiles are files published by a project that then failed —
 	// the customer report landed and the team call did not. They are
@@ -268,11 +277,12 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	})
 
 	if len(res.Projects) > 0 && !p.Opts.DryRun {
-		rollupFiles, err := p.runRollup(ctx, res.Projects)
+		rollupFiles, rollupClosed, err := p.runRollup(ctx, res.Projects)
 		if err != nil {
 			return res, fmt.Errorf("rollup: %w", err)
 		}
 		res.RollupFiles = rollupFiles
+		res.RollupFilesClosed = rollupClosed
 	}
 
 	// Cross-project epic rollup — fires whenever ≥1 project has
@@ -281,11 +291,12 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	// Skipped on --dry-run to keep the no-write contract.
 	if !p.Opts.DryRun {
 		if len(p.lastActiveEpics) > 0 {
-			epicRollupFiles, err := p.runEpicRollup(ctx, res.Projects)
+			epicRollupFiles, epicClosed, err := p.runEpicRollup(ctx, res.Projects)
 			if err != nil {
 				return res, fmt.Errorf("epics rollup: %w", err)
 			}
 			res.EpicRollupFiles = epicRollupFiles
+			res.RollupFilesClosed += epicClosed
 		}
 	}
 
@@ -485,6 +496,17 @@ type rollupPart struct {
 	name   string // filename kind segment, e.g. "epics-rollup", "epics-acme"
 	system string
 	user   string
+	// label names what this part covers, for the published frontmatter.
+	// Empty for a whole-fleet rollup; the customer code for a
+	// per-customer epic rollup.
+	//
+	// It exists because NewFrontmatter builds a document title out of
+	// project/audience/period/kind alone. Two per-customer epic rollups
+	// in one period therefore shipped the SAME title ("Cross-project
+	// rollup customer report — all subscribed projects, 2026-W43") and
+	// the same tags, so nothing in the docbuilder index — every one of
+	// them public: true — said which customer a document belonged to.
+	label string
 }
 
 // eligibleProjects applies the D5 audience filter: the customer rollups
@@ -509,8 +531,12 @@ func eligibleProjects(aud prompt.Audience, projects []ProjectResult) []ProjectRe
 // inputs; the audience loop, the D5 filter, the guard call, the LLM
 // call and the publish were verbatim copies. One loop now, so a fix to
 // the audience boundary cannot land in one path and miss the other.
-func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectResult, spec audienceInputs) ([]string, error) {
+// The second return is how many of `files` landed on a closed period's
+// branch. printSummary subtracts it from the published count, the
+// same way it subtracts ProjectResult.FilesClosed.
+func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectResult, spec audienceInputs) ([]string, int, error) {
 	var files []string
+	var closed int
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
 		// No eligible projects for this audience → no file. For the team
 		// audience eligibleProjects is the whole run, so this only trips
@@ -523,12 +549,12 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 			if errors.Is(err, errSkipAudience) {
 				continue
 			}
-			return files, err
+			return files, closed, err
 		}
 		for _, part := range parts {
 			label := spec.name + "/" + part.name
 			if err := p.checkPrompt(ctx, label, aud, part.system+"\n\n"+part.user); err != nil {
-				return files, err
+				return files, closed, err
 			}
 			resp, err := p.LLM.Complete(ctx, llm.Request{
 				System:    part.system,
@@ -537,7 +563,7 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				MaxTokens: 2048,
 			})
 			if err != nil {
-				return files, fmt.Errorf("llm %s %s: %w", label, aud, err)
+				return files, closed, fmt.Errorf("llm %s %s: %w", label, aud, err)
 			}
 			res, err := p.Publisher.Publish(ctx, publisher.Request{
 				Name:     rollupFilename(aud, part.name),
@@ -545,23 +571,30 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				Kind:     publisher.KindRollup,
 				Period:   p.Opts.Period,
 				Audience: string(aud),
-				Project:  "",
-				Public:   aud == prompt.AudienceCustomer,
+				// The customer code, not the empty string. NewFrontmatter
+				// already turns this into the document title and a tag,
+				// which is what distinguishes one customer's epic rollup
+				// from another's in the index.
+				Project: part.label,
+				Public:  aud == prompt.AudienceCustomer,
 			})
 			if err != nil {
-				return files, fmt.Errorf("write %s %s: %w", label, aud, err)
+				return files, closed, fmt.Errorf("write %s %s: %w", label, aud, err)
 			}
 			files = append(files, res.Ref)
+			if res.Closed {
+				closed++
+			}
 		}
 	}
-	return files, nil
+	return files, closed, nil
 }
 
 // runRollup runs one extra LLM call per audience over the per-project
 // reports and writes the combined files. Only called when len(Projects)
 // > 1. The rollup prompt takes per-project reports as input and asks the
 // model to surface cross-project themes.
-func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
+func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, int, error) {
 	return p.runAudienceRollups(ctx, projects, audienceInputs{
 		name: "rollup",
 		parts: func(aud prompt.Audience) ([]rollupPart, error) {
@@ -747,7 +780,7 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 	return []epicRollupPart{{Entries: entries}}
 }
 
-func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, error) {
+func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, int, error) {
 	// No representative project name: the epic rollups name every
 	// project in the body and the frontmatter carries Project: "",
 	// because they span N projects. A "first project for determinism"
@@ -772,11 +805,12 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 				if err != nil {
 					return nil, fmt.Errorf("render epics rollup %s: %w", aud, err)
 				}
-				name := "epics-rollup"
+				name, label := "epics-rollup", ""
 				if b.Customer != "" {
 					name = "epics-" + slugCustomer(b.Customer)
+					label = b.Customer
 				}
-				parts = append(parts, rollupPart{name: name, system: system, user: user})
+				parts = append(parts, rollupPart{name: name, label: label, system: system, user: user})
 			}
 			return parts, nil
 		},
@@ -1517,13 +1551,20 @@ func sanitize(s string) string {
 }
 
 // slugCustomer renders a customer code as a filename-safe segment:
-// lowercased, alphanumerics kept, every other run collapsed to a single
-// "-". "Acme Corp" → "acme-corp", "  ACME--EU  " → "acme-eu".
+// lowercased, alphanumerics kept, every other run collapsed to a
+// single "-", then a short hash of the ORIGINAL code.
 //
-// Two codes that slug to the same string ("Acme Corp" and "acme-corp")
-// would collide on the branch. GitLab labels are case-sensitive and an
-// org::code is expected to be one canonical token, so this is a
-// display convenience rather than an identity.
+// The hash is not decoration. Without it the mapping is lossy, and a
+// lossy name for a customer document is a data-loss bug: "Acme  EU"
+// and "acme.eu" both produced acme-eu, so two customer buckets wrote
+// one combined--epics-*.md, the second overwrote the first, and
+// readExistingUID then published the FIRST customer's docbuilder UID
+// on the second's report. That file is public: true. This is the same
+// failure sanitize() had for project paths, one function over — and it
+// makes no assumption about what characters a label may contain.
+//
+// Six hex characters of SHA-256 is 16.7M buckets; two customers in one
+// fleet colliding is not a thing anyone has to think about again.
 func slugCustomer(code string) string {
 	var b strings.Builder
 	prevDash := true // leading separators are dropped
@@ -1538,5 +1579,11 @@ func slugCustomer(code string) string {
 			prevDash = true
 		}
 	}
-	return strings.TrimSuffix(b.String(), "-")
+	sum := sha256.Sum256([]byte(code))
+	slug := strings.TrimSuffix(b.String(), "-")
+	if slug == "" {
+		// A code that slugs to nothing still needs a name.
+		return "c-" + hex.EncodeToString(sum[:3])
+	}
+	return slug + "-" + hex.EncodeToString(sum[:3])
 }

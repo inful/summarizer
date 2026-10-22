@@ -346,6 +346,12 @@ lost. There is no refuse-first: a run inside a period always
 overwrites it, because the second run of every week targets the same
 path.
 
+The `<customer-slug>` is the `org::CODE` value lowercased with
+punctuation collapsed, plus a short hash of the original code —
+`acme-eu-3e6aad`. The hash makes the filename unique: without it
+`org::"Acme  EU"` and `org::"acme.eu"` would write the same file, and the
+second would publish the first's docbuilder UID.
+
 ## Monthly rollups
 
 `summarizer monthly` rolls up a whole calendar month of the weekly

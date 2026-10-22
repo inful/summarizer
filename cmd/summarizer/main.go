@@ -388,7 +388,11 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 	// is not a run that published nothing, and this summary line is what
 	// a cron wrapper greps — hiding the successes behind an error made a
 	// partial run indistinguishable from a total failure.
-	if !dryRun && (err == nil || len(res.Projects) > 0) {
+	// PartialFiles is in the gate as well as res.Projects: a run where
+	// EVERY project published a file and then failed has no
+	// res.Projects at all, and gating on that alone printed nothing —
+	// the files were on the branch and nothing named them.
+	if !dryRun && (err == nil || len(res.Projects) > 0 || len(res.PartialFiles) > 0) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "summarizer: PARTIAL — %d project(s) published before the run failed; see the WARN lines above for the ones that did not\n", len(res.Projects))
 			// Projects that published at least one file and then failed
@@ -405,10 +409,13 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 			usedEvents += p.EventsUsed
 		}
 		// Count what was actually published, not what a full two-audience
-		// run would produce: team-only projects write one file, and the
-		// epic rollups are separate.
-		fileCount := len(res.RollupFiles) + len(res.EpicRollupFiles)
-		closedCount := 0
+		// run would produce: team-only projects write one file, the
+		// epic rollups are separate, and a project that failed after a
+		// write still produced a file. closedCount discounts every write
+		// that landed on a branch whose MR is already merged — the
+		// rollups included, which used to be reported as published.
+		fileCount := len(res.RollupFiles) + len(res.EpicRollupFiles) + len(res.PartialFiles)
+		closedCount := res.RollupFilesClosed
 		for _, p := range res.Projects {
 			fileCount += len(p.FilesWritten)
 			closedCount += p.FilesClosed

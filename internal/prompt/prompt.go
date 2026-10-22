@@ -176,26 +176,7 @@ func RenderRollup(aud Audience, projects []ProjectReport) (system, user string, 
 		bodies[p.Name] = body
 		names = append(names, p.Name)
 	}
-	// Drop oldest projects' bodies until total is under the cap. The
-	// template still renders the project name + count, so the model
-	// sees which projects are included vs truncated.
-	for len(bodies) > 1 {
-		var total int
-		for _, b := range bodies {
-			total += len(b)
-		}
-		if total <= rollupTotalCap {
-			break
-		}
-		// Drop the first project's body (oldest in slice order). Keep
-		// at least one project so the template still has content.
-		for _, name := range names {
-			if _, ok := bodies[name]; ok {
-				delete(bodies, name)
-				break
-			}
-		}
-	}
+	capBodies(names, bodies)
 
 	data := struct {
 		Window        string
@@ -259,24 +240,10 @@ func RenderMonthlyRollup(aud Audience, month string, weeks []ProjectReport) (sys
 		bodies[w.Name] = body
 		names = append(names, w.Name)
 	}
-	// A month is 4-5 weekly rollups of ~2-4k runes each. Cap the total
-	// the same way RenderRollup does, dropping the oldest weeks first —
-	// the most recent weeks are what a month-end reader cares about.
-	for len(bodies) > 1 {
-		var total int
-		for _, b := range bodies {
-			total += len(b)
-		}
-		if total <= rollupTotalCap {
-			break
-		}
-		for _, name := range names {
-			if _, ok := bodies[name]; ok {
-				delete(bodies, name)
-				break
-			}
-		}
-	}
+	// A month is 4-5 weekly rollups of ~2-4k runes each. Capped the same
+	// way, dropping the oldest first — the most recent weeks are what a
+	// month-end reader cares about.
+	capBodies(names, bodies)
 
 	data := struct {
 		Month      string
@@ -641,6 +608,37 @@ func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
 		kept, sizes = kept[1:], sizes[1:]
 	}
 	return kept
+}
+
+// capBodies drops entries from `bodies`, front-first, until the total
+// is under rollupTotalCap. At least one entry always survives, so the
+// template still has content.
+//
+// Measured once and subtracted as entries drop. Both callers had their
+// own copy that re-summed every surviving body on every iteration,
+// which is O(n²) — 50 projects at the 4 KB per-body cap runs the loop
+// ~46 times over a shrinking map. Same shape as capEpicEntries, which
+// was already fixed for exactly this.
+//
+// `names` keeps its original order and its full length, so the template
+// still names every input and the model can tell which ones lost their
+// body.
+func capBodies(names []string, bodies map[string]string) {
+	sizes := make(map[string]int, len(bodies))
+	sum := 0
+	for n, b := range bodies {
+		sizes[n] = len(b)
+		sum += sizes[n]
+	}
+	for len(bodies) > 1 && sum > rollupTotalCap {
+		for _, name := range names {
+			if _, ok := bodies[name]; ok {
+				sum -= sizes[name]
+				delete(bodies, name)
+				break
+			}
+		}
+	}
 }
 
 // capEvents returns the events to send: the most-recently-updated N,

@@ -398,3 +398,45 @@ func TestNewPublisher_PublishNeedsItsTokenAndProject(t *testing.T) {
 		t.Errorf("code = %d, want 0", code)
 	}
 }
+
+// TestPrintSummary_DiscountsRollupsThatReachedNoBranch: a re-run of a
+// week whose MR is already merged writes every file — per-project and
+// rollup alike — onto a branch that will never merge again. The
+// per-project path reported that; the rollup path discarded
+// Result.Closed, so the summary said files were published when nothing
+// had reached main.
+func TestPrintSummary_DiscountsRollupsThatReachedNoBranch(t *testing.T) {
+	res := run.Result{
+		Projects: []run.ProjectResult{{
+			Project: "g/aaa", FilesWritten: []string{"a-team.md"}, FilesClosed: 1,
+		}},
+		RollupFiles:       []string{"combined--rollup--wk--team.md"},
+		RollupFilesClosed: 1,
+	}
+	out := captureStderr(t, func() { printSummary(res, nil, false, time.Now()) })
+	if !strings.Contains(out, "0 file(s) written") {
+		t.Errorf("two files were written and both landed on a closed branch, so "+
+			"nothing reached main:\n%s", out)
+	}
+	if !strings.Contains(out, "(2 already published this week)") {
+		t.Errorf("both writes should be discounted, the rollup included:\n%s", out)
+	}
+}
+
+// TestPrintSummary_ReportsAFilesEvenWhenEveryProjectFailed: a run
+// where every project published and then failed has an empty
+// res.Projects, and gating on that alone printed nothing — the files
+// were on the branch and nothing named them. The partial file must
+// appear AND be counted.
+func TestPrintSummary_ReportsAFilesEvenWhenEveryProjectFailed(t *testing.T) {
+	res := run.Result{PartialFiles: []string{"/out/2026-W43/g_zzz--wk--customer.md"}}
+	out := captureStderr(t, func() {
+		printSummary(res, errors.New("project g/zzz: llm team: 500"), false, time.Now())
+	})
+	if !strings.Contains(out, "g_zzz--wk--customer.md") {
+		t.Errorf("the file a failed project did publish must be named:\n%s", out)
+	}
+	if !strings.Contains(out, "1 file(s) written") {
+		t.Errorf("a file listed in the output must also be counted:\n%s", out)
+	}
+}

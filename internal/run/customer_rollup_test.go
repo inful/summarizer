@@ -2,14 +2,19 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/prompt"
+	"github.com/inful/summarizer/internal/publisher"
 )
 
 // epic builds an active epic carrying the given labels.
@@ -104,7 +109,7 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{epicShared, epicBacklog}},
 	}
 
-	_, err := sp.p.runEpicRollup(context.Background(), projects)
+	_, _, err := sp.p.runEpicRollup(context.Background(), projects)
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -116,7 +121,7 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 	// backlog is in the team file only.
 	names := publishedNames(sp)
 	for _, want := range []string{
-		"combined--epics-acme--wk--customer.md",
+		epicCustomerFile("ACME"),
 		"combined--epics-rollup--wk--team.md",
 	} {
 		if !slices.Contains(names, want) {
@@ -164,7 +169,7 @@ func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
 		}},
 	}
 
-	files, err := sp.p.runEpicRollup(context.Background(), projects)
+	files, _, err := sp.p.runEpicRollup(context.Background(), projects)
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -177,9 +182,9 @@ func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
 	// The bucketing decision is in which files exist, not what
 	// they say. Check by filename.
 	wantNames := map[string]bool{
-		"combined--epics-acme--wk--customer.md":   false,
-		"combined--epics-globex--wk--customer.md": false,
-		"combined--epics-rollup--wk--team.md":     false,
+		epicCustomerFile("ACME"):              false,
+		epicCustomerFile("GLOBEX"):            false,
+		"combined--epics-rollup--wk--team.md": false,
 	}
 	for _, w := range sp.pub.written {
 		name := strings.TrimPrefix(w.Name, "captured/")
@@ -280,7 +285,7 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 		}},
 	}
 
-	files, err := sp.p.runEpicRollup(context.Background(), projects)
+	files, _, err := sp.p.runEpicRollup(context.Background(), projects)
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -311,7 +316,7 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 	names := publishedNames(sp)
 	// No customer-side combined file: it only ever carried unattributed
 	// epics, which are not customer-visible.
-	wantNames := []string{"combined--epics-acme--wk--customer.md", "combined--epics-rollup--wk--team.md"}
+	wantNames := []string{epicCustomerFile("ACME"), "combined--epics-rollup--wk--team.md"}
 	for _, w := range wantNames {
 		if !slices.Contains(names, w) {
 			t.Errorf("missing %s; got %v", w, names)
@@ -327,7 +332,7 @@ func TestEpicRollup_PublicFlagPerAudience(t *testing.T) {
 	projects := []ProjectResult{{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
 		epic(1, "x", "org::ACME"), epic(2, "y"),
 	}}}
-	if _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
 	for _, w := range sp.pub.written {
@@ -342,7 +347,7 @@ func TestEpicRollup_PublicFlagPerAudience(t *testing.T) {
 // not empty ones.
 func TestEpicRollup_NoEpicsSkipsEverything(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
-	files, err := sp.p.runEpicRollup(context.Background(), []ProjectResult{{Project: "a", CustomerOn: true}})
+	files, _, err := sp.p.runEpicRollup(context.Background(), []ProjectResult{{Project: "a", CustomerOn: true}})
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -354,18 +359,32 @@ func TestEpicRollup_NoEpicsSkipsEverything(t *testing.T) {
 	}
 }
 
+// epicCustomerFile is the filename a customer bucket publishes under.
+// Derived from slugCustomer rather than hardcoded: the slug carries a
+// hash of the org:: code, and a literal here would drift from it the
+// moment the slug changes.
+func epicCustomerFile(code string) string {
+	return rollupFilename(prompt.AudienceCustomer, "epics-"+slugCustomer(code))
+}
+
 // TestSlugCustomer: filename safety without turning the code into
-// something unreadable.
+// something unreadable. Every slug ends in a short hash of the
+// ORIGINAL code, because the readable part alone is lossy and a lossy
+// customer name is a uid swap between two public documents.
 func TestSlugCustomer(t *testing.T) {
+	suffix := func(code string) string {
+		sum := sha256.Sum256([]byte(code))
+		return hex.EncodeToString(sum[:3])
+	}
 	cases := []struct{ in, want string }{
-		{"ACME", "acme"},
-		{"Acme Corp", "acme-corp"},
-		{"  ACME--EU  ", "acme-eu"},
-		{"Acme  Corp", "acme-corp"},
-		{"ACME_2024", "acme-2024"},
-		{"Acme/Corp", "acme-corp"},
-		{"ACME::EU", "acme-eu"},
-		{"...", ""},
+		{"ACME", "acme-" + suffix("ACME")},
+		{"Acme Corp", "acme-corp-" + suffix("Acme Corp")},
+		{"  ACME--EU  ", "acme-eu-" + suffix("  ACME--EU  ")},
+		{"Acme  Corp", "acme-corp-" + suffix("Acme  Corp")},
+		{"ACME_2024", "acme-2024-" + suffix("ACME_2024")},
+		{"Acme/Corp", "acme-corp-" + suffix("Acme/Corp")},
+		{"ACME::EU", "acme-eu-" + suffix("ACME::EU")},
+		{"...", "c-" + suffix("...")},
 	}
 	for _, c := range cases {
 		if got := slugCustomer(c.in); got != c.want {
@@ -374,13 +393,43 @@ func TestSlugCustomer(t *testing.T) {
 	}
 }
 
+// TestSlugCustomer_IsInjective: the property the customer filename
+// rests on. Two org:: codes that slug to one name write one
+// combined--epics-*.md — the second overwrites the first and inherits
+// its docbuilder UID, on a file published public: true.
+//
+// Every pair below is legal label text and collided before the hash
+// was added. It is the same failure sanitize() had for project paths.
+func TestSlugCustomer_IsInjective(t *testing.T) {
+	codes := []string{
+		"Acme  EU", "acme.eu", "acme-eu", "ACME-EU", "Acme EU",
+		"Acme Corp", "acme-corp", "Acme  Corp", "acme_corp",
+		"ACME", "acme", "Acme", "acme.",
+		"...", "   ",
+	}
+	seen := make(map[string]string, len(codes))
+	for _, c := range codes {
+		got := slugCustomer(c)
+		if prev, dup := seen[got]; dup {
+			t.Errorf("COLLISION: org::%q and org::%q both slug to %q — one "+
+				"public customer report overwrites the other and inherits its uid",
+				prev, c, got)
+			continue
+		}
+		seen[got] = c
+	}
+}
+
 // TestEpicRollupFilename_ForCustomerCode: the exact file names an
 // operator will see in the period directory.
 func TestEpicRollupFilename_ForCustomerCode(t *testing.T) {
-	got := rollupFilename(prompt.AudienceCustomer, "epics-acme")
-	want := "combined--epics-acme--wk--customer.md"
+	got := rollupFilename(prompt.AudienceCustomer, "epics-"+slugCustomer("ACME"))
+	want := "combined--epics-" + slugCustomer("ACME") + "--wk--customer.md"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+	if !strings.Contains(got, slugCustomer("ACME")) {
+		t.Errorf("the customer slug must survive into the filename: %q", got)
 	}
 }
 
@@ -397,7 +446,7 @@ func TestEpicRollup_UnattributedEpicNeverReachesACustomerFile(t *testing.T) {
 			epic(1, "nobody-claimed-this"),
 		}},
 	}
-	if _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
 	// The stub LLM returns a canned body, so the epic is asserted on
@@ -576,4 +625,63 @@ func TestEpicRollup_ConfidentialEpicNeverReachesACustomerFile(t *testing.T) {
 	if len(team) != 1 || len(team[0].Entries[0].Epics) != 2 {
 		t.Errorf("team bucket = %+v, want both epics", team)
 	}
+}
+
+// TestEpicRollup_PerCustomerFrontmatterNamesTheCustomer: two customer
+// epic rollups in one period are two documents in the docbuilder index,
+// both published public: true. NewFrontmatter builds its title from
+// project/audience/period/kind, and the rollups passed Project: "" —
+// so ACME's and GLOBEX's shipped the identical title
+// ("Cross-project rollup customer report — all subscribed projects,
+// 2026-W43") and identical tags. Nothing in the index said which
+// customer a document belonged to.
+func TestEpicRollup_PerCustomerFrontmatterNamesTheCustomer(t *testing.T) {
+	projects := []ProjectResult{
+		{Project: "a", CustomerOn: true, ActiveEpics: []*gitlab.Epic{
+			epic(1, "alpha", "org::ACME"),
+			epic(2, "beta", "org::GLOBEX"),
+		}},
+	}
+	sp := newSourcePipeline(t, nil, nil)
+	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+		t.Fatalf("runEpicRollup: %v", err)
+	}
+
+	title := func(req publisher.Request) string {
+		return string(publisher.NewFrontmatter(req.Project, req.Audience, req.Period, req.Kind, time.Now(), req.Body, "").Title)
+	}
+	var byCustomer, byKind string
+	for _, w := range sp.pub.written {
+		if !strings.Contains(w.Name, "epics-") || strings.Contains(w.Name, "epics-rollup") {
+			continue
+		}
+		switch {
+		case strings.Contains(w.Name, slugCustomer("ACME")):
+			byCustomer = title(w)
+		case strings.Contains(w.Name, slugCustomer("GLOBEX")):
+			byKind = title(w)
+		}
+	}
+	if byCustomer == "" || byKind == "" {
+		t.Fatalf("expected both customer files; names: %v", publishedNames(sp))
+	}
+	if byCustomer == byKind {
+		t.Errorf("both customer rollups share the frontmatter title %q — the "+
+			"docbuilder index cannot tell the two public documents apart", byCustomer)
+	}
+	if !strings.Contains(byCustomer, "ACME") {
+		t.Errorf("ACME's document title does not name ACME: %q", byCustomer)
+	}
+	if !strings.Contains(tagsOf(sp, slugCustomer("ACME")), "ACME") {
+		t.Errorf("ACME's document is not tagged with its customer code")
+	}
+}
+
+func tagsOf(sp *sourcePipeline, slug string) string {
+	for _, w := range sp.pub.written {
+		if strings.Contains(w.Name, slug) && !strings.Contains(w.Name, "epics-rollup") {
+			return fmt.Sprint(publisher.NewFrontmatter(w.Project, w.Audience, w.Period, w.Kind, time.Now(), w.Body, "").Tags)
+		}
+	}
+	return ""
 }
