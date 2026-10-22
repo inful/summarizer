@@ -153,14 +153,26 @@ func TestKeepNewestMRs_TiebreakIsDeterministic(t *testing.T) {
 	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	var mrs []gitlab.MergeRequest
 	// Descending IID, identical timestamps: GitLab promises no order, so
-	// two runs over identical input must produce identical documents.
+	// two runs over identical input must produce identical documents —
+	// AND must agree with prompt.capEvents, which sorts equal
+	// timestamps by Kind+Ref.
 	for i := 10; i >= 1; i-- {
 		mrs = append(mrs, gitlab.MergeRequest{IID: i, UpdatedAt: at})
 	}
 	kept, _ := keepNewestMRs(mrs, 3)
-	for i, want := range []int{1, 2, 3} {
-		if kept[i].IID != want {
-			t.Errorf("tie broken by order, not IID: kept[%d].IID = %d, want %d", i, kept[i].IID, want)
+	// Deterministic, but on the same tie-break prompt.capEvents uses:
+	// the event Ref, ordered as a string. So "#1" < "#10" < "#2", and
+	// the survivors are 1, 10, 2 rather than 1, 2, 3.
+	//
+	// Numeric IID was the old rule and it was wrong: it disagreed with
+	// capEvents, which is what actually decides which MRs reach the
+	// prompt, so the trim could spend a /changes request on an MR the
+	// prompt discarded.
+	want := []int{1, 10, 2}
+	for i, w := range want {
+		if kept[i].IID != w {
+			t.Errorf("tie broken by the wrong rule: kept[%d].IID = %d, want %d "+
+				"(capEvents order on the event Ref)", i, kept[i].IID, w)
 		}
 	}
 }

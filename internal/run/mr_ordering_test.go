@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/inful/summarizer/internal/config"
+	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
+	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/safety"
 )
 
@@ -142,5 +145,83 @@ func TestRunOneProject_LabelSweepDoesNotDisplaceThisWeeksMerges(t *testing.T) {
 	// the cap — not 30 chosen by updated_at out of the wrong 70.
 	if int(srv.changeCalls.Load()) != 30 {
 		t.Errorf("made %d /changes calls, want exactly the cap of 30", srv.changeCalls.Load())
+	}
+}
+
+// TestKeepNewestMRs_AgreesWithCapEvents: keepNewestMRs trims the list
+// before paying for a /changes call per MR, and prompt.Render then runs
+// prompt.capEvents over everything and keeps the newest MaxEvents. The
+// trim's stated purpose is that "an MR capEvents would drop anyway" must
+// not cost a request — which only holds if the two order identically.
+//
+// They did not. keepNewestMRs tied on numeric IID; capEvents ties on
+// Kind+Ref, and for MRs that is "#10" < "#9". So the trim kept MR 9
+// while the rendered prompt would have kept MR 10: the request was spent
+// on nothing and MR 10 rendered with no "+N/-M in K files" suffix.
+//
+// Driven through prompt.Render rather than capEvents directly, because
+// capEvents is unexported and going through the real renderer is the
+// stronger claim anyway: the rendered prompt and the fetched MR must
+// name the same merge request.
+func TestKeepNewestMRs_AgreesWithCapEvents(t *testing.T) {
+	// IIDs chosen so numeric and string order disagree: 9 vs 10.
+	for _, iids := range [][]int{{9, 10}, {10, 9}, {9, 10, 100, 2}} {
+		at := time.Date(2026, 10, 19, 14, 30, 0, 0, time.UTC)
+		mrs := make([]gitlab.MergeRequest, 0, len(iids))
+		evs := make([]events.NormalizedEvent, 0, len(iids))
+		for _, iid := range iids {
+			m := gitlab.MergeRequest{IID: iid, Title: "work", UpdatedAt: at}
+			m.MergedAt = &at
+			mrs = append(mrs, m)
+			evs = append(evs, events.MR(m))
+		}
+
+		kept, _ := keepNewestMRs(mrs, 1)
+		_, user, err := prompt.Render(prompt.AudienceTeam, "group/p", evs, 1, nil)
+		if err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		rendered := "#" + strconv.Itoa(kept[0].IID)
+		t.Logf("iids %v -> fetched /changes for #%d; the prompt kept %s",
+			iids, kept[0].IID, onlyRef(user))
+		if !strings.Contains(user, rendered) {
+			t.Errorf("iids %v: fetched /changes for %s but the prompt did not keep "+
+				"it (it kept %s) — the request was spent on an MR the prompt discards",
+				iids, rendered, onlyRef(user))
+		}
+	}
+}
+
+// onlyRef returns the single "#N" reference in a rendered prompt, or a
+// marker if there is not exactly one, so the failure message says what
+// actually survived rather than repeating the input.
+func onlyRef(promptText string) string {
+	var found []string
+	for _, f := range strings.Fields(promptText) {
+		f = strings.TrimLeft(f, "#")
+		end := strings.IndexFunc(f, func(r rune) bool { return r < '0' || r > '9' })
+		if end > 0 {
+			found = append(found, "#"+f[:end])
+		}
+	}
+	return strings.Join(found, ",")
+}
+
+// TestKeepNewestMRs_TieBreakPrefersTheRefOrder: pinned directly, so the
+// agreement test above is not the only thing standing between a future
+// edit and the two functions drifting apart again.
+func TestKeepNewestMRs_TieBreakPrefersTheRefOrder(t *testing.T) {
+	at := time.Date(2026, 10, 19, 14, 30, 0, 0, time.UTC)
+	mk := func(iid int) gitlab.MergeRequest {
+		m := gitlab.MergeRequest{IID: iid, Title: "m", UpdatedAt: at}
+		m.MergedAt = &at
+		return m
+	}
+	// "#10" sorts before "#9" as a string, so MR 10 is the one the cap
+	// would keep — the opposite of "lower IID wins".
+	kept, dropped := keepNewestMRs([]gitlab.MergeRequest{mk(9), mk(10)}, 1)
+	if kept[0].IID != 10 || dropped != 1 {
+		t.Errorf("kept IID %d (dropped %d), want 10 — must match capEvents' "+
+			"string order on #10 < #9", kept[0].IID, dropped)
 	}
 }

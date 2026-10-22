@@ -1142,14 +1142,27 @@ func keepNewestMRs(mrs []gitlab.MergeRequest, n int) ([]gitlab.MergeRequest, int
 	sorted := make([]gitlab.MergeRequest, len(mrs))
 	copy(sorted, mrs)
 	eventTime := make(map[int]time.Time, len(sorted))
+	eventRef := make(map[int]string, len(sorted))
 	for _, m := range sorted {
-		eventTime[m.IID] = events.MR(m).Updated
+		ev := events.MR(m)
+		eventTime[m.IID] = ev.Updated
+		eventRef[m.IID] = ev.Ref
 	}
 	sort.SliceStable(sorted, func(i, j int) bool {
 		if ti, tj := eventTime[sorted[i].IID], eventTime[sorted[j].IID]; !ti.Equal(tj) {
 			return ti.After(tj)
 		}
-		return sorted[i].IID < sorted[j].IID
+		// capEvents' tie-break, not IID. It sorts equal timestamps by
+		// Kind+Ref, and for MRs that is "#10" < "#9" — the OPPOSITE of
+		// numeric IID order. Matching it here is the whole point of the
+		// trim: it exists so "an MR capEvents would drop anyway" does
+		// not cost a /changes call. With the orders disagreeing, the
+		// trim kept the MR the cap dropped and discarded the one it
+		// wanted, so the request was spent on nothing and the rendered
+		// MR had no aggregate at all. GitLab timestamps are
+		// second-precision, so a bulk "merge all eligible" produces
+		// exactly these ties.
+		return eventRef[sorted[i].IID] < eventRef[sorted[j].IID]
 	})
 	if len(sorted) <= n {
 		return sorted, 0
