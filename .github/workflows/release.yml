@@ -81,8 +81,14 @@ jobs:
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/summarizer ./cmd/summarizer
           /tmp/summarizer version
 
+      # -race matches ci.yml exactly. This workflow exists for the tag
+      # CI never saw — a push from a branch whose checks never went
+      # green, or from a machine with no hooks — so it is the one place
+      # where a weaker gate would be the only gate. The race detector is
+      # not free, and ~10s is worth it here: the alternative is
+      # publishing binaries main would have rejected.
       - name: Test
-        run: go test -count=1 -timeout 120s ./...
+        run: go test -race -count=1 -timeout 120s ./...
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
