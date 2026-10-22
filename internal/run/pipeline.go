@@ -97,6 +97,14 @@ type Result struct {
 	RollupFiles      []string
 	EpicRollupFiles  []string
 	TokensByAudience map[string]llm.Usage // rollup token usage, when applicable
+
+	// PartialFiles are files published by a project that then failed —
+	// the customer report landed and the team call did not. They are
+	// deliberately NOT on any ProjectResult: counting a half-finished
+	// project as published would overstate the run, and dropping it
+	// silently loses the fact that the file exists on the branch.
+	// Printed by the summary so the operator can find them.
+	PartialFiles []string
 }
 
 // Pipeline is the configured orchestrator. Construct in main.
@@ -214,6 +222,11 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 				firstErr = fmt.Errorf("project %s: %w", project, err)
 			}
 			fmt.Fprintf(os.Stderr, "summarizer: WARN %s failed, continuing: %v\n", project, err)
+			// Files that landed before the failure are real and are
+			// on the branch, but pr is not appended — a half-run
+			// project must not count as published. Carry the refs
+			// separately so the summary still names them.
+			res.PartialFiles = append(res.PartialFiles, pr.FilesWritten...)
 			continue
 		}
 		// Tag whether this project came from discovery. Consumed by
@@ -839,8 +852,8 @@ func epicEventCounts(evs []events.NormalizedEvent, epics []*gitlab.Epic) map[int
 // when it should run. Two project-owner signals, either sufficient:
 //
 //   - the `no-summarize` topic — free, the topics already arrived with
-//     the project summary, so it costs nothing and short-circuits the
-//     file read below.
+//     the project summary the caller holds, so it costs nothing and
+//     short-circuits the file read below.
 //   - a `.summaryignore` or `.docignore` file at the repo root — one
 //     Files API call, or zero if the topic already excluded it.
 //
@@ -848,15 +861,26 @@ func epicEventCounts(evs []events.NormalizedEvent, epics []*gitlab.Epic) map[int
 // wins: both signals mean "do not run me", so precedence only decides
 // which reason gets logged. The reason is printed, because the topic is
 // otherwise invisible to anyone who only looks at the repository.
-func optOutReason(ctx context.Context, gc *gitlab.Client, path string, topics []string) (string, error) {
+func optOutReason(ctx context.Context, gc *gitlab.Client, path string, summary *gitlab.ProjectSummary) (string, error) {
+	// summary is nil for a project that 404'd (moved or renamed) or
+	// that an old GitLab answered without metadata. Both mean "no
+	// signal", and neither is an error — the run continues.
+	var topics []string
+	ref := ""
+	if summary != nil {
+		topics = summary.Topics
+		ref = summary.DefaultBranch
+	}
 	if slices.Contains(topics, policy.TopicNoSummarize) {
 		return "topic " + policy.TopicNoSummarize, nil
 	}
-	has, err := gc.HasOptOutFile(ctx, path)
+	// ref comes from the scan payload the caller already holds, so
+	// this costs Files API calls only — no second GET /projects/:id.
+	has, err := gc.HasOptOutFile(ctx, path, ref)
 	if err != nil {
 		// 5xx/401/429 — real errors, fail the run. 404/403
-		// soft-degrade inside HasOptOutFile to (false, nil) so moved
-		// or confidential projects are included by default.
+		// soft-degrade inside hasRepoRootFile to (false, nil) so
+		// confidential projects are included by default.
 		return "", fmt.Errorf("opt-out check %s: %w", path, err)
 	}
 	if has {
@@ -1233,11 +1257,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		if err != nil {
 			return nil, nil, excluded, fmt.Errorf("fetch project %s: %w", path, err)
 		}
-		var topics []string
-		if summary != nil {
-			topics = summary.Topics
-		}
-		reason, err := optOutReason(ctx, gc, path, topics)
+		reason, err := optOutReason(ctx, gc, path, summary)
 		if err != nil {
 			return nil, nil, excluded, err
 		}
@@ -1298,7 +1318,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		}
 		// Project-level opt-out. Checked before the activity probe so
 		// an opted-out project costs one API call and no probe at all.
-		reason, err := optOutReason(ctx, gc, proj.Path, proj.Topics)
+		reason, err := optOutReason(ctx, gc, proj.Path, &proj)
 		if err != nil {
 			return err
 		}
@@ -1454,14 +1474,40 @@ func rollupFilename(aud prompt.Audience, kind string) string {
 	return fmt.Sprintf("combined--%s--wk--%s.md", kind, aud)
 }
 
+// sanitize renders a GitLab project path as one filename-safe segment.
+//
+// The mapping must be INJECTIVE: two different projects that sanitize
+// to the same name write the same file, and the second run silently
+// overwrites the first — then readExistingUID reads that file back and
+// hands the first project's docbuilder UID to the second, so one report
+// is lost and the survivor carries someone else's cross-project link
+// identity. The customer's file is published public: true.
+//
+// "/" becomes "@" because a GitLab project path cannot contain one:
+// the path grammar is [A-Za-z0-9_.-], so "@" is a separator with no
+// ambiguity against the characters it is applied to. Every other legal
+// character is kept verbatim, including "." — dropping it collided
+// group/a.b with group/ab.
+//
+// Rejected alternatives, both measured against the adversarial paths in
+// TestSanitize_IsInjective:
+//   - keep "_", map "/" to "_": group/a_b and group/a/b both give
+//     group_a_b.
+//   - escape "_" as "__", map "/" to "_": the escape is not prefix-free,
+//     so a/_ and a_/ both give a___.
+//
+// Consequence of the separator change: a project path containing "/"
+// now produces a different filename than before v0.3, so re-running an
+// already-merged week writes a new file and leaves the old one behind on
+// the branch. Pre-1.0, and the alternative is silent data loss.
 func sanitize(s string) string {
 	out := make([]byte, 0, len(s))
 	for _, r := range s {
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
 			out = append(out, byte(r))
 		case r == '/':
-			out = append(out, '_')
+			out = append(out, '@')
 		}
 	}
 	if len(out) == 0 {

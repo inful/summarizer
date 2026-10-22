@@ -193,7 +193,7 @@ func TestOptOutReason_NamesItsSource(t *testing.T) {
 	gc := newOptOutClient(t, o)
 	ctx := context.Background()
 
-	reason, err := optOutReason(ctx, gc, "g/t", []string{policy.TopicNoSummarize})
+	reason, err := optOutReason(ctx, gc, "g/t", &gitlab.ProjectSummary{Path: "g/t", Topics: []string{policy.TopicNoSummarize}, DefaultBranch: "main"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestOptOutReason_NamesItsSource(t *testing.T) {
 		t.Errorf("reason should name the topic, got %q", reason)
 	}
 
-	reason, err = optOutReason(ctx, gc, "g/f", nil)
+	reason, err = optOutReason(ctx, gc, "g/f", &gitlab.ProjectSummary{Path: "g/f", DefaultBranch: "main"})
 	if err != nil {
 		t.Fatal(err)
 	}

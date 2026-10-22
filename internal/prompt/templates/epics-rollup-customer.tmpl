@@ -11,7 +11,7 @@ Rules:
 
 Window: {{.Window}}
 <data>
-Projects in this epic rollup: {{.ProjectCount}}
+Projects in this epic rollup: {{.ProjectCount}}{{if .DroppedCount}} ({{len .ProjectNames}} shown, {{.DroppedCount}} omitted for size){{end}}
 {{range .ProjectNames}}- {{data .}}
 {{end}}
 

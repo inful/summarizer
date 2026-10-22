@@ -15,9 +15,9 @@ func TestFilenames_Shape(t *testing.T) {
 		want string
 	}{
 		{"per-project customer", filename("group/sub/proj", prompt.AudienceCustomer),
-			"group_sub_proj--wk--customer.md"},
+			"group@sub@proj--wk--customer.md"},
 		{"per-project team", filename("group/sub/proj", prompt.AudienceTeam),
-			"group_sub_proj--wk--team.md"},
+			"group@sub@proj--wk--team.md"},
 		{"rollup customer", rollupFilename(prompt.AudienceCustomer, "rollup"),
 			"combined--rollup--wk--customer.md"},
 		{"rollup team", rollupFilename(prompt.AudienceTeam, "rollup"),
@@ -68,23 +68,55 @@ func TestWeeklyRollupName_MatchesWhatThePublisherWrites(t *testing.T) {
 	}
 }
 
-// TestSanitize_PathSeparatorsBecomeUnderscores: two different projects
-// whose paths differ only by separator shape must not collide.
-func TestSanitize_PathSeparatorsBecomeUnderscores(t *testing.T) {
-	if got := sanitize("group/sub/proj"); got != "group_sub_proj" {
-		t.Errorf("got %q", got)
+// TestSanitize_PathSeparatorsBecomeAtSigns: "/" becomes "@", a
+// character a GitLab project path cannot contain.
+func TestSanitize_PathSeparatorsBecomeAtSigns(t *testing.T) {
+	if got := sanitize("group/sub/proj"); got != "group@sub@proj" {
+		t.Errorf("got %q, want group@sub@proj", got)
 	}
-	// Dots and other punctuation are dropped, so this collides with
-	// "groupXsubYproj" — document the behaviour rather than assert a
-	// uniqueness the format can't provide.
-	if got := sanitize("group.sub proj"); got != "groupsubproj" {
-		t.Errorf("got %q, want %q", got, "groupsubproj")
+	if got := sanitize("group.sub proj"); got != "group.subproj" {
+		t.Errorf("space dropped, dot kept: got %q", got)
 	}
-	if got := sanitize("///"); got != "___" {
-		t.Errorf("slashes map to underscores: got %q, want %q", got, "___")
+	if got := sanitize("///"); got != "@@@" {
+		t.Errorf("slashes map to @: got %q, want @@@", got)
 	}
-	// Only a fully-empty result (no alphanumerics at all) falls back.
-	if got := sanitize("..."); got != "report" {
+	// "." is legal in a GitLab path and legal in a filename, so it is
+	// kept rather than dropped.
+	if got := sanitize("..."); got != "..." {
+		t.Errorf("dots must be kept: got %q", got)
+	}
+	// Only a fully-empty result (nothing left to write) falls back.
+	if got := sanitize("a b"); got != "ab" {
 		t.Errorf("all-punctuation input should fall back to %q, got %q", "report", got)
+	}
+}
+
+// TestSanitize_IsInjective: the property the whole scheme rests on.
+// Two paths that sanitize to one name write one file — the second run
+// overwrites the first, and then reads the first's docbuilder UID back
+// out of it. The customer report is published public: true.
+//
+// Every pair below is a legal GitLab path that collided under the old
+// mapping. The rejected alternatives are recorded in sanitize's comment;
+// both still collide on at least one of these.
+func TestSanitize_IsInjective(t *testing.T) {
+	paths := []string{
+		"group/a.b", "group/ab", // dropped "."
+		"group/a_b", "group/a/b", // "_" vs separator
+		"a/_", "a_/", // prefix-free escape fails
+		"team/api.v2", "team/apiv2", // dropped "."
+		"g/sub.v2/x", "g/subv2/x", "g/sub_v2/x",
+		"a/b.c", "a/bc", "a_b/c", "a/b_c",
+		"x/y.z_w", "x/y_z.w",
+	}
+	seen := make(map[string]string, len(paths))
+	for _, p := range paths {
+		got := sanitize(p)
+		if prev, dup := seen[got]; dup {
+			t.Errorf("COLLISION: %q and %q both sanitize to %q — one report "+
+				"overwrites the other and inherits its uid", prev, p, got)
+			continue
+		}
+		seen[got] = p
 	}
 }

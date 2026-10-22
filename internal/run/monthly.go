@@ -118,6 +118,31 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 		return res, fmt.Errorf("no weekly rollups found for %s in the target repo", month)
 	}
 
+	// A week counts as read when EITHER audience published a rollup, but
+	// the two documents are built from different weeks. runRollup
+	// publishes no customer rollup for a week where every project was
+	// team-only, so that week's branch carries a team file and no
+	// customer file — the month-end customer document then covers one
+	// week fewer than res.Weeks and nothing says so. Say it per
+	// audience; the customer document is the one that is published
+	// public: true.
+	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
+		have := make(map[string]bool, len(byWeek[aud]))
+		for _, w := range byWeek[aud] {
+			have[w.Name] = true
+		}
+		var missing []string
+		for _, week := range res.Weeks {
+			if !have[week] {
+				missing = append(missing, week)
+			}
+		}
+		for _, week := range missing {
+			res.Skipped = append(res.Skipped,
+				fmt.Sprintf("%s (no %s rollup published that week)", week, aud))
+		}
+	}
+
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
 		weeks := byWeek[aud]
 		if len(weeks) == 0 {

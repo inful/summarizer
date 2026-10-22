@@ -67,7 +67,7 @@ func TestHasOptOutFile_DotSummaryIgnore(t *testing.T) {
 	}).handler())
 	defer srv.Close()
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	opted, err := c.HasOptOutFile(context.Background(), "g/p")
+	opted, err := c.HasOptOutFile(context.Background(), "g/p", "main")
 	if err != nil {
 		t.Fatalf("HasOptOutFile: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestHasOptOutFile_DotDocIgnore(t *testing.T) {
 	}).handler())
 	defer srv.Close()
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	opted, err := c.HasOptOutFile(context.Background(), "g/p")
+	opted, err := c.HasOptOutFile(context.Background(), "g/p", "main")
 	if err != nil {
 		t.Fatalf("HasOptOutFile: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestHasOptOutFile_NotPresent(t *testing.T) {
 	}).handler())
 	defer srv.Close()
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	opted, err := c.HasOptOutFile(context.Background(), "g/p")
+	opted, err := c.HasOptOutFile(context.Background(), "g/p", "main")
 	if err != nil {
 		t.Fatalf("HasOptOutFile: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestHasOptOutFile_ProjectNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	opted, err := c.HasOptOutFile(context.Background(), "g/missing")
+	opted, err := c.HasOptOutFile(context.Background(), "g/missing", "main")
 	if err != nil {
 		t.Fatalf("404 should NOT error: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestHasOptOutFile_403DegradesToNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	opted, err := c.HasOptOutFile(context.Background(), "g/private")
+	opted, err := c.HasOptOutFile(context.Background(), "g/private", "main")
 	if err != nil {
 		t.Fatalf("403 should NOT error: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestHasOptOutFile_OnlyHitsFilesEndpointOnceForFirstMatch(t *testing.T) {
 	})
 	defer srv.Close()
 	c := New(srv.URL, "glpat-test", 5*time.Second)
-	opted, _ := c.HasOptOutFile(context.Background(), "g/p")
+	opted, _ := c.HasOptOutFile(context.Background(), "g/p", "main")
 	if !opted {
 		t.Fatal("expected opted out")
 	}

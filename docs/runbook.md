@@ -17,8 +17,8 @@ The most useful stderr line is the trailing summary:
 
 ```
 summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=this ISO week (since Monday 00:00 UTC, 60h0m0s elapsed))
-  → ./summarizer-out/2026-W43/group_subgroup_project--wk--customer.md
-  → ./summarizer-out/2026-W43/group_subgroup_project--wk--team.md
+  → ./summarizer-out/2026-W43/group@subgroup@project--wk--customer.md
+  → ./summarizer-out/2026-W43/group@subgroup@project--wk--team.md
   tokens[group/subgroup/project/customer]: prompt=2103 completion=812 total=2915
   tokens[group/subgroup/project/team]:     prompt=2478 completion=901 total=3379
 ```
@@ -143,6 +143,26 @@ constant `--wk` window token but not the date.
 (There is no `--force`; it was removed when week buckets made
 refuse-first unreachable. A run inside a period always overwrites it,
 so cron lines and muscle memory don't break.)
+
+### Path separator in report filenames
+
+A project path's `/` becomes `@` in the report filename:
+`group/sub/proj` writes `group@sub@proj--wk--team.md`.
+
+It has to. The previous mapping turned `/` into `_` and dropped `.`,
+so `group/a.b` and `group/ab` both wrote `group_ab--wk--team.md` — the
+second run overwrote the first, and then read the first project's
+docbuilder UID back out of that file and published it on the second's
+report. `@` is the one character that is legal in a filename and
+illegal in a GitLab project path, so it cannot collide with anything
+the path itself contains.
+
+**Before v0.3 you will have old-named files.** A week already merged
+into `main` holds files under the old `_` scheme. A re-run writes the
+new name and leaves the old one in place, so the period directory
+carries both until you delete the stale ones. Pre-1.0, and the
+alternative is silent data loss — but if you re-run a week that is
+already merged, check the period directory afterwards.
 
 If you want the previous week's content back, read the file out of git
 history — the publisher commits each run to the period branch, so every

@@ -205,6 +205,11 @@ const (
 	exitUnknown   = 1
 )
 
+// runDeadline bounds one `summarizer run`. See the comment at the
+// signal.NotifyContext call for why it exists and why it is set so far
+// above a real run that it only fires on a stuck upstream.
+const runDeadline = 6 * time.Hour
+
 func runCmd(args []string) int {
 	var projects stringSliceFlag
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -353,8 +358,21 @@ Env:
 		PublishTarget:        cfg.PublishTarget(),
 	})
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	sigCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	// A run-level deadline on top of the per-request one. Each HTTP
+	// call is bounded at 60s and retried three times, so a hung
+	// upstream makes one LLM call take ~4 minutes; 50 projects of two
+	// calls each is a seven-hour worst case with nothing to stop it.
+	//
+	// Six hours is deliberately far above a real run — a capped 50-
+	// project week takes minutes — so this only fires when something
+	// is genuinely stuck. It corrupts nothing: Options.Period is
+	// computed once at start-up, so a run that aborts late still files
+	// under the week it started in, and every file it already wrote is
+	// on the branch and listed by the summary.
+	ctx, cancelRun := context.WithTimeout(sigCtx, runDeadline)
+	defer cancelRun()
 
 	res, err := pipe.Run(ctx)
 	printSummary(res, err, *dryRun, weekStart)
@@ -373,6 +391,13 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 	if !dryRun && (err == nil || len(res.Projects) > 0) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "summarizer: PARTIAL — %d project(s) published before the run failed; see the WARN lines above for the ones that did not\n", len(res.Projects))
+			// Projects that published at least one file and then failed
+			// are not in res.Projects, so the summary cannot count
+			// them. Name them here or the operator has no way to learn
+			// a report landed on the branch.
+			for _, f := range res.PartialFiles {
+				fmt.Fprintf(os.Stderr, "  → %s (project failed after this write)\n", f)
+			}
 		}
 		var totalEvents, usedEvents int
 		for _, p := range res.Projects {
@@ -398,8 +423,15 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 		// is already merged, so those files never reach the default branch.
 		// Saying so here keeps "ok" honest: a run that published nothing to
 		// main must not look like one that published everything.
-		summary := fmt.Sprintf("summarizer: ok — %d project(s), %d event(s) (%d used), %d file(s) written",
-			len(res.Projects), totalEvents, usedEvents, fileCount-closedCount)
+		// "ok" on a failed run is the one word a cron wrapper greps for.
+		// The PARTIAL line above says the run failed; printing "ok"
+		// underneath it makes the same run match both patterns.
+		verdict := "ok"
+		if err != nil {
+			verdict = "partial"
+		}
+		summary := fmt.Sprintf("summarizer: %s — %d project(s), %d event(s) (%d used), %d file(s) written",
+			verdict, len(res.Projects), totalEvents, usedEvents, fileCount-closedCount)
 		if closedCount > 0 {
 			summary += fmt.Sprintf(" (%d already published this week)", closedCount)
 		}
@@ -454,10 +486,20 @@ func classify(err error) int {
 	}
 	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "fetch "):
-		return exitGitLab
+	// "llm " before "fetch ", deliberately. Both are substring matches
+	// over the whole wrapped error, which includes the upstream
+	// response body — and an OpenAI-compatible gateway (the README
+	// supports Ollama, vLLM, LM Studio) returns bodies like
+	// `{"error":"failed to fetch upstream model"}`. Checking "fetch "
+	// first reported an LLM outage as a GitLab failure.
+	//
+	// The order is safe because a project path cannot contain a space,
+	// so "llm " cannot appear in a GitLab-side message; the reverse is
+	// not true.
 	case strings.Contains(msg, "llm "):
 		return exitLLM
+	case strings.Contains(msg, "fetch "):
+		return exitGitLab
 	case strings.Contains(msg, "write "):
 		return exitWrite
 	// "want YYYY-MM" is parseMonth rejecting a --month flag value; it is

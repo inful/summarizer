@@ -266,6 +266,29 @@ func (c *Client) FetchActiveProjects(ctx context.Context, since time.Time) ([]Pr
 	return projs, nil
 }
 
+// maxEventPages bounds how far the three per-project event listings
+// page: /merge_requests, /issues and /repository/commits.
+//
+// It exists because none of the three can be cut off at the operator's
+// --max-events. The cap has to select the same records prompt.capEvents
+// keeps, and that sorts on events.NormalizedEvent.Updated — merged_at
+// for a merged MR, closed_at for a closed one, updated_at only as a
+// fallback. GitLab's list endpoints cannot sort on those: they offer
+// created_at, updated_at and committed_date. Pinning the query to
+// updated_at DESC and stopping at the cap therefore returns the WRONG
+// records — a housekeeping label sweep over archived MRs bumps their
+// updated_at to today, so the first page is the archive and the week's
+// actual merges never come back. keepNewestMRs sorts by the right
+// field client-side for exactly this reason (see mr_ordering_test.go),
+// and it needs the whole window in hand to do it.
+//
+// shortcut: 20 pages is 2,000 records per project per week. A project
+// exceeding that has an unusual week, and the pages it loses are the
+// OLDEST — the ones events.FilterActiveEpics and capEvents would drop
+// anyway. Revisit only if a real project crosses 2,000 events in a
+// window; raising it costs one page per 100 records.
+const maxEventPages = 20
+
 // maxActiveScanPages bounds how far FetchActiveProjects will page.
 // The endpoint has no server-side limit, so on an instance where the
 // token can see thousands of projects this would walk every page and
@@ -410,7 +433,7 @@ func (c *Client) FetchMRs(ctx context.Context, projectPath string, since time.Ti
 	q.Set("scope", "all")
 	q.Set("per_page", "100")
 	out, _, err := getAll[MergeRequest](ctx, c,
-		fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)), q, 0)
+		fmt.Sprintf("/projects/%s/merge_requests", url.PathEscape(projectPath)), q, maxEventPages)
 	return out, err
 }
 
@@ -489,46 +512,63 @@ func (c *Client) FetchProjectSummary(ctx context.Context, projectPath string) (*
 }
 
 // HasOptOutFile reports whether the project carries either of the
-// "summariser must skip me" sentinel files at its repo root:
+// "summariser must skip me" sentinel files at the root of ref:
 //
 //	.summaryignore    — summariser-specific opt-out
 //	.docignore        — docbuilder convention, also honoured here
 //
 // Either file's presence is sufficient to opt the project out of the
-// run entirely. The project-owner's opt-out is checked at the
-// pipeline layer (not the policy classifier) because the file is
-// content of a specific ref, and the policy classifier stays a pure
-// function over topics + override list.
+// run entirely. The project-owner's opt-out is checked at the pipeline
+// layer (not the policy classifier) because the file is content of a
+// specific ref, and the policy classifier stays a pure function over
+// topics + override list.
+//
+// ref is the project's default branch. The caller passes it because it
+// already has the ProjectSummary: both callers reach here from a
+// discovery scan or an explicit listing whose payload carried
+// default_branch, and this method used to issue its own
+// GET /projects/:id to read a field already in hand — one wasted
+// request per project, 50 on a capped run, before any per-project work
+// started.
+//
+// An empty ref means the field was unavailable — a moved or renamed
+// project, or an old GitLab that omits default_branch. The file cannot
+// be queried without it, so treat the project as opted in rather than
+// failing the run. That is the same call made elsewhere for 404.
 //
 // Returns:
 //
-//	(true,  nil) — at least one of the sentinel files exists on the
-//	              default branch; exclude the project.
-//	(false, nil) — neither file exists; include the project.
+//	(true,  nil) — at least one of the sentinel files exists at the
+//	              root of ref; exclude the project.
+//	(false, nil) — neither file exists, or ref is empty; include it.
 //	(_, err)     — transport / auth / 5xx; surface to the caller.
 //
-// The contract matches FetchProjectSummary's 404/403 handling:
-// missing or inaccessible files do NOT error out the run, they
-// simply don't opt the project out. A 401, 429 or 5xx DOES error,
-// because that's an auth/rate/infra problem the operator must see.
-func (c *Client) HasOptOutFile(ctx context.Context, projectPath string) (bool, error) {
-	// The default branch is resolved ONCE, above the filename loop. The
-	// lookup used to live inside hasRepoRootFile, so checking one
-	// project cost two project fetches and two file reads. On a
-	// 50-project discovery run that is 100 requests spent re-reading a
-	// field the /projects listing had already delivered.
-	summary, err := c.FetchProjectSummary(ctx, projectPath)
-	if err != nil {
-		return false, err
-	}
-	if summary == nil || summary.DefaultBranch == "" {
-		// 404 (moved or renamed), or an old GitLab that omits
-		// default_branch. Either way the file cannot be queried, so
-		// treat the project as opted in rather than failing the run.
-		return false, nil
+// The contract matches FetchProjectSummary's 404/403 handling: missing
+// or inaccessible files do NOT error out the run, they simply don't opt
+// the project out. A 401, 429 or 5xx DOES error, because that's an
+// auth/rate/infra problem the operator must see.
+func (c *Client) HasOptOutFile(ctx context.Context, projectPath, ref string) (bool, error) {
+	if ref == "" {
+		// The caller had no default_branch: a moved or renamed project,
+		// or an older GitLab whose /projects listing omits the field.
+		// Resolve it the one time that costs a request, rather than
+		// dropping the check — a project that asked not to be
+		// published is the one thing this whole method exists to
+		// honour, and treating it as opted-in on a missing field
+		// would publish it.
+		summary, err := c.FetchProjectSummary(ctx, projectPath)
+		if err != nil {
+			return false, err
+		}
+		if summary == nil || summary.DefaultBranch == "" {
+			// Genuinely unresolvable. The opt-out signal cannot reach
+			// us, so include the project rather than fail the run.
+			return false, nil
+		}
+		ref = summary.DefaultBranch
 	}
 	for _, name := range optOutFileNames {
-		exists, err := c.hasRepoRootFile(ctx, projectPath, summary.DefaultBranch, name)
+		exists, err := c.hasRepoRootFile(ctx, projectPath, ref, name)
 		if err != nil {
 			return false, err
 		}
@@ -582,7 +622,7 @@ func (c *Client) FetchIssues(ctx context.Context, projectPath string, since time
 	q.Set("scope", "all")
 	q.Set("per_page", "100")
 	out, _, err := getAll[Issue](ctx, c,
-		fmt.Sprintf("/projects/%s/issues", url.PathEscape(projectPath)), q, 0)
+		fmt.Sprintf("/projects/%s/issues", url.PathEscape(projectPath)), q, maxEventPages)
 	return out, err
 }
 
@@ -594,7 +634,7 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 	q.Set("since", since.UTC().Format(time.RFC3339))
 	q.Set("per_page", "100")
 	out, _, err := getAll[Commit](ctx, c,
-		fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q, 0)
+		fmt.Sprintf("/projects/%s/repository/commits", url.PathEscape(projectPath)), q, maxEventPages)
 	return out, err
 }
 

@@ -304,13 +304,17 @@ func TestFetchActiveProjects_StopsAtPageCeiling(t *testing.T) {
 	}
 }
 
-// TestHasOptOutFile_ResolvesTheBranchOnce: the default-branch lookup
-// lived inside hasRepoRootFile, so checking one project cost two
-// project fetches and two file reads. On a 50-project discovery run
-// that is 100 requests spent re-reading a field the /projects listing
-// had already delivered.
-func TestHasOptOutFile_ResolvesTheBranchOnce(t *testing.T) {
-	var summaries, fileReads int
+// TestHasOptOutFile_MakesNoProjectRequest: the method used to issue
+// its own GET /projects/:id to resolve the default branch — a field
+// both of its callers already held, because they reach it from a
+// discovery scan or an explicit listing whose payload carries
+// default_branch. On a 50-project capped run that was 50 requests
+// spent re-reading what was in hand, before any per-project work.
+//
+// The ref is now a parameter, so the method talks only to the Files
+// API.
+func TestHasOptOutFile_MakesNoProjectRequest(t *testing.T) {
+	var projectFetches, fileReads int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		w.Header().Set("X-Next-Page", "")
@@ -320,7 +324,7 @@ func TestHasOptOutFile_ResolvesTheBranchOnce(t *testing.T) {
 			fileReads++
 			w.WriteHeader(http.StatusNotFound)
 		case strings.HasSuffix(p, "/api/v4/projects/g/p"):
-			summaries++
+			projectFetches++
 			_, _ = w.Write([]byte(`{"id":1,"default_branch":"main","topics":[]}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -329,17 +333,75 @@ func TestHasOptOutFile_ResolvesTheBranchOnce(t *testing.T) {
 	defer srv.Close()
 
 	// Neither sentinel file exists, so both are probed.
-	got, err := New(srv.URL, "glpat-x", 5*time.Second).HasOptOutFile(context.Background(), "g/p")
+	got, err := New(srv.URL, "glpat-x", 5*time.Second).HasOptOutFile(context.Background(), "g/p", "main")
 	if err != nil {
 		t.Fatalf("HasOptOutFile: %v", err)
 	}
 	if got {
 		t.Error("no opt-out file exists; want false")
 	}
-	if summaries != 1 {
-		t.Errorf("fetched the project summary %d times, want 1", summaries)
+	if projectFetches != 0 {
+		t.Errorf("re-fetched the project summary %d times; the caller already had it", projectFetches)
 	}
-	if fileReads != 2 {
-		t.Errorf("probed %d files, want 2 (one per sentinel name)", fileReads)
+	if fileReads != len(optOutFileNames) {
+		t.Errorf("file reads = %d, want %d (one per sentinel name)", fileReads, len(optOutFileNames))
 	}
+}
+
+// TestHasOptOutFile_EmptyRefResolvesItRatherThanSkippingTheCheck: a
+// caller with no default_branch is either an older GitLab whose
+// /projects listing omits the field, or a moved/renamed project. The
+// first must still get the opt-out check — dropping it would publish a
+// report a project explicitly asked not to be published, which is
+// worse than the request it saves. The second has nothing to read and
+// is included by default.
+func TestHasOptOutFile_EmptyRefResolvesItRatherThanSkippingTheCheck(t *testing.T) {
+	t.Run("listing omits default_branch, single fetch resolves it", func(t *testing.T) {
+		var projectFetches, fileReads int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch {
+			case strings.Contains(r.URL.Path, "/repository/files/"):
+				fileReads++
+				_, _ = w.Write([]byte(`{"file_name":".summaryignore","file_path":".summaryignore"}`))
+			default:
+				projectFetches++
+				_, _ = w.Write([]byte(`{"id":1,"default_branch":"main","topics":[]}`))
+			}
+		}))
+		defer srv.Close()
+
+		got, err := New(srv.URL, "glpat-x", 5*time.Second).HasOptOutFile(context.Background(), "g/p", "")
+		if err != nil {
+			t.Fatalf("HasOptOutFile: %v", err)
+		}
+		if !got {
+			t.Error("the opt-out file exists; the project must be excluded")
+		}
+		if projectFetches != 1 {
+			t.Errorf("expected exactly one fallback project fetch, got %d", projectFetches)
+		}
+	})
+
+	t.Run("project is gone, included by default", func(t *testing.T) {
+		var fileReads int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/repository/files/") {
+				fileReads++
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		got, err := New(srv.URL, "glpat-x", 5*time.Second).HasOptOutFile(context.Background(), "g/moved", "")
+		if err != nil {
+			t.Fatalf("a moved project must not error: %v", err)
+		}
+		if got {
+			t.Error("a project that cannot be read must not appear opted out")
+		}
+		if fileReads != 0 {
+			t.Errorf("made %d file reads with no resolvable ref", fileReads)
+		}
+	})
 }

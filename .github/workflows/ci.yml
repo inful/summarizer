@@ -40,9 +40,11 @@ jobs:
           cache: true
 
       - name: Run go mod tidy
-        run: go mod tidy
-        # Verifies go.sum is consistent with go.mod and surfaces any
-        # accidentally-uncommitted go.sum change.
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+        # `go mod tidy` alone exits 0 even when it rewrites go.sum,
+        # so it could not fail this step. The diff check is what makes
+        # it a gate: an uncommitted go.mod/go.sum change stops the
+        # build instead of quietly passing.
 
       - name: Run go vet
         run: go vet ./...

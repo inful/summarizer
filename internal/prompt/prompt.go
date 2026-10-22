@@ -344,9 +344,24 @@ func RenderEpicRollup(aud Audience, entries []EpicRollupEntry) (system, user str
 	// that remain stay complete. Dropped from the FRONT, which
 	// Pipeline.Run orders least-active-first — so the quiet projects
 	// are the ones that go.
+	// The project list is what tells the model whether the rollup is the
+	// whole fleet or a subset. Naming every project unconditionally was
+	// not an option: the names alone are uncapped (1,000 projects is
+	// ~30 KB against a 16 KB budget) and TestRenderEpicRollup_IsBounded
+	// pins that budget. Naming only the kept ones is not an option
+	// either — a dropped project then vanishes and the model synthesises
+	// a complete-looking view from a subset, on a file published
+	// public: true.
+	//
+	// So: the count is pre-cap, the list is post-cap, and the template
+	// prints the difference. Bounded and honest.
+	totalProjects := 0
+	for _, e := range entries {
+		if len(e.Epics) > 0 {
+			totalProjects++
+		}
+	}
 	entries = capEpicEntries(entries, rollupTotalCap)
-
-	// Flatten project list for the template's summary line.
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if len(e.Epics) > 0 {
@@ -357,11 +372,13 @@ func RenderEpicRollup(aud Audience, entries []EpicRollupEntry) (system, user str
 	data := struct {
 		Window       string
 		ProjectCount int
+		DroppedCount int
 		ProjectNames []string
 		ProjectViews []EpicRollupEntry
 	}{
 		Window:       WeekWindowLabel,
-		ProjectCount: len(names),
+		ProjectCount: totalProjects,
+		DroppedCount: totalProjects - len(names),
 		ProjectNames: names,
 		ProjectViews: entries,
 	}

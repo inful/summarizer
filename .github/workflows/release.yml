@@ -1,9 +1,11 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: release
 
-# Workflow scope: tag-only. PRs are gated by the local lefthook
-# pre-commit (go test -race -count=1 + golangci-lint run) plus the
-# contribution policy in README.md.
+# Workflow scope: tag-only. PRs are gated by ci.yml (vet, lint,
+# race tests, govulncheck) plus the local lefthook pre-commit for
+# contributors who have it installed. This workflow re-runs the gate it
+# needs before publishing, because a tag can be pushed from a branch
+# whose CI never went green — or from a machine with no hooks at all.
 on:
   push:
     tags:
@@ -67,6 +69,21 @@ jobs:
       # only and fails with 'Multi-platform build is not supported for
       # the docker driver'. The docker-container driver routes each
       # build through a dedicated BuildKit container.
+      # A tag can be pushed from anywhere, and the local lefthook
+      # pre-commit is not a CI gate — it does not exist on a machine
+      # that never ran `lefthook install`, and on this repo one of its
+      # checks has been reporting success from a broken shim without
+      # executing. Build the binary and vet before anything is pushed to
+      # a registry or a release.
+      - name: Vet and build
+        run: |
+          go vet ./...
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/summarizer ./cmd/summarizer
+          /tmp/summarizer version
+
+      - name: Test
+        run: go test -count=1 -timeout 120s ./...
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:

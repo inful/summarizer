@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -177,5 +178,62 @@ func TestFetchIssues_Paginates(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].IID != 10 || got[1].IID != 11 {
 		t.Errorf("want issues 10,11, got %+v", got)
+	}
+}
+
+// TestEventListings_StopAtThePageCeiling: the three per-project event
+// listings used to page until GitLab returned an empty page, so a
+// project with thousands of records in the window cost one round-trip
+// per hundred records and held all of them. They now stop at
+// maxEventPages.
+//
+// The ceiling is deliberately NOT the operator's --max-events: the cap
+// has to agree with prompt.capEvents, which sorts on merged_at /
+// closed_at, and no GitLab list endpoint can sort on those. Pinning the
+// query to updated_at DESC would return the archive a label sweep just
+// touched instead of the week's merges.
+func TestEventListings_StopAtThePageCeiling(t *testing.T) {
+	var mu sync.Mutex
+	pages := 0
+	// The server keeps advertising another page well past the ceiling
+	// and then stops answering with anything useful, so a regression
+	// fails this test in milliseconds instead of walking forever. That
+	// IS the pathological case: a real GitLab stops on an empty page,
+	// a misbehaving or paginating-forever one does not.
+	const servePages = maxEventPages * 3
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n := pages
+		pages++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if n < servePages {
+			w.Header().Set("X-Next-Page", "999")
+		}
+		_, _ = w.Write([]byte(`[{"iid":1,"title":"t","state":"opened","author":{"username":"a"},` +
+			`"web_url":"u","labels":[],"user_notes_count":0,` +
+			`"created_at":"2026-10-19T00:00:00Z","updated_at":"2026-10-19T00:00:00Z"}]`))
+	}))
+	defer srv.Close()
+	c := New(srv.URL, "glpat-test", 5*time.Second)
+	since := time.Now().Add(-24 * time.Hour)
+
+	if _, err := c.FetchMRs(context.Background(), "g/p", since); err != nil {
+		t.Fatalf("FetchMRs: %v", err)
+	}
+	mu.Lock()
+	afterMRs := pages
+	mu.Unlock()
+	if afterMRs != maxEventPages {
+		t.Errorf("FetchMRs paged %d times, want the ceiling %d", afterMRs, maxEventPages)
+	}
+	if _, err := c.FetchIssues(context.Background(), "g/p", since); err != nil {
+		t.Fatalf("FetchIssues: %v", err)
+	}
+	mu.Lock()
+	afterIssues := pages - afterMRs
+	mu.Unlock()
+	if afterIssues != maxEventPages {
+		t.Errorf("FetchIssues paged %d times, want %d", afterIssues, maxEventPages)
 	}
 }

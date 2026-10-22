@@ -357,3 +357,73 @@ func TestMonthlyRunner_IgnoresEpicRollupsOnTheSameWeek(t *testing.T) {
 		}
 	}
 }
+
+// TestMonthlyRunner_ReportsWeeksAnAudienceIsMissing: runRollup
+// publishes no customer rollup for a week where every project was
+// team-only, so that week's branch carries a team file and no customer
+// file. The month-end customer document then covers one week fewer
+// than the summary claims — silently, on a document published
+// public: true. The team document is complete and must not be flagged.
+func TestMonthlyRunner_ReportsWeeksAnAudienceIsMissing(t *testing.T) {
+	weeks, err := weeksInMonth("2026-09")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every week has both audiences except the second, which is
+	// team-only — exactly what a week of all-team-only projects
+	// produces.
+	files := weeklyFiles(weeks...)
+	dropped := weeks[1]
+	delete(files, "summarizer/"+dropped+"|reports/"+dropped+"/combined--rollup--wk--customer.md")
+
+	repo := &monthlyRepo{branches: append([]string{"main"}, prefixes(weeks...)...), files: files}
+	r, _ := newMonthlyRunner(t, repo)
+	res, err := r.Run(context.Background(), "2026-09")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Weeks) != len(weeks) {
+		t.Fatalf("weeks read = %v, want all %v (the team file exists)", res.Weeks, weeks)
+	}
+	joined := strings.Join(res.Skipped, " | ")
+	if !strings.Contains(joined, dropped) || !strings.Contains(joined, "customer") {
+		t.Errorf("the week with no customer rollup must be listed as skipped "+
+			"for the customer audience, got: %v", res.Skipped)
+	}
+	if strings.Count(joined, "team") != 0 {
+		t.Errorf("the team audience has every week; it must not be flagged: %v", res.Skipped)
+	}
+}
+
+// TestMonthlyRunner_PrefixMatchesThePublisherItReadsFrom: the reader
+// rebuilds the path the writer used, so the two must agree on the
+// prefix. It used to take the raw config value while the publisher
+// normalised it, so `prefix: "reports/"` wrote to reports/… and read
+// from reports//… — every week 404'd, and a whole month of published
+// rollups reported as "no weekly rollups found".
+func TestMonthlyRunner_PrefixMatchesThePublisherItReadsFrom(t *testing.T) {
+	weeks, err := weeksInMonth("2026-09")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &monthlyRepo{
+		branches: append([]string{"main"}, prefixes(weeks...)...),
+		files:    weeklyFiles(weeks...),
+	}
+	srv := httptest.NewServer(repo.handler())
+	t.Cleanup(srv.Close)
+
+	// Constructed the way monthlyCmd does, with an un-normalised prefix.
+	glPub := publisher.NewGitLab(srv.URL, "glpat-x", "sfb/reports", "reports/", "main", "summarizer")
+	r := &MonthlyRunner{
+		Publisher: glPub, Reader: glPub, LLM: &monthlyCapturedLLM{},
+		Model: "test-model", ReportPrefix: glPub.Prefix,
+	}
+	res, err := r.Run(context.Background(), "2026-09")
+	if err != nil {
+		t.Fatalf("Run with a trailing-slash prefix: %v", err)
+	}
+	if len(res.Weeks) != len(weeks) {
+		t.Errorf("read %d weeks, want %d — the reader and writer disagree on the prefix", len(res.Weeks), len(weeks))
+	}
+}

@@ -121,13 +121,21 @@ Example:
 	}
 
 	runner := &run.MonthlyRunner{
-		Publisher:    glPub,
-		Reader:       glPub,
-		LLM:          llmProvider,
-		Guard:        guard,
-		Model:        cfg.Model,
-		DryRun:       *dryRun,
-		ReportPrefix: cfg.Publish.Prefix,
+		Publisher: glPub,
+		Reader:    glPub,
+		LLM:       llmProvider,
+		Guard:     guard,
+		Model:     cfg.Model,
+		DryRun:    *dryRun,
+		// Off the publisher, not off the config: NewGitLab normalises
+		// the prefix (TrimSpace, then strip "/") and the reader has to
+		// build the path the writer actually used. Passing the raw
+		// config value meant "reports/" wrote to reports/… and read
+		// from reports//…, so every week 404'd, ReadReportFile
+		// returned "" by design, and the month ended as "no weekly
+		// rollups found" — pointing at the target repo instead of at
+		// the config line.
+		ReportPrefix: glPub.Prefix,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

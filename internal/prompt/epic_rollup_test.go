@@ -116,3 +116,61 @@ func TestRenderEpicRollup_DifferentAudiencesProduceDifferentOutput(t *testing.T)
 		t.Errorf("customer and team rollups should differ; both:\n%s", custUser)
 	}
 }
+
+// TestRenderEpicRollup_DisclosesProjectsDroppedByTheCap: when the
+// 16 KB budget bites, whole project entries are dropped. The prompt
+// must still name them, or the model synthesises a fleet-wide view from
+// a subset and presents it as complete — on a file published
+// public: true. RenderRollup already builds its project list before
+// capping for exactly this reason.
+func TestRenderEpicRollup_DisclosesProjectsDroppedByTheCap(t *testing.T) {
+	// rollupTotalCap is 16000 and capEpicEntries sizes an entry at
+	// ~(project + 72 + title + URL) per epic. Twenty epics of a long
+	// title is ~9 KB per entry, so three entries overshoot the budget
+	// twice over and the cap drops two of them.
+	big := func(project string) EpicRollupEntry {
+		epics := make([]EpicSummary, 0, 20)
+		for i := 0; i < 20; i++ {
+			epics = append(epics, EpicSummary{
+				Epic:       &gitlab.Epic{IID: i, Title: strings.Repeat("objective ", 30), WebURL: "https://gitlab.example.com/g/p/-/epics/1"},
+				EventCount: i,
+			})
+		}
+		return EpicRollupEntry{Project: project, Epics: epics}
+	}
+	entries := []EpicRollupEntry{big("g/quiet"), big("g/also-quiet"), big("g/busy")}
+
+	// The budget must bite, or this test proves nothing.
+	kept := len(capEpicEntries(entries, rollupTotalCap))
+	if kept == len(entries) {
+		t.Fatalf("the budget did not bite (%d of %d entries kept)", kept, len(entries))
+	}
+
+	_, user, err := RenderEpicRollup(AudienceCustomer, entries)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	// The header counts every project, capped or not, and says how
+	// many were left out. Naming each dropped project instead would
+	// make the name list uncapped — 1,000 projects is ~30 KB against
+	// a 16 KB budget — so the disclosure has to be a count.
+	if !strings.Contains(user, "Projects in this epic rollup: 3") {
+		t.Errorf("the header must count all 3 projects, not the kept ones:\n%s", firstLines(user, 6))
+	}
+	if !strings.Contains(user, "2 omitted for size") {
+		t.Errorf("the prompt must disclose that 2 projects were dropped, so the "+
+			"model cannot present a subset as the whole fleet:\n%s", firstLines(user, 6))
+	}
+	// And the prompt must still respect the budget it advertises.
+	if len(user) > rollupTotalCap {
+		t.Errorf("prompt is %d bytes for 3 entries; the cap is %d", len(user), rollupTotalCap)
+	}
+}
+
+func firstLines(s string, n int) string {
+	lines := strings.SplitN(s, "\n", n+1)
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
+}

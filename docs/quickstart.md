@@ -79,16 +79,16 @@ summarizer run --project group/subgroup/project
 Produces two Markdown files in `./summarizer-out/`:
 
 ```
-group_subgroup_project--wk--customer.md
-group_subgroup_project--wk--team.md
+group@subgroup@project--wk--customer.md
+group@subgroup@project--wk--team.md
 ```
 
 Both have a one-line run summary on stderr:
 
 ```
 summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=this ISO week (since Monday 00:00 UTC, 60h0m0s elapsed))
-  → ./summarizer-out/2026-W43/group_subgroup_project--wk--customer.md
-  → ./summarizer-out/2026-W43/group_subgroup_project--wk--team.md
+  → ./summarizer-out/2026-W43/group@subgroup@project--wk--customer.md
+  → ./summarizer-out/2026-W43/group@subgroup@project--wk--team.md
   tokens[group/subgroup/project/customer]: prompt=2103 completion=812 total=2915
   tokens[group/subgroup/project/team]:     prompt=2478 completion=901 total=3379
 ```
