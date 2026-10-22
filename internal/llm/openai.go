@@ -53,7 +53,8 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 
 	var out struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
@@ -68,6 +69,13 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	}
 	if len(out.Choices) == 0 || out.Choices[0].Message.Content == "" {
 		return Response{}, ErrEmptyResponse
+	}
+	// Checked before the content is used, not after. A cap-hit response
+	// is present and non-empty, so nothing else in this function would
+	// notice that it stops mid-sentence.
+	if out.Choices[0].FinishReason == "length" {
+		return Response{}, fmt.Errorf("%w (%d of %d tokens)",
+			ErrTruncated, out.Usage.CompletionTokens, o.MaxTokens)
 	}
 	return Response{
 		Text: out.Choices[0].Message.Content,

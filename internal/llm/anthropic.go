@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -41,7 +42,8 @@ func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	}
 
 	var out struct {
-		Content []struct {
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
@@ -61,6 +63,13 @@ func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	}
 	if text == "" {
 		return Response{}, ErrEmptyResponse
+	}
+	// See ErrTruncated: a cap-hit response is non-empty and decodes
+	// cleanly, so without this the pipeline publishes a fragment as a
+	// finished customer report.
+	if out.StopReason == "max_tokens" {
+		return Response{}, fmt.Errorf("%w (%d of %d tokens)",
+			ErrTruncated, out.Usage.OutputTokens, a.MaxTokens)
 	}
 	return Response{
 		Text: text,
