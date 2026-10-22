@@ -95,8 +95,15 @@ month" apart without parsing the period slug.
 | Report kind | Pattern | Example |
 |---|---|---|
 | per-project | `Weekly <audience> report — <project>, <period>` | `Weekly customer report — group/proj, 2026-W43` |
-| rollup | `Cross-project rollup <audience> report — all subscribed projects, <period>` | `Cross-project rollup team report — all subscribed projects, 2026-W43` |
-| monthly rollup | `Monthly cross-project rollup <audience> report — all subscribed projects, <month>` | `Monthly cross-project rollup customer report — all subscribed projects, 2026-09` |
+| rollup, team | `Cross-project rollup team report — all projects, <period>` | `Cross-project rollup team report — all projects, 2026-W43` |
+| rollup, customer | `Cross-project rollup customer report — all customer-facing projects, <period>` | `Cross-project rollup customer report — all customer-facing projects, 2026-W43` |
+| monthly rollup, team | `Monthly cross-project rollup team report — all projects, <month>` | `Monthly cross-project rollup team report — all projects, 2026-09` |
+| monthly rollup, customer | `Monthly cross-project rollup customer report — all customer-facing projects, <month>` | `Monthly cross-project rollup customer report — all customer-facing projects, 2026-09` |
+
+The customer rollup is built from the projects that opted in to
+customer output, which is a subset of the run, so it says
+"all customer-facing projects" rather than claiming the fleet. The
+team rollup sees every project in the run and says "all projects".
 
 `<period>` is the ISO-8601 week slug (`YYYY-Www`) of the run, computed
 in UTC. Every run inside the same Mon–Sun week shares one period slug,
