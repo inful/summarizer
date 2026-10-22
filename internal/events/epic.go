@@ -27,8 +27,6 @@ import (
 //
 // An issue with no project reference cannot be placed in this project
 // and is skipped. That is the safe direction: GitLab has sent
-// An issue with no project reference cannot be placed in this project
-// and is skipped. That is the safe direction: GitLab has sent
 // references.full on this endpoint since 11.0, and a mis-attribution
 // costs a customer their own work.
 //

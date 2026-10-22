@@ -462,8 +462,6 @@ func (c *Client) probeHasAny(ctx context.Context, projectPath, kind string, sinc
 
 // FetchMRs returns MRs updated within [since, now]. updated_after is the
 // correct filter for "activity in window": it catches both newly opened and
-// FetchMRs returns MRs updated within [since, now]. updated_after is the
-// correct filter for "activity in window": it catches both newly opened and
 // newly commented-on MRs without scanning the full project history.
 func (c *Client) FetchMRs(ctx context.Context, projectPath string, since time.Time) ([]MergeRequest, error) {
 	q := url.Values{}
