@@ -732,7 +732,7 @@ func commitMessage(req Request) string {
 // the week; the discovery phase before it shrugged off the same error
 // four times.
 func (g *GitLabPublisher) api(ctx context.Context, urlStr, method string, body []byte, out any, retry bool) error {
-	status, respBody, err := g.doRetry(ctx, urlStr, method, body, retry)
+	status, respBody, _, err := g.doRetry(ctx, urlStr, method, body, retry)
 	if err != nil {
 		return err
 	}
@@ -745,11 +745,25 @@ func (g *GitLabPublisher) api(ctx context.Context, urlStr, method string, body [
 	return nil
 }
 
-// doRetry performs one request, repeating it on 429 and 5xx when retry is
-// set, and returns the final status and body. The body is bounded for
-// the same reason internal/gitlab's reads are: this talks to a host, and
-// an unbounded read is a remote-triggered OOM.
-func (g *GitLabPublisher) doRetry(ctx context.Context, urlStr, method string, body []byte, retry bool) (int, []byte, error) {
+// doRetry performs one request, repeating it on 429, 5xx and — for GET
+// only — a transport failure, when retry is set. It returns the final
+// status, body and response headers. The body is bounded for the same
+// reason internal/gitlab's reads are: this talks to a host, and an
+// unbounded read is a remote-triggered OOM.
+//
+// The headers are returned for the paginated reads (X-Next-Page), which
+// is why monthly.go's getStatus routes through here instead of issuing
+// its own request — it used to, and so had none of this retry policy.
+//
+// Transport failures are retried only for GET. A GET has no side effect
+// to duplicate, and a GitLab pod restarting mid-scan drops in-flight
+// connections at least as often as it returns a 502. For a write the
+// error is ambiguous — the request may have landed and still look like a
+// failure — so a second POST would create a second commit or a second
+// merge request. That is why the merge-request create passes retry=false
+// and the branch create re-checks after an ambiguous failure.
+func (g *GitLabPublisher) doRetry(ctx context.Context, urlStr, method string, body []byte, retry bool) (int, []byte, http.Header, error) {
+	retryTransport := retry && method == http.MethodGet
 	for attempt := 1; ; attempt++ {
 		var bodyReader io.Reader
 		if body != nil {
@@ -757,7 +771,7 @@ func (g *GitLabPublisher) doRetry(ctx context.Context, urlStr, method string, bo
 		}
 		req, err := http.NewRequestWithContext(ctx, method, urlStr, bodyReader)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 		req.Header.Set("PRIVATE-TOKEN", g.Token)
 		req.Header.Set("Accept", "application/json")
@@ -767,13 +781,19 @@ func (g *GitLabPublisher) doRetry(ctx context.Context, urlStr, method string, bo
 
 		resp, err := g.HTTP.Do(req)
 		if err != nil {
-			return 0, nil, err
+			if !retryTransport || attempt > maxRetries || ctx.Err() != nil {
+				return 0, nil, nil, err
+			}
+			if serr := sleepFn(ctx, backoff(attempt)); serr != nil {
+				return 0, nil, nil, serr
+			}
+			continue
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
 
 		if !retry || attempt > maxRetries {
-			return resp.StatusCode, respBody, nil
+			return resp.StatusCode, respBody, resp.Header, nil
 		}
 		var wait time.Duration
 		switch {
@@ -782,10 +802,10 @@ func (g *GitLabPublisher) doRetry(ctx context.Context, urlStr, method string, bo
 		case resp.StatusCode >= 500:
 			wait = backoff(attempt)
 		default:
-			return resp.StatusCode, respBody, nil
+			return resp.StatusCode, respBody, resp.Header, nil
 		}
 		if err := sleepFn(ctx, wait); err != nil {
-			return 0, nil, err
+			return 0, nil, nil, err
 		}
 	}
 }

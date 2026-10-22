@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -159,7 +158,14 @@ func (g *GitLabPublisher) ReadReportFile(ctx context.Context, branch, path strin
 // getStatus is the authenticated GET every read here goes through.
 // getPaged and ReadReportFile both branch on the status themselves, so
 // there is no error-returning wrapper to keep.
-
+//
+// It used to build its own request, which meant it also had none of
+// doRetry's policy: one bare attempt, no 429, no 5xx, no transport
+// retry. ListPeriodBranches and ReadReportFile both go through here, so
+// a single connection reset aborted `summarizer monthly` outright — on a
+// command that runs on the 1st, so a failure costs a month. Routing
+// through doRetry is what gives these reads the same policy the weekly
+// publisher's reads have had all along.
 type rawResponse struct {
 	status  int
 	body    []byte
@@ -167,25 +173,13 @@ type rawResponse struct {
 }
 
 func (g *GitLabPublisher) getStatus(ctx context.Context, urlStr string) (rawResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	// GET, retry=true: no side effect to duplicate on a transport
+	// failure, and a drop is the ordinary way this failure arrives.
+	status, body, headers, err := g.doRetry(ctx, urlStr, http.MethodGet, nil, true)
 	if err != nil {
 		return rawResponse{}, err
 	}
-	req.Header.Set("PRIVATE-TOKEN", g.Token)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := g.HTTP.Do(req)
-	if err != nil {
-		return rawResponse{}, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// Bounded, like every other body read in this repo.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	if err != nil {
-		return rawResponse{}, fmt.Errorf("read body: %w", err)
-	}
-	return rawResponse{status: resp.StatusCode, body: body, headers: resp.Header}, nil
+	return rawResponse{status: status, body: body, headers: headers}, nil
 }
 
 // DefaultRef implements run.MonthlyReader. The target repo's default
