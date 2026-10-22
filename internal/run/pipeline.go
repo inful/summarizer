@@ -717,18 +717,31 @@ func bucketEpicsByCustomer(projects []ProjectResult) []epicRollupPart {
 			// with public: true, so ACME's file must not report how
 			// many events GLOBEX's issues contributed.
 			ev := pr.EpicEventCounts[e.IID]
-			if ev.Total == 0 {
-				// ActiveEpics is the GROUP's list, so this project
-				// may own none of the epic's issues. Without the
-				// count check the epic appears here with
-				// "Activity in window: 0 events", on a file
-				// published public: true.
-				continue
-			}
 			for _, code := range codes {
+				// Skip on the count that is PRINTED, not on ev.Total.
+				//
+				// Two independent reasons a total>0 says nothing about
+				// this customer. ActiveEpics is the GROUP's list, so
+				// this project may own none of the epic's issues at
+				// all. And even when it does, those issues may all be
+				// another customer's: `codes` comes from
+				// EpicCustomerCodes, which reads the group-wide issue
+				// list, so an epic with one GLOBEX-tagged issue
+				// anywhere opens a GLOBEX bucket from every project
+				// in the group. Measured — from project g/a, Total=1
+				// and ByCustomer=[ACME:1], yet GLOBEX's file carried
+				// "0 events" on a document published public: true.
+				//
+				// The team bucket keeps ev.Total: internal readers
+				// want the whole fleet, which is why the two filters
+				// are not one shared helper.
+				n := ev.ByCustomer[code]
+				if n == 0 {
+					continue
+				}
 				perCode[code] = append(perCode[code], prompt.EpicSummary{
 					Epic:       e,
-					EventCount: ev.ByCustomer[code],
+					EventCount: n,
 				})
 			}
 		}
@@ -1466,6 +1479,16 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	// opted out or quiet examined `maxProjects` of them, included none,
 	// and published nothing — while the log reported the rest as "not
 	// considered", as though the cap were working as intended.
+	//
+	// shortcut: because the budget is inclusions, an instance where
+	// nothing is includable walks its WHOLE candidate list instead of
+	// stopping. admit is ~6 sequential round-trips (opt-out file reads
+	// plus the activity probe), and maxActiveScanPages caps the list
+	// at 10 pages of 100, so the ceiling is bounded at roughly 6,000
+	// requests for a run that publishes nothing. Raising
+	// maxActiveScanPages raises the ceiling; reintroducing a candidate
+	// counter is the alternative and costs the honest-reporting
+	// behaviour above.
 	admitUpTo := func(projects []gitlab.ProjectSummary, why string) error {
 		// Most-recently-active first. last_activity_at is already in
 		// this payload, so ranking is free.

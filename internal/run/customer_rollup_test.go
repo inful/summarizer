@@ -727,3 +727,62 @@ func TestEpicRollup_GroupScopedEpicOnlyAppearsWhereItHasEvents(t *testing.T) {
 		t.Fatalf("the epic should remain under a: %+v", team)
 	}
 }
+
+// TestEpicRollup_EpicSkippedWhenThisCustomerHasNoEvents: the
+// per-customer filter used to run on ev.Total while the document
+// prints ev.ByCustomer[code] — two different numbers.
+//
+// Two ways a non-zero total says nothing about the customer whose file
+// this is. ActiveEpics is the GROUP's list, so the project may own none
+// of the epic's issues. And even when it owns some, those issues may be
+// another customer's: `codes` comes from EpicCustomerCodes, which reads
+// the group-wide issue list, so one GLOBEX-tagged issue anywhere in the
+// group opens a GLOBEX bucket from every project.
+//
+// Measured before the fix, from project g/a:
+//
+//	Total=1  ByCustomer=map[ACME:1]  EpicCustomerCodes=[ACME GLOBEX]
+//	CUST ACME   project=g/a → 1 event(s)
+//	CUST GLOBEX project=g/a → 0 event(s)     <- public: true
+func TestEpicRollup_EpicSkippedWhenThisCustomerHasNoEvents(t *testing.T) {
+	inA := active(ProjectResult{Project: "g/a", CustomerOn: true},
+		epic(1, "Billing revamp", "org::ACME"))
+	// Same group, same epic, so g/b has the identical pointer — but
+	// from g/a's vantage point none of the epic's events are GLOBEX's.
+	inA.ActiveEpics[0].Issues = []gitlab.Issue{
+		{IID: 10, Labels: []string{"org::GLOBEX"}, References: gitlab.IssueRef{Full: "g/b#10"}},
+	}
+	projects := []ProjectResult{inA}
+
+	for _, b := range bucketEpicsByCustomer(projects) {
+		for _, ent := range b.Entries {
+			for _, s := range ent.Epics {
+				t.Logf("CUST %-7s project=%s epic %q → %d event(s)",
+					b.Customer, ent.Project, s.Epic.Title, s.EventCount)
+				if s.EventCount == 0 {
+					t.Errorf("customer %s got %q with 0 events on a file published "+
+						"public: true", b.Customer, s.Epic.Title)
+				}
+			}
+		}
+	}
+	if got := bucketEpicsByCustomer(projects); len(got) != 1 || got[0].Customer != "ACME" {
+		t.Errorf("want only ACME's bucket, got %d: %+v", len(got), got)
+	}
+}
+
+// TestEpicRollup_EpicKeptWhenThisCustomerHasEvents: the filter is on
+// the per-customer count, so it must not drop an epic the customer
+// genuinely worked on just because the total is small.
+func TestEpicRollup_EpicKeptWhenThisCustomerHasEvents(t *testing.T) {
+	projects := []ProjectResult{
+		on("g/a", epic(1, "ACME work", "org::ACME")),
+	}
+	got := bucketEpicsByCustomer(projects)
+	if len(got) != 1 || got[0].Customer != "ACME" {
+		t.Fatalf("ACME's own epic was dropped: %+v", got)
+	}
+	if n := got[0].Entries[0].Epics[0].EventCount; n != 1 {
+		t.Errorf("event count = %d, want 1", n)
+	}
+}
