@@ -218,9 +218,13 @@ func TestMonthlyRunner_RollsUpEveryWeekOfTheMonth(t *testing.T) {
 }
 
 // TestMonthlyRunner_SkipsWeeksWithNoBranch: a week whose cron didn't
-// run leaves no branch. It must be skipped and reported, not treated
-// as a hard failure — a five-week month with one missed run should
-// still produce a rollup.
+// run leaves no branch and nothing on the default branch. It must be
+// skipped and reported, not treated as a hard failure — a five-week
+// month with one missed run should still produce a rollup.
+//
+// The reason is "no rollup file", not "no branch": the run now looks
+// on the default branch before giving up, so the honest report is that
+// the file is not there either way.
 func TestMonthlyRunner_SkipsWeeksWithNoBranch(t *testing.T) {
 	weeks, _ := weeksInMonth("2026-09")
 	present := weeks[:2]
@@ -241,9 +245,43 @@ func TestMonthlyRunner_SkipsWeeksWithNoBranch(t *testing.T) {
 		t.Errorf("expected 2 skipped weeks, got %v", res.Skipped)
 	}
 	for _, s := range res.Skipped {
-		if !strings.Contains(s, "no branch") {
+		if !strings.Contains(s, "no rollup file") {
 			t.Errorf("skip reason should say why: %q", s)
 		}
+	}
+}
+
+// TestMonthlyRunner_ReadsMergedWeeksOffTheDefaultBranch: a week is
+// MERGED, not left on its source branch. With GitLab's "delete source
+// branch on merge" on, the branch disappears after the merge and the
+// file survives only on the default branch — at the same path, because
+// the branch was forked from it.
+//
+// Without the fallback the whole month read as empty: four published,
+// merged weeks, zero rollup files, a hard error and nothing written.
+func TestMonthlyRunner_ReadsMergedWeeksOffTheDefaultBranch(t *testing.T) {
+	weeks, _ := weeksInMonth("2026-09")
+	files := map[string]string{}
+	for k, v := range weeklyFiles(weeks...) {
+		files["main|"+k[strings.IndexByte(k, '|')+1:]] = v
+	}
+	r, llmStub := newMonthlyRunner(t, &monthlyRepo{branches: nil, files: files})
+
+	res, err := r.Run(context.Background(), "2026-09")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Weeks) != len(weeks) {
+		t.Errorf("read %v, want all %d merged weeks %v", res.Weeks, len(weeks), weeks)
+	}
+	if len(res.Skipped) != 0 {
+		t.Errorf("nothing was unpublished — skipped should be empty: %v", res.Skipped)
+	}
+	if len(res.Files) != 2 {
+		t.Errorf("want a customer and a team month-end file, got %v", res.Files)
+	}
+	if len(llmStub.prompts) != 2 {
+		t.Errorf("want one LLM call per audience, got %d", len(llmStub.prompts))
 	}
 }
 

@@ -20,6 +20,20 @@ type MonthlyReader interface {
 	ListPeriodBranches(ctx context.Context) ([]string, error)
 	ReadReportFile(ctx context.Context, branch, path string) (string, error)
 	PeriodBranch(period string) string
+
+	// DefaultRef is the ref to read from when the week's source branch
+	// is gone. A weekly rollup is merged, not left on its branch: with
+	// GitLab's "delete source branch on merge" on — a project setting,
+	// or a box ticked in the merge dialog — the branch disappears after
+	// the merge and the file survives only on the default branch.
+	//
+	// Without this fallback a fully-published month read as an empty
+	// one and `summarizer monthly` wrote nothing, pointing the operator
+	// at the target repo instead of at the setting.
+	//
+	// Named DefaultRef rather than DefaultBranch because
+	// GitLabPublisher.DefaultBranch is a field.
+	DefaultRef() string
 }
 
 // MonthlyRunner rolls up a whole calendar month's weekly rollups into
@@ -76,9 +90,10 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 		return res, fmt.Errorf("monthly rollups need a GitLab target repo (publish.enabled); this build has no reader")
 	}
 
-	// Which weekly branches actually exist in the target repo. A week
-	// with no branch means the cron didn't run (or its MR was never
-	// pushed); skip it rather than failing the whole month.
+	// Which weekly branches still exist in the target repo. A week's
+	// file may be on the default branch instead — see MonthlyReader's
+	// DefaultRef — so an absent branch is a reason to try main, not to
+	// skip the week.
 	branches, err := r.Reader.ListPeriodBranches(ctx)
 	if err != nil {
 		return res, fmt.Errorf("fetch branches: %w", err)
@@ -91,13 +106,22 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 	byWeek := make(map[prompt.Audience][]prompt.ProjectReport, 2)
 	for _, week := range allWeeks {
 		branch := r.Reader.PeriodBranch(week)
+		// The source branch while it exists: it holds the newest content
+		// while an MR is open. Once merged it may have been deleted, and
+		// the default branch is the only copy — same path, same file,
+		// because the branch was forked from it.
+		ref := branch
 		if !present[branch] {
-			res.Skipped = append(res.Skipped, week+" (no branch)")
-			continue
+			def := r.Reader.DefaultRef()
+			if def == "" {
+				res.Skipped = append(res.Skipped, week+" (no branch)")
+				continue
+			}
+			ref = def
 		}
 		found := false
 		for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
-			body, err := r.Reader.ReadReportFile(ctx, branch, r.pathFor(branch, weeklyRollupName(aud)))
+			body, err := r.Reader.ReadReportFile(ctx, ref, r.pathFor(branch, weeklyRollupName(aud)))
 			if err != nil {
 				return res, err
 			}

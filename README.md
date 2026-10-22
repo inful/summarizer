@@ -388,6 +388,13 @@ never pushed) are skipped and listed in the summary rather than
 failing the month. A month with no published weeks at all is an error
 — an empty month-end summary would be worse than none.
 
+A week is looked for on its source branch first, then on the target's
+default branch. GitLab forks a branch from the default branch, so a
+merged week's file is at the same path on both — which matters when
+"delete source branch on merge" is on, a project setting or a box
+ticked in the merge dialog. Without the fallback a fully published,
+fully merged month read as an empty one.
+
 Output lands in `reports/<YYYY-MM>/monthly--<YYYY-MM>--<audience>.md`,
 on its own branch and MR, so it never collides with a week's.
 
@@ -437,6 +444,13 @@ both subcommands.
 Both subcommands use this table. `summarizer monthly` used to return 4 for
 every failure, so an LLM outage or a guard rejection in the monthly path
 looked like a GitLab problem to a wrapper branching on these codes.
+
+Code 5 also covers a response that hit the token cap. That is a
+deliberate failure, not an outage: the provider stops mid-sentence and
+returns the fragment as valid content, so a truncated report would
+otherwise be published as a finished one — `public: true`, merged by a
+human who sees a normal-looking file. The affected project is named in
+the run summary like any other failure.
 
 ## Layout
 
