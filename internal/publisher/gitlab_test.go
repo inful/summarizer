@@ -28,7 +28,8 @@ type fakeGitLab struct {
 	branchGets    atomic.Int64
 	filePuts      atomic.Int64
 	// Flaky counters: the first N writes / MR creates answer 503, so a
-	// test can tell a retried write from a duplicated one.
+	// test can tell a retried write from a duplicated one. Guarded by
+	// mu where a handler mutates them.
 	flakyWrites           int
 	flakyMRCreates        int
 	filePutAttempts       atomic.Int64
@@ -39,9 +40,18 @@ type fakeGitLab struct {
 	// tell "memoised a failure" from "memoised a success".
 	mrCreateFails bool
 	fileReads     atomic.Int64
-	mergeRequests []mergeRequest
 	mrCreateCount atomic.Int64
+
+	// Guarded by mu, not atomics: these are slices and strings that
+	// the handler writes on every request. TestGitLabPublisher_ConcurrentPublishAcrossBranchesIsRaceFree
+	// drives six goroutines through this handler at once, and unsynchronised
+	// writes here made the race detector fail the fixture rather than the
+	// publisher — a test that can only fail for the wrong reason is
+	// worse than no test. The counters above stayed atomic because they
+	// are read individually from the test goroutine.
+	mu            sync.Mutex
 	lastMRDesc    string
+	mergeRequests []mergeRequest
 
 	// files pre-populates "branch -> path -> content" so read-before-write
 	// tests can put a file on the branch before the publisher's
@@ -148,7 +158,9 @@ func (f *fakeGitLab) handler() http.Handler {
 		f.lastPutContent.Store(string(decoded))
 		f.filePutAttempts.Add(1)
 		if f.flakyWrites > 0 {
+			f.mu.Lock()
 			f.flakyWrites--
+			f.mu.Unlock()
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -163,11 +175,13 @@ func (f *fakeGitLab) handler() http.Handler {
 			q := r.URL.Query()
 			want := q.Get("state")
 			filtered := make([]mergeRequest, 0)
+			f.mu.Lock()
 			for _, mr := range f.mergeRequests {
 				if want == "" || mr.State == want {
 					filtered = append(filtered, mr)
 				}
 			}
+			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(filtered)
 			return
@@ -183,10 +197,15 @@ func (f *fakeGitLab) handler() http.Handler {
 			http.Error(w, "missing mr fields", http.StatusBadRequest)
 			return
 		}
+		f.mu.Lock()
 		f.lastMRDesc = mr.Description
-		f.mrCreateAttempts.Add(1)
-		if f.flakyMRCreates > 0 {
+		flaky := f.flakyMRCreates > 0
+		if flaky {
 			f.flakyMRCreates--
+		}
+		f.mu.Unlock()
+		f.mrCreateAttempts.Add(1)
+		if flaky {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -195,16 +214,19 @@ func (f *fakeGitLab) handler() http.Handler {
 			return
 		}
 		f.mrCreateCount.Add(1)
-		f.mergeRequests = append(f.mergeRequests, mergeRequest{
+		created := mergeRequest{
 			IID:          42,
 			WebURL:       "https://gitlab.example.com/group/reports/-/merge_requests/42",
 			State:        "opened",
 			SourceBranch: mr.SourceBranch,
 			TargetBranch: mr.TargetBranch,
 			Title:        mr.Title,
-		})
+		}
+		f.mu.Lock()
+		f.mergeRequests = append(f.mergeRequests, created)
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(f.mergeRequests[len(f.mergeRequests)-1])
+		_ = json.NewEncoder(w).Encode(created)
 	})
 	return mux
 }
@@ -1183,5 +1205,56 @@ func TestPublish_KeepsTheUIDWhenTheSourceBranchWasDeleted(t *testing.T) {
 	}
 	if !repo.branches["summarizer/2026-W43"] {
 		t.Error("the period branch should have been recreated from main")
+	}
+}
+
+// TestGitLabPublisher_ConcurrentPublishAcrossBranchesIsRaceFree: the
+// Publisher contract promises concurrency safety for DIFFERENT periods
+// and explicitly does not promise it for one. This pins the half that
+// holds, so "it is concurrency-safe" stays a claim with a test behind
+// it rather than a comment.
+//
+// Meaningful under -race: g.cache, branchKnown, remember and recalled
+// are the only shared state, and a lost update or a concurrent map
+// write would fail here. The CI job runs `go test -race`.
+//
+// The same-period case is deliberately NOT exercised: it is the
+// check-then-act in findOrCreateMR, which would open two merge requests,
+// and that is documented rather than fixed.
+func TestGitLabPublisher_ConcurrentPublishAcrossBranchesIsRaceFree(t *testing.T) {
+	f := &fakeGitLab{}
+	srv := httptest.NewServer(f.handler())
+	defer srv.Close()
+
+	g := NewGitLab(srv.URL, "glpat-x", "group/reports", "reports", "main", "summarizer")
+
+	const periods = 6
+	var wg sync.WaitGroup
+	errs := make([]error, periods)
+	for i := range periods {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			period := fmt.Sprintf("2026-W%02d", 40+i)
+			_, errs[i] = g.Publish(context.Background(), Request{
+				Name:     fmt.Sprintf("p%d--wk--team.md", i),
+				Body:     []byte(fmt.Sprintf("week %d body", i)),
+				Kind:     KindPerProject,
+				Period:   period,
+				Audience: "team",
+				Project:  "g/p",
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("period 2026-W%02d: %v", 40+i, err)
+		}
+	}
+	if got := f.mrCreateAttempts.Load(); got != periods {
+		t.Errorf("merge requests created = %d, want %d (one per branch, no duplicates)",
+			got, periods)
 	}
 }

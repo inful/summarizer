@@ -869,6 +869,12 @@ const maxBackoff = 30 * time.Second
 // the limit and why the pages it drops are the oldest, i.e. the ones
 // capEvents would have cut anyway. Adding a warning at each of those
 // five would report a decision the codebase has already made.
+//
+// MUTATES q: the page counter is written into the caller's url.Values
+// rather than a copy. Every current caller builds a fresh map on the
+// line above the call, so nothing is wrong today — but the aliasing is
+// invisible at the call site and would bite anyone who hoisted the
+// query above a loop or passed the same map twice.
 func getAll[T any](ctx context.Context, c *Client, path string, q url.Values, maxPages int, soft ...int) ([]T, bool, error) {
 	var out []T
 	for page := 1; maxPages == 0 || page <= maxPages; page++ {

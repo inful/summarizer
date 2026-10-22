@@ -77,10 +77,27 @@ type Result struct {
 	Closed bool
 }
 
-// Publisher writes one Markdown file at a time. Implementations are
-// expected to be safe to call concurrently (the pipeline runs the
-// per-project and rollup passes sequentially, but the per-audience
-// LLM-then-write pairs could run in parallel in the future).
+// Publisher writes one Markdown file at a time.
+//
+// Implementations are safe to call concurrently for DIFFERENT periods.
+// They are not safe for concurrent calls on the SAME period: the
+// GitLab publisher's MR lookup is a check-then-act — read the memo,
+// query three MR states, POST if all empty — and the mutex guards the
+// memo without covering that sequence, so two callers for one period
+// can each create a merge request. GitLab permits multiple open MRs from
+// one source branch, so nothing rejects the second.
+//
+// The pipeline is sequential, so this never fires today. It is written
+// down because the earlier version of this comment said "safe to call
+// concurrently" and then named the refactor that breaks it: "the
+// per-audience LLM-then-write pairs could run in parallel in the
+// future". If you parallelise the per-audience loop, do the MR creation
+// under a per-branch sync.Once first. The per-project loop has the same
+// exposure — run.Pipeline holds three unsynchronised per-run maps — so
+// parallelising that needs a mutex added as well.
+//
+// TestGitLabPublisher_ConcurrentPublishAcrossBranchesIsRaceFree pins
+// the half of this that does hold.
 type Publisher interface {
 	Publish(ctx context.Context, req Request) (Result, error)
 }

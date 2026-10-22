@@ -592,6 +592,13 @@ var errPeriodClosed = errors.New("period already published")
 // Returns the MR web URL. If an MR exists in merged / closed state we
 // decline to re-open it and return an error naming that state; the
 // caller surfaces it.
+// findOrCreateMR is a CHECK-THEN-ACT across two network calls: recall
+// the memo, query opened/merged/closed, and POST if all three are
+// empty. g.mu guards the memo, not this sequence, so two concurrent
+// calls for the same branch can both reach the POST and open two merge
+// requests for one period. The Publisher contract says so; see
+// publisher.go. A per-branch sync.Once here is the fix if the
+// per-audience loop is ever parallelised.
 func (g *GitLabPublisher) findOrCreateMR(ctx context.Context, branch string, req Request) (string, error) {
 	// One run publishes every file onto one branch, and all four of
 	// these queries answer the same question for all of them. Resolved

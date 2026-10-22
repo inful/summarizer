@@ -13,6 +13,7 @@ import (
 
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
+	"github.com/inful/summarizer/internal/llm"
 	"github.com/inful/summarizer/internal/policy"
 	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/publisher"
@@ -130,7 +131,7 @@ func TestEpicRollup_IssueLabelInheritsToEpic(t *testing.T) {
 		on("a", epicShared, epicBacklog),
 	}
 
-	_, _, err := sp.p.runEpicRollup(context.Background(), projects)
+	_, _, _, err := sp.p.runEpicRollup(context.Background(), projects)
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestEpicRollup_MultiCustomerEpicLandsInAllBuckets(t *testing.T) {
 		on("b", epic(2, "acme-only", "org::ACME")),
 	}
 
-	files, _, err := sp.p.runEpicRollup(context.Background(), projects)
+	files, _, _, err := sp.p.runEpicRollup(context.Background(), projects)
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 			epic(3, "SECRET-ACME", "org::ACME"), epic(4, "secret-plain")),
 	}
 
-	files, _, err := sp.p.runEpicRollup(context.Background(), projects)
+	files, _, _, err := sp.p.runEpicRollup(context.Background(), projects)
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -342,7 +343,7 @@ func TestEpicRollup_CustomerOnGateAppliesPerBucket(t *testing.T) {
 func TestEpicRollup_PublicFlagPerAudience(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
 	projects := []ProjectResult{on("a", epic(1, "x", "org::ACME"), epic(2, "y"))}
-	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+	if _, _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
 	for _, w := range sp.pub.written {
@@ -357,7 +358,7 @@ func TestEpicRollup_PublicFlagPerAudience(t *testing.T) {
 // not empty ones.
 func TestEpicRollup_NoEpicsSkipsEverything(t *testing.T) {
 	sp := newSourcePipeline(t, nil, nil)
-	files, _, err := sp.p.runEpicRollup(context.Background(), []ProjectResult{{Project: "a", CustomerOn: true}})
+	files, _, _, err := sp.p.runEpicRollup(context.Background(), []ProjectResult{{Project: "a", CustomerOn: true}})
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
@@ -454,7 +455,7 @@ func TestEpicRollup_UnattributedEpicNeverReachesACustomerFile(t *testing.T) {
 	projects := []ProjectResult{
 		on("public", epic(1, "nobody-claimed-this")),
 	}
-	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+	if _, _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
 	// The stub LLM returns a canned body, so the epic is asserted on
@@ -640,7 +641,7 @@ func TestEpicRollup_PerCustomerFrontmatterNamesTheCustomer(t *testing.T) {
 		on("a", epic(1, "alpha", "org::ACME"), epic(2, "beta", "org::GLOBEX")),
 	}
 	sp := newSourcePipeline(t, nil, nil)
-	if _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+	if _, _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}
 
@@ -785,4 +786,91 @@ func TestEpicRollup_EpicKeptWhenThisCustomerHasEvents(t *testing.T) {
 	if n := got[0].Entries[0].Epics[0].EventCount; n != 1 {
 		t.Errorf("event count = %d, want 1", n)
 	}
+}
+
+// TestRollup_RecordsItsTokenUsage: Result.TokensByAudience was declared,
+// initialised and printed by printSummary with nothing ever writing it —
+// runAudienceRollups took resp.Usage from every rollup completion and
+// dropped it. So the run summary showed per-project tokens and no total,
+// on a tool whose --max-events help says the flag bounds the per-run
+// bill, and the rollups are among the largest calls in a run.
+func TestRollup_RecordsItsTokenUsage(t *testing.T) {
+	sp := newSourcePipeline(t, nil, nil)
+	projects := []ProjectResult{
+		{Project: "a", CustomerOn: true, CustomerText: "c", TeamText: "t"},
+		{Project: "b", CustomerOn: true, CustomerText: "c", TeamText: "t"},
+	}
+
+	_, _, tokens, err := sp.p.runRollup(context.Background(), projects)
+	if err != nil {
+		t.Fatalf("runRollup: %v", err)
+	}
+	if len(tokens) == 0 {
+		t.Fatal("runRollup reported no token usage; the map is printed by the summary")
+	}
+	for _, want := range []string{"rollup/customer", "rollup/team"} {
+		u, ok := tokens[want]
+		if !ok {
+			t.Errorf("no usage recorded for %q; got %v", want, keysOf(tokens))
+			continue
+		}
+		t.Logf("tokens[%s]: prompt=%d completion=%d total=%d",
+			want, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+	}
+	// The epic rollup keys separately ("epics-rollup/customer"), so it
+	// cannot overwrite the combined rollup's figures for the same
+	// audience.
+	epic := &gitlab.Epic{IID: 1, Title: "e", Issues: []gitlab.Issue{
+		{IID: 1, Labels: []string{"org::ACME"}, References: gitlab.IssueRef{Full: "a#1"}},
+	}}
+	withEpics := []ProjectResult{{
+		Project: "a", CustomerOn: true, CustomerText: "c", TeamText: "t",
+		ActiveEpics: []*gitlab.Epic{epic},
+		EpicEventCounts: map[int]EpicEvents{
+			1: {Total: 1, ByCustomer: map[string]int{"ACME": 1}},
+		},
+	}}
+	_, _, epicTokens, err := sp.p.runEpicRollup(context.Background(), withEpics)
+	if err != nil {
+		t.Fatalf("runEpicRollup: %v", err)
+	}
+	if _, clash := epicTokens["rollup/customer"]; clash {
+		t.Errorf("the epic rollup wrote the combined rollup's key: %v", keysOf(epicTokens))
+	}
+	found := false
+	for _, k := range keysOf(epicTokens) {
+		if strings.HasPrefix(k, "epics-rollup/") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no epics-rollup/ key in the epic rollup's usage: %v", keysOf(epicTokens))
+	}
+}
+
+// TestMergeUsage_SumsRatherThanOverwrites: the two rollup paths return
+// separate maps that Run folds together. If a key ever collided, an
+// overwrite would under-report the bill — the one thing this field
+// exists to prevent.
+func TestMergeUsage_SumsRatherThanOverwrites(t *testing.T) {
+	dst := map[string]llm.Usage{"rollup/customer": {PromptTokens: 10, TotalTokens: 30}}
+	mergeUsage(dst, map[string]llm.Usage{
+		"rollup/customer": {PromptTokens: 5, TotalTokens: 15},
+		"epics/customer":  {PromptTokens: 2, TotalTokens: 4},
+	})
+	if got := dst["rollup/customer"].TotalTokens; got != 45 {
+		t.Errorf("colliding key = %d, want 45 (summed, not overwritten)", got)
+	}
+	if got := dst["epics/customer"].TotalTokens; got != 4 {
+		t.Errorf("new key = %d, want 4", got)
+	}
+}
+
+func keysOf(m map[string]llm.Usage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -80,7 +80,7 @@ func TestRunRollup_AllTeamOnlyProjects_NoCustomerFile(t *testing.T) {
 		CustomerText: "should-not-appear",
 		TeamText:     "team content for secret project",
 	}
-	files, _, err := p.runRollup(context.Background(), []ProjectResult{pr})
+	files, _, _, err := p.runRollup(context.Background(), []ProjectResult{pr})
 	if err != nil {
 		t.Fatalf("runRollup: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestRunRollup_MixedPolicy_FiltersForCustomer(t *testing.T) {
 		Project: "group/secret", CustomerOn: false, TeamOnly: true,
 		CustomerText: "SHOULD-NOT-APPEAR", TeamText: "TEAM-FOR-SECRET",
 	}
-	files, _, err := p.runRollup(context.Background(), []ProjectResult{pr1, pr2})
+	files, _, _, err := p.runRollup(context.Background(), []ProjectResult{pr1, pr2})
 	if err != nil {
 		t.Fatalf("runRollup: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestRunEpicRollup_MixedPolicy_FiltersForCustomer(t *testing.T) {
 	p, _, _ := newTeamOnlyPipeline(t)
 	pr1 := active(ProjectResult{Project: "group/public", CustomerOn: true}, pr1Epic())
 	pr2 := active(ProjectResult{Project: "group/secret", TeamOnly: true}, pr2Epic())
-	files, _, err := p.runEpicRollup(context.Background(), []ProjectResult{pr1, pr2})
+	files, _, _, err := p.runEpicRollup(context.Background(), []ProjectResult{pr1, pr2})
 	if err != nil {
 		t.Fatalf("runEpicRollup: %v", err)
 	}

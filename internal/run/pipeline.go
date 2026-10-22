@@ -105,7 +105,17 @@ type Result struct {
 	// Result.Closed, so a re-run of a merged week reported its rollups
 	// as published.
 	RollupFilesClosed int
-	TokensByAudience  map[string]llm.Usage // rollup token usage, when applicable
+	// Rollup and epic-rollup token usage, keyed "<kind>/<audience>" —
+	// "rollup/customer", "epics-rollup/customer". Per-project usage is
+	// on each ProjectResult.
+	//
+	// This map was declared, initialised and PRINTED for a long time
+	// with nothing ever writing it: runAudienceRollups took resp.Usage
+	// from every rollup completion and dropped it. So the run summary
+	// showed per-project tokens and no total, while --max-events' own
+	// help says the flag bounds the per-run bill — and the rollups are
+	// among the largest calls in a run.
+	TokensByAudience map[string]llm.Usage
 
 	// PartialFiles are files published by a project that then failed —
 	// the customer report landed and the team call did not. They are
@@ -277,12 +287,13 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	})
 
 	if len(res.Projects) > 0 && !p.Opts.DryRun {
-		rollupFiles, rollupClosed, err := p.runRollup(ctx, res.Projects)
+		rollupFiles, rollupClosed, rollupTokens, err := p.runRollup(ctx, res.Projects)
 		if err != nil {
 			return res, fmt.Errorf("rollup: %w", err)
 		}
 		res.RollupFiles = rollupFiles
 		res.RollupFilesClosed = rollupClosed
+		mergeUsage(res.TokensByAudience, rollupTokens)
 	}
 
 	// Cross-project epic rollup — fires whenever ≥1 project has
@@ -291,12 +302,13 @@ func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	// Skipped on --dry-run to keep the no-write contract.
 	if !p.Opts.DryRun {
 		if len(p.lastActiveEpics) > 0 {
-			epicRollupFiles, epicClosed, err := p.runEpicRollup(ctx, res.Projects)
+			epicRollupFiles, epicClosed, epicTokens, err := p.runEpicRollup(ctx, res.Projects)
 			if err != nil {
 				return res, fmt.Errorf("epics rollup: %w", err)
 			}
 			res.EpicRollupFiles = epicRollupFiles
 			res.RollupFilesClosed += epicClosed
+			mergeUsage(res.TokensByAudience, epicTokens)
 		}
 	}
 
@@ -536,9 +548,13 @@ func eligibleProjects(aud prompt.Audience, projects []ProjectResult) []ProjectRe
 // The second return is how many of `files` landed on a closed period's
 // branch. printSummary subtracts it from the published count, the
 // same way it subtracts ProjectResult.FilesClosed.
-func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectResult, spec audienceInputs) ([]string, int, error) {
+func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectResult, spec audienceInputs) ([]string, int, map[string]llm.Usage, error) {
 	var files []string
 	var closed int
+	// Keyed "<kind>/<audience>" so the combined rollup and the epic
+	// rollup do not overwrite each other — the epic path makes one
+	// completion per customer bucket and they all cost.
+	tokens := map[string]llm.Usage{}
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
 		// No eligible projects for this audience → no file. For the team
 		// audience eligibleProjects is the whole run, so this only trips
@@ -551,12 +567,12 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 			if errors.Is(err, errSkipAudience) {
 				continue
 			}
-			return files, closed, err
+			return files, closed, tokens, err
 		}
 		for _, part := range parts {
 			label := spec.name + "/" + part.name
 			if err := p.checkPrompt(ctx, label, aud, part.system+"\n\n"+part.user); err != nil {
-				return files, closed, err
+				return files, closed, tokens, err
 			}
 			resp, err := p.LLM.Complete(ctx, llm.Request{
 				System:    part.system,
@@ -565,8 +581,13 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				MaxTokens: 2048,
 			})
 			if err != nil {
-				return files, closed, fmt.Errorf("llm %s %s: %w", label, aud, err)
+				return files, closed, tokens, fmt.Errorf("llm %s %s: %w", label, aud, err)
 			}
+			acc := tokens[spec.name+"/"+string(aud)]
+			acc.PromptTokens += resp.Usage.PromptTokens
+			acc.CompletionTokens += resp.Usage.CompletionTokens
+			acc.TotalTokens += resp.Usage.TotalTokens
+			tokens[spec.name+"/"+string(aud)] = acc
 			res, err := p.Publisher.Publish(ctx, publisher.Request{
 				Name:     rollupFilename(aud, part.name),
 				Body:     []byte(resp.Text),
@@ -581,7 +602,7 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				Public:  aud == prompt.AudienceCustomer,
 			})
 			if err != nil {
-				return files, closed, fmt.Errorf("write %s %s: %w", label, aud, err)
+				return files, closed, tokens, fmt.Errorf("write %s %s: %w", label, aud, err)
 			}
 			files = append(files, res.Ref)
 			if res.Closed {
@@ -589,14 +610,29 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 			}
 		}
 	}
-	return files, closed, nil
+	return files, closed, tokens, nil
+}
+
+// mergeUsage folds one map of token usage into another, summing where
+// the keys collide. The rollup and the epic rollup are separate calls
+// with distinct keys ("rollup/customer", "epics/customer"), so this is
+// an add rather than an overwrite — but summing is the safe behaviour if
+// a future caller ever reuses a key.
+func mergeUsage(dst, src map[string]llm.Usage) {
+	for k, u := range src {
+		a := dst[k]
+		a.PromptTokens += u.PromptTokens
+		a.CompletionTokens += u.CompletionTokens
+		a.TotalTokens += u.TotalTokens
+		dst[k] = a
+	}
 }
 
 // runRollup runs one extra LLM call per audience over the per-project
 // reports and writes the combined files. Only called when len(Projects)
 // > 1. The rollup prompt takes per-project reports as input and asks the
 // model to surface cross-project themes.
-func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, int, error) {
+func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]string, int, map[string]llm.Usage, error) {
 	return p.runAudienceRollups(ctx, projects, audienceInputs{
 		name: "rollup",
 		parts: func(aud prompt.Audience) ([]rollupPart, error) {
@@ -825,7 +861,7 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 	return []epicRollupPart{{Entries: entries}}
 }
 
-func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, int, error) {
+func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, int, map[string]llm.Usage, error) {
 	// No representative project name: the epic rollups name every
 	// project in the body and the frontmatter carries Project: "",
 	// because they span N projects. A "first project for determinism"

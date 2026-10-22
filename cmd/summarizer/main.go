@@ -452,7 +452,8 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 			for _, f := range p.FilesWritten {
 				fmt.Fprintf(os.Stderr, "  → %s\n", f)
 			}
-			for aud, u := range p.TokensByAudience {
+			for _, aud := range sortedUsageKeys(p.TokensByAudience) {
+				u := p.TokensByAudience[aud]
 				fmt.Fprintf(os.Stderr, "  tokens[%s/%s]: prompt=%d completion=%d total=%d\n",
 					p.Project, aud, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
 			}
@@ -463,14 +464,29 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 		for _, f := range res.EpicRollupFiles {
 			fmt.Fprintf(os.Stderr, "  → %s (epics rollup)\n", f)
 		}
-		for aud, u := range res.TokensByAudience {
-			fmt.Fprintf(os.Stderr, "  tokens[rollup/%s]: prompt=%d completion=%d total=%d\n",
-				aud, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+		for _, k := range sortedUsageKeys(res.TokensByAudience) {
+			u := res.TokensByAudience[k]
+			fmt.Fprintf(os.Stderr, "  tokens[%s]: prompt=%d completion=%d total=%d\n",
+				k, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
 		}
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "summarizer: %v\n", err)
 	}
+}
+
+// sortedKeys returns a map's keys in order. Map iteration is randomised,
+// so every per-key summary line goes through this: a run that printed
+// its token lines in a different order each time would make two runs
+// over identical input look different in the logs, and would make them
+// impossible to diff.
+func sortedUsageKeys(m map[string]llm.Usage) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // classify maps pipeline errors to exit codes. Errors from internal/* packages
