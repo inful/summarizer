@@ -123,7 +123,15 @@ func (c *Config) PublishTarget() string {
 // Defaults fills in zero values with sensible built-ins.
 func (c *Config) Defaults() {
 	if c.Model == "" {
-		c.Model = "gpt-4o-mini"
+		// Per provider. One model for both is a lie the API rejects:
+		// the OpenAI default posted to api.anthropic.com is a 404
+		// model_not_found, and the README offers `--provider
+		// anthropic` as a headline example.
+		if c.Provider == "anthropic" {
+			c.Model = "claude-3-5-haiku-latest"
+		} else {
+			c.Model = "gpt-4o-mini"
+		}
 	}
 	if c.OutputDir == "" {
 		c.OutputDir = "./summarizer-out"

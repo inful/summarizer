@@ -21,8 +21,9 @@ import (
 // run of every week; overwriting in place is the intended behaviour.
 //
 // The period subdirectory is what keeps *different* weeks from
-// colliding: report names carry the window (7d, 30d) but not the date,
-// so without it this week's run would overwrite last week's.
+// colliding: report names carry the constant "wk" window token and the
+// audience, but no date, so without it this week's run would overwrite
+// last week's.
 type Local struct {
 	Dir string // root directory; per-period subdirectories created on each Publish
 }
@@ -31,7 +32,7 @@ type Local struct {
 func NewLocal(dir string) *Local { return &Local{Dir: dir} }
 
 // Publish conforms to Publisher. Returns the absolute path as Ref;
-// Branch and MRURL are empty.
+// MRURL is empty — there is no merge request on local disk.
 func (l *Local) Publish(ctx context.Context, req Request) (Result, error) {
 	dir := l.Dir
 	if req.Period != "" {
@@ -63,6 +64,15 @@ func (l *Local) Publish(ctx context.Context, req Request) (Result, error) {
 	}
 	if err := tmp.Close(); err != nil {
 		return Result{}, fmt.Errorf("close tmp: %w", err)
+	}
+	// Cancellation is honoured at the one point it can still be acted
+	// on: the rename. Checking it earlier would abandon a half-written
+	// temp file for no benefit, and the deferred cleanup removes it
+	// anyway. Before the rename, the previous period file is still
+	// intact — so a Ctrl-C leaves the good file exactly as it was and
+	// the run reports the cancellation instead of a silent success.
+	if err := ctx.Err(); err != nil {
+		return Result{}, fmt.Errorf("write %s: %w", target, err)
 	}
 	if err := os.Rename(tmpPath, target); err != nil {
 		return Result{}, fmt.Errorf("rename tmp→target: %w", err)

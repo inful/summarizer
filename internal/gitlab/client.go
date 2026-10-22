@@ -132,17 +132,18 @@ type User struct {
 // the FetchEpics call returns (nil, nil) and the pipeline skips the
 // epic section. See docs/deferred.md for the broader epic-rollup story.
 type Epic struct {
-	IID          int        `json:"iid"`
-	Title        string     `json:"title"`
-	Description  string     `json:"description"`
-	State        string     `json:"state"` // "opened" | "closed"
-	Confidential bool       `json:"confidential"`
-	WebURL       string     `json:"web_url"`
-	StartDate    *Date      `json:"start_date"` // nullable; date-only "YYYY-MM-DD"
-	DueDate      *Date      `json:"due_date"`   // nullable; date-only "YYYY-MM-DD"
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	ClosedAt     *time.Time `json:"closed_at"` // nullable; RFC3339 datetime
+	IID       int        `json:"iid"`
+	Title     string     `json:"title"`
+	State     string     `json:"state"` // "opened" | "closed"
+	WebURL    string     `json:"web_url"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ClosedAt  *time.Time `json:"closed_at"` // nullable; RFC3339 datetime
+
+	// Confidential is GitLab's own "do not show this to people who
+	// shouldn't see it" flag. It is honoured on the customer epic
+	// rollup — see policy.EpicCustomerCodes' callers — because those
+	// files are published public: true.
+	Confidential bool `json:"confidential"`
 
 	// Labels are the epic's own group labels, returned by
 	// GET /groups/:id/epics as a plain string array (an array of
@@ -151,42 +152,10 @@ type Epic struct {
 	// the epic to a customer — see policy.CustomerCode.
 	Labels []string `json:"labels"`
 
-	// GroupID is captured from the surrounding namespace context for
-	// use by FetchEpicIssues (which is a group-scoped endpoint). The
-	// /epics list endpoint doesn't return it explicitly; the caller
-	// sets it after FetchEpics returns.
-	GroupID int `json:"-"`
-
 	// Issues is populated by FetchEpicIssues after the bare /epics list
 	// fetch — the list endpoint only returns a count, not the linked
 	// issues themselves. Map keeps this JSON-cleanable to a stub.
 	Issues []Issue `json:"-"`
-}
-
-// Date wraps time.Time to decode GitLab's date-only fields (e.g.
-// epic start_date / due_date) which arrive as "YYYY-MM-DD" rather
-// than RFC3339. The wrapped value is at midnight UTC of that date.
-type Date struct{ time.Time }
-
-// UnmarshalJSON accepts the three shapes GitLab emits for date fields:
-// null (absent), a JSON string in YYYY-MM-DD, or an RFC3339 datetime.
-// The pointer-nil semantics come from the surrounding struct.
-func (d *Date) UnmarshalJSON(b []byte) error {
-	if string(b) == "null" {
-		return nil
-	}
-	// Strip quotes and try formats.
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
-	for _, layout := range []string{"2006-01-02", time.RFC3339} {
-		if t, err := time.Parse(layout, s); err == nil {
-			d.Time = t
-			return nil
-		}
-	}
-	return fmt.Errorf("date: cannot parse %q as YYYY-MM-DD or RFC3339", s)
 }
 
 // Namespace is the parent of a GitLab project. Projects live under

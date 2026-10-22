@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
 	"github.com/inful/summarizer/internal/prompt"
 )
@@ -449,5 +450,130 @@ func TestRun_OrdersRollupInputLeastActiveFirst(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "group/aaa" || got[1] != "group/zzz" {
 		t.Errorf("rollup input order = %v; want least-active-first, which for equal counts is path order", got)
+	}
+}
+
+// TestEpicRollup_SharedEpicCountsArePerCustomer: an epic reaches more
+// than one customer bucket on purpose — policy.EpicCustomerCodes
+// unions the epic's labels with its issues' — and every one of those
+// files is published public: true.
+//
+// The EventCount used to be the epic's TOTAL in each of them, so a
+// shared epic told ACME how many events GLOBEX's issues contributed,
+// and told GLOBEX the same about ACME's. Each customer file may only
+// report the volume its own customer's issues produced.
+func TestEpicRollup_SharedEpicCountsArePerCustomer(t *testing.T) {
+	shared := epic(1, "Shared platform work", "org::ACME")
+	shared.Issues = []gitlab.Issue{
+		{IID: 10, Labels: []string{"org::ACME"}},
+		{IID: 11, Labels: []string{"org::GLOBEX"}},
+	}
+	// Three events under the epic: two ACME issues and one GLOBEX one.
+	// The epic's total is 3; each customer file may report only its own.
+	evs := []events.NormalizedEvent{
+		{Kind: events.KindIssue, Ref: "#10", Labels: []string{"org::ACME"}, Epic: shared},
+		{Kind: events.KindIssue, Ref: "#11", Labels: []string{"org::GLOBEX"}, Epic: shared},
+		{Kind: events.KindIssue, Ref: "#12", Labels: []string{"org::ACME"}, Epic: shared},
+	}
+	projects := []ProjectResult{{
+		Project:         "g/p",
+		CustomerOn:      true,
+		ActiveEpics:     []*gitlab.Epic{shared},
+		EpicEventCounts: epicEventCounts(evs, []*gitlab.Epic{shared}),
+	}}
+
+	want := map[string]int{"ACME": 2, "GLOBEX": 1}
+	got := map[string]int{}
+	for _, b := range bucketEpicsByCustomer(projects) {
+		if len(b.Entries) != 1 || len(b.Entries[0].Epics) != 1 {
+			t.Fatalf("%s bucket wrong: %+v", b.Customer, b.Entries)
+		}
+		got[b.Customer] = b.Entries[0].Epics[0].EventCount
+	}
+	if len(got) != len(want) {
+		t.Fatalf("buckets = %v, want %v", got, want)
+	}
+	for code, n := range want {
+		if got[code] != n {
+			t.Errorf("%s sees %d events, want %d — a shared epic's total in a "+
+				"public customer file discloses another customer's volume",
+				code, got[code], n)
+		}
+	}
+	// Pin the old value too: the epic's total is 3, and 3 is exactly
+	// what used to be printed in both files.
+	if total := projects[0].EpicEventCounts[1].Total; total != 3 {
+		t.Errorf("epic total = %d, want 3", total)
+	}
+}
+
+// TestEpicRollup_TeamAudienceKeepsTheTotal: the split is a customer-
+// audience concern only. The team file is not published public and
+// deliberately shows the whole fleet, so it keeps the epic's full count.
+func TestEpicRollup_TeamAudienceKeepsTheTotal(t *testing.T) {
+	shared := epic(1, "Shared platform work", "org::ACME")
+	shared.Issues = []gitlab.Issue{
+		{IID: 10, Labels: []string{"org::ACME"}},
+		{IID: 11, Labels: []string{"org::GLOBEX"}},
+	}
+	evs := []events.NormalizedEvent{
+		{Kind: events.KindIssue, Ref: "#10", Labels: []string{"org::ACME"}, Epic: shared},
+		{Kind: events.KindIssue, Ref: "#11", Labels: []string{"org::GLOBEX"}, Epic: shared},
+	}
+	projects := []ProjectResult{{
+		Project:         "g/p",
+		ActiveEpics:     []*gitlab.Epic{shared},
+		EpicEventCounts: epicEventCounts(evs, []*gitlab.Epic{shared}),
+	}}
+
+	buckets := bucketAllEpics(projects)
+	if len(buckets) != 1 || len(buckets[0].Entries) != 1 {
+		t.Fatalf("team bucket wrong: %+v", buckets)
+	}
+	if n := buckets[0].Entries[0].Epics[0].EventCount; n != 2 {
+		t.Errorf("team audience sees %d events, want the epic's total 2", n)
+	}
+}
+
+// TestEpicRollup_ConfidentialEpicNeverReachesACustomerFile: GitLab's
+// confidential flag is the epic owner saying "not for everyone". The
+// customer epic rollups are published public: true — docbuilder
+// exposes them externally — so a confidential epic must stay out of
+// them whatever its org:: labels say. The team file is internal and
+// keeps it.
+func TestEpicRollup_ConfidentialEpicNeverReachesACustomerFile(t *testing.T) {
+	projects := []ProjectResult{{
+		Project:    "g/p",
+		CustomerOn: true,
+		ActiveEpics: []*gitlab.Epic{
+			epic(1, "public work", "org::ACME"),
+			func() *gitlab.Epic {
+				e := epic(2, "under NDA", "org::ACME")
+				e.Confidential = true
+				return e
+			}(),
+		},
+		EpicEventCounts: map[int]EpicEvents{},
+	}}
+
+	for _, b := range bucketEpicsByCustomer(projects) {
+		for _, ent := range b.Entries {
+			for _, s := range ent.Epics {
+				if s.Epic.Confidential {
+					t.Errorf("confidential epic %q reached %s's public file", s.Epic.Title, b.Customer)
+				}
+			}
+		}
+	}
+	// ACME's file still exists — the public epic keeps it from being
+	// empty, so this is a filter, not a suppression.
+	got := bucketEpicsByCustomer(projects)
+	if len(got) != 1 || len(got[0].Entries[0].Epics) != 1 || got[0].Entries[0].Epics[0].Epic.Title != "public work" {
+		t.Errorf("ACME bucket = %+v, want only the public epic", got)
+	}
+	// The team audience is internal and keeps the whole fleet.
+	team := bucketAllEpics(projects)
+	if len(team) != 1 || len(team[0].Entries[0].Epics) != 2 {
+		t.Errorf("team bucket = %+v, want both epics", team)
 	}
 }

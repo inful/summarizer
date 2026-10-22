@@ -60,8 +60,17 @@ func (e *epicCountingServer) handler() http.Handler {
 			strings.Contains(p, "/issues"):
 			_, _ = w.Write([]byte(`[]`))
 		default:
-			// Project payload; namespace is a nested object.
-			_, _ = w.Write([]byte(`{"id":1,"default_branch":"main","topics":[],"namespace":{"kind":"group","full_path":"g"}}`))
+			// Project payload; namespace is a nested object. The
+			// group is the first path segment, so a test can put two
+			// projects in one group or in two.
+			group := p
+			if i := strings.Index(strings.TrimPrefix(p, "/api/v4/projects/"), "/"); i >= 0 {
+				group = strings.SplitN(strings.TrimPrefix(p, "/api/v4/projects/"), "/", 2)[0]
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 1, "default_branch": "main", "topics": []string{},
+				"namespace": map[string]string{"kind": "group", "full_path": group},
+			})
 		}
 	})
 	return mux
@@ -303,5 +312,53 @@ func TestRun_DryRunSkipsEpicFetch(t *testing.T) {
 	}
 	if srv.epicCalls != 0 {
 		t.Errorf("--dry-run made %d epic-list calls; it should make none", srv.epicCalls)
+	}
+}
+
+// TestFetchProjectEpics_OneFetchPerGroupNotPerProject: epics, their
+// child issues and the active-in-window filter are all GROUP-scoped —
+// only the namespace lookup is per-project. Without a per-group memo,
+// ten projects in one group re-fetched the group's epics list and the
+// same twenty epics' issues ten times: 50 projects over 5 groups cost
+// 1100 requests where 110 are distinct work, sequentially, on the
+// Sunday-night cron.
+func TestFetchProjectEpics_OneFetchPerGroupNotPerProject(t *testing.T) {
+	p, srv := newEpicPipeline(t, 3)
+	since, until := time.Now().Add(-7*24*time.Hour), time.Now()
+
+	for i, project := range []string{"g/p1", "g/p2", "g/p3"} {
+		epics, err := p.fetchProjectEpics(context.Background(), project, since, until)
+		if err != nil {
+			t.Fatalf("project %d: %v", i, err)
+		}
+		if len(epics) != 3 {
+			t.Fatalf("project %d: got %d epics, want 3", i, len(epics))
+		}
+	}
+	if srv.epicCalls != 1 {
+		t.Errorf("GET /groups/g/epics called %d times for 3 projects in one group, want 1", srv.epicCalls)
+	}
+	if srv.issueCalls != 3 {
+		t.Errorf("GET /groups/g/epics/:iid/issues called %d times, want 3 (one per epic, once)", srv.issueCalls)
+	}
+}
+
+// TestFetchProjectEpics_CacheIsPerGroup: a second group's epics must
+// not be served out of the first group's cache entry. The key is the
+// namespace path, so this is the case a wrong key would break.
+func TestFetchProjectEpics_CacheIsPerGroup(t *testing.T) {
+	p, srv := newEpicPipeline(t, 2)
+	since, until := time.Now().Add(-7*24*time.Hour), time.Now()
+
+	// The fixture answers every group the same way, so assert on the
+	// fetch count rather than on the contents: two groups must cost two
+	// list fetches.
+	for _, project := range []string{"g/p1", "other/p2"} {
+		if _, err := p.fetchProjectEpics(context.Background(), project, since, until); err != nil {
+			t.Fatalf("%s: %v", project, err)
+		}
+	}
+	if srv.epicCalls != 2 {
+		t.Errorf("two groups cost %d epics-list fetches, want 2", srv.epicCalls)
 	}
 }

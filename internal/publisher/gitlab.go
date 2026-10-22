@@ -205,10 +205,10 @@ func (g *GitLabPublisher) PeriodBranch(period string) string {
 // After every week's MR is merged into the default branch, the target
 // repo's main tree looks like:
 //
-//	reports/2026-W42/  group-proj--7d--customer.md
-//	                    group-proj--7d--team.md
-//	                    combined--rollup--7d--customer.md
-//	                    combined--rollup--7d--team.md
+//	reports/2026-W42/  group-proj--wk--customer.md
+//	                    group-proj--wk--team.md
+//	                    combined--rollup--wk--customer.md
+//	                    combined--rollup--wk--team.md
 //	reports/2026-W43/  ...
 //	reports/2026-09/   monthly--2026-09--customer.md   (monthly rollup)
 //
@@ -380,17 +380,15 @@ func (g *GitLabPublisher) Publish(ctx context.Context, req Request) (Result, err
 				req.Period, err, req.Name, branch, g.DefaultBranch)
 			return Result{
 				Ref:    fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path),
-				Branch: branch,
 				Closed: true,
 			}, nil
 		}
 		// File landed; an MR-side failure should still report the branch ref.
-		return Result{Ref: fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path), Branch: branch}, err
+		return Result{Ref: fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path)}, err
 	}
 	return Result{
-		Ref:    fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path),
-		Branch: branch,
-		MRURL:  mrURL,
+		Ref:   fmt.Sprintf("%s/-/blob/%s/%s", g.Host, branch, path),
+		MRURL: mrURL,
 	}, nil
 }
 
@@ -666,7 +664,7 @@ func visibilityLine(req Request) string {
 
 // projectLine renders the "Project(s)" row of the MR body. A per-project
 // file names its project; a rollup does not — printing req.Name there
-// put "combined--epics-acme--7d--customer.md" under a heading that says
+// put "combined--epics-acme--wk--customer.md" under a heading that says
 // projects, which is what a reviewer reads before merging.
 func projectLine(req Request) string {
 	if req.Project != "" {

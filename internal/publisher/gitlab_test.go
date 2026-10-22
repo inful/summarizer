@@ -545,7 +545,6 @@ func TestGitLabPublisher_PublishFlow(t *testing.T) {
 		Body:   []byte("# Customer weekly update\n\nShipped login.\n"),
 		Kind:   KindPerProject,
 		Period: "2026-10-19",
-		Title:  "customer",
 	})
 	if err != nil {
 		t.Fatalf("publish: %v", err)
@@ -561,9 +560,6 @@ func TestGitLabPublisher_PublishFlow(t *testing.T) {
 		t.Errorf("expected 1 MR creation, got %d", got)
 	}
 
-	if res.Branch != "summarizer/2026-10-19" {
-		t.Errorf("branch = %q, want summarizer/2026-10-19", res.Branch)
-	}
 	if !strings.HasPrefix(res.MRURL, "https://") || !strings.Contains(res.MRURL, "/merge_requests/42") {
 		t.Errorf("MR URL unexpected: %q", res.MRURL)
 	}
@@ -599,7 +595,7 @@ func TestGitLabPublisher_MRBodyNamesVisibilityNotKind(t *testing.T) {
 			srv := httptest.NewServer(f.handler())
 			defer srv.Close()
 			p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
-			tc.req.Body, tc.req.Period, tc.req.Title = []byte("x"), "2026-10-19", tc.name
+			tc.req.Body, tc.req.Period = []byte("x"), "2026-10-19"
 			if _, err := p.Publish(context.Background(), tc.req); err != nil {
 				t.Fatalf("publish: %v", err)
 			}
@@ -624,8 +620,7 @@ func TestGitLabPublisher_IdempotentSamePeriod(t *testing.T) {
 	f := &fakeGitLab{
 		mergeRequests: []mergeRequest{
 			{IID: 7, WebURL: "https://gitlab.example.com/group/reports/-/merge_requests/7",
-				State: "opened", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main",
-				Title: "old but open"},
+				State: "opened", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main"},
 		},
 	}
 	srv := httptest.NewServer(f.handler())
@@ -694,7 +689,7 @@ func TestGitLabPublisher_MultipleFilesOneBranch(t *testing.T) {
 func TestGitLabPublisher_MergedPeriodIsALoggedNoOp(t *testing.T) {
 	f := &fakeGitLab{
 		mergeRequests: []mergeRequest{
-			{IID: 5, WebURL: "x", State: "merged", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main", Title: "old"},
+			{IID: 5, WebURL: "x", State: "merged", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main"},
 		},
 	}
 	srv := httptest.NewServer(f.handler())
@@ -722,7 +717,7 @@ func TestGitLabPublisher_MergedPeriodIsALoggedNoOp(t *testing.T) {
 func TestGitLabPublisher_ClosedMRCountsAsPublished(t *testing.T) {
 	f := &fakeGitLab{
 		mergeRequests: []mergeRequest{
-			{IID: 6, WebURL: "x", State: "closed", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main", Title: "abandoned"},
+			{IID: 6, WebURL: "x", State: "closed", SourceBranch: "summarizer/2026-10-19", TargetBranch: "main"},
 		},
 	}
 	srv := httptest.NewServer(f.handler())
@@ -842,7 +837,7 @@ old body`, existingUID, existingUID))
 
 	_, err := p.Publish(context.Background(), Request{
 		Name: "x.md", Body: []byte("# new body"), Period: "2026-10-19",
-		Kind: KindPerProject, Title: "customer", Project: "group/proj", Public: true,
+		Kind: KindPerProject, Project: "group/proj", Public: true,
 	})
 	if err != nil {
 		t.Fatalf("publish: %v", err)
@@ -881,7 +876,7 @@ func TestGitLabPublisher_FreshFileMintsUUID(t *testing.T) {
 
 	_, err := p.Publish(context.Background(), Request{
 		Name: "fresh.md", Body: []byte("hello"), Period: "2026-10-19",
-		Kind: KindPerProject, Title: "team", Project: "group/proj",
+		Kind: KindPerProject, Project: "group/proj",
 	})
 	if err != nil {
 		t.Fatalf("publish: %v", err)
@@ -1030,7 +1025,7 @@ func TestGitLabPublisher_EveryFileOfARepublishedWeekIsMarkedClosed(t *testing.T)
 	f := &fakeGitLab{
 		mergeRequests: []mergeRequest{
 			{IID: 5, WebURL: "x", State: "merged",
-				SourceBranch: "summarizer/2026-10-19", TargetBranch: "main", Title: "old"},
+				SourceBranch: "summarizer/2026-10-19", TargetBranch: "main"},
 		},
 	}
 	srv := httptest.NewServer(f.handler())

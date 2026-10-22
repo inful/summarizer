@@ -189,17 +189,17 @@ func TestEpicEventCounts_ExactNotTitleMatch(t *testing.T) {
 	}
 	counts := epicEventCounts(evs, []*gitlab.Epic{epicA, epicB})
 
-	if counts[1] != 2 {
-		t.Errorf("epic 1: got %d, want 2", counts[1])
+	if counts[1].Total != 2 {
+		t.Errorf("epic 1: got %d, want 2", counts[1].Total)
 	}
-	if counts[2] != 1 {
-		t.Errorf("epic 2 with the same title: got %d, want 1", counts[2])
+	if counts[2].Total != 1 {
+		t.Errorf("epic 2 with the same title: got %d, want 1", counts[2].Total)
 	}
 	// An epic with no annotated events is present with a zero, not absent
 	// — the rollup still lists it, with "0 events".
 	counts = epicEventCounts(evs, []*gitlab.Epic{epicA, epicB, {IID: 99}})
-	if got, ok := counts[99]; !ok || got != 0 {
-		t.Errorf("unrelated epic: got (%d, %v), want (0, true)", got, ok)
+	if got, ok := counts[99]; !ok || got.Total != 0 {
+		t.Errorf("unrelated epic: got (%d, %v), want (0, true)", got.Total, ok)
 	}
 	// Nil epics in the slice must not panic.
 	if got := epicEventCounts(evs, []*gitlab.Epic{nil}); len(got) != 0 {

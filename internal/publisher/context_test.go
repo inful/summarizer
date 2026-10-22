@@ -34,7 +34,6 @@ func TestGitLabPublisher_ContextCancelsPublish(t *testing.T) {
 			Name:   "a--7d--team.md",
 			Period: "2026-W42",
 			Kind:   KindPerProject,
-			Title:  "team",
 		})
 		done <- err
 	}()
@@ -119,7 +118,6 @@ func TestGitLabPublisher_MRBodyNamesProjectsNotFilenames(t *testing.T) {
 		Name:    "combined--epics-acme--7d--customer.md",
 		Kind:    KindRollup,
 		Period:  "2026-W42",
-		Title:   "epics rollup for ACME customer",
 		Project: "", // rollups have no single project
 		Public:  true,
 	})

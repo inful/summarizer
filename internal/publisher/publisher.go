@@ -24,11 +24,10 @@ const (
 // Ref is set by the Publisher to whatever identifier the sink uses
 // (filesystem path, GitLab web URL, etc.).
 type Request struct {
-	Name    string   // file basename, e.g. "group-proj--7d--customer.md"
+	Name    string   // file basename, e.g. "group-proj--wk--customer.md"
 	Body    []byte   // raw Markdown bytes (no frontmatter wrapping)
 	Kind    FileKind // per-project or rollup
-	Period  string   // "2026-10-19" or "2026-W42" — the MR branch slug
-	Title   string   // human label for the MR, e.g. "epics rollup for ACME customer"
+	Period  string   // "2026-W42" or "2026-09" — the MR branch slug
 	Project string   // GitLab project path — used for frontmatter UID + tags
 
 	// Audience is "customer" or "team", and is what lands in the
@@ -39,6 +38,11 @@ type Request struct {
 	// "Cross-project rollup rollup customer report" and an audience
 	// *tag* that was a sentence. Audience is its own field so a
 	// display label can never leak into a machine-read one.
+	//
+	// The document's human-readable title is NOT a field: the GitLab
+	// publisher builds it from Project/Audience/Period/Kind in
+	// NewFrontmatter. Request.Title was set by every caller and read
+	// by none, so it looked load-bearing and was not.
 	Audience string
 
 	// Public controls docbuilder's external publication flag (the
@@ -51,9 +55,13 @@ type Request struct {
 
 // Result is what a Publisher returns from Publish.
 type Result struct {
-	Ref    string // display path / URL for the run summary log
-	Branch string // GitLab branch the file landed on; empty for local
-	MRURL  string // GitLab MR web URL when one was created or updated; empty for local
+	Ref string // display path / URL for the run summary log
+
+	// MRURL is the GitLab MR web URL when one was found or created;
+	// empty for local. Branch used to sit here too and was read by
+	// nothing — the run summary reports Ref, which already carries the
+	// branch in its blob URL.
+	MRURL string
 
 	// Closed is true when the period's MR had already been merged or
 	// closed, so Ref points at a branch that will never reach the

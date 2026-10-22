@@ -133,6 +133,27 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+// TestDefaults_AnthropicGetsItsOwnModel: the model default is
+// per-provider. One default for both meant `--provider anthropic` on a
+// config with no `model:` posted gpt-4o-mini to api.anthropic.com,
+// which answers 404 model_not_found — and the README offers that flag
+// as a headline example.
+func TestDefaults_AnthropicGetsItsOwnModel(t *testing.T) {
+	// Order matters and is what cmd/ does: the provider override lands
+	// before Defaults(), so Defaults() must read the resolved provider.
+	cfg := &Config{GitLabHost: "https://gitlab.example.com", Provider: "anthropic"}
+	cfg.Defaults()
+	if cfg.Model != "claude-3-5-haiku-latest" {
+		t.Errorf("anthropic default model: got %q, want claude-3-5-haiku-latest", cfg.Model)
+	}
+	// An explicit model still wins over the provider default.
+	pinned := &Config{Provider: "anthropic", Model: "claude-sonnet-4-5"}
+	pinned.Defaults()
+	if pinned.Model != "claude-sonnet-4-5" {
+		t.Errorf("Defaults overwrote an explicit model: %q", pinned.Model)
+	}
+}
+
 // TestValidate: the required-host check, the provider enum, and the
 // MaxEvents floor.
 func TestValidate(t *testing.T) {

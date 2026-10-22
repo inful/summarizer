@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -135,7 +136,16 @@ Example:
 	res, err := runner.Run(ctx, *month)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: monthly rollup: %v\n", err)
-		return exitGitLab
+		// Not exitGitLab for everything. runner.Run can fail at the
+		// guard (ErrInjection), at the LLM, or at the publish, and a
+		// cron wrapper that alerts on 5 or 8 has to see those codes —
+		// the same table README.md documents for `run`. Injection is
+		// checked explicitly rather than through classify() because
+		// that helper is a string match and ErrInjection is a sentinel.
+		if errors.Is(err, run.ErrInjection) {
+			return exitInjection
+		}
+		return classify(err)
 	}
 
 	fmt.Fprintf(os.Stderr, "summarizer: monthly %s read %d week(s): %s",

@@ -212,3 +212,29 @@ func TestPrintSummary_NoAlreadyPublishedNoteWhenNoneWereClosed(t *testing.T) {
 		t.Errorf("want 1 file:\n%s", out)
 	}
 }
+
+// TestClassify_MonthlyErrorShapesGetRealCodes: `summarizer monthly`
+// used to return exitGitLab for every failure, so an LLM outage and a
+// prompt-injection rejection both looked like a GitLab problem to a cron
+// wrapper. The documented table (README) promises distinct codes, and a
+// wrapper that alerts on 5 or 8 has to receive them.
+func TestClassify_MonthlyErrorShapesGetRealCodes(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"list branches failed", errors.New("fetch branches: 502 Bad Gateway"), exitGitLab},
+		{"llm failed", errors.New("llm monthly customer: 429 rate limited"), exitLLM},
+		{"publish failed", errors.New("write monthly team: 500 oops"), exitWrite},
+		{"template failed", errors.New("render monthly rollup customer: bad template"), exitLLM},
+		{"bad --month", errors.New(`month "2026-13": want YYYY-MM`), exitConfig},
+		{"no weeks published", errors.New("no weekly rollups found for 2026-09"), exitUnknown},
+		{"injection wins over the string match", fmt.Errorf("%w (score=0.910): monthly-rollup", run.ErrInjection), exitInjection},
+	}
+	for _, c := range cases {
+		if got := classify(c.err); got != c.want {
+			t.Errorf("%s: classify(%v) = %d, want %d", c.name, c.err, got, c.want)
+		}
+	}
+}

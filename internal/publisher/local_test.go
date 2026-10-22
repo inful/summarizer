@@ -75,3 +75,44 @@ func TestLocal_CreatesMissingDirectories(t *testing.T) {
 		t.Errorf("file not at %s: %v", res.Ref, statErr)
 	}
 }
+
+// TestLocal_CancelledRunLeavesThePreviousFileIntact: the writer took a
+// ctx and never read it, so Ctrl-C mid-write went unnoticed and the run
+// reported success for a file nobody asked it to finish. The check sits
+// immediately before the rename — the last moment the previous period's
+// file is still intact — so a cancelled run must leave it untouched and
+// must not leave a temp file behind.
+func TestLocal_CancelledRunLeavesThePreviousFileIntact(t *testing.T) {
+	dir := t.TempDir()
+	l := NewLocal(dir)
+	req := Request{Name: "proj--wk--team.md", Body: []byte("first run"), Period: "2026-W43"}
+
+	if _, err := l.Publish(context.Background(), req); err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	target := filepath.Join(dir, "2026-W43", "proj--wk--team.md")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req.Body = []byte("second run, cancelled")
+	if _, err := l.Publish(ctx, req); err == nil {
+		t.Fatal("a cancelled context must not report success")
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("previous file should still be readable: %v", err)
+	}
+	if string(got) != "first run" {
+		t.Errorf("target = %q, want the previous run's content left intact", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "2026-W43"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("cancelled run left a temp file behind: %s", e.Name())
+		}
+	}
+}

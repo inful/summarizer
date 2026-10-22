@@ -60,10 +60,10 @@ func TestEpic_LabelsEmptyDefaultsToNil(t *testing.T) {
 	if len(e.Labels) != 0 {
 		t.Errorf("missing labels field should be empty/nil, got %v", e.Labels)
 	}
-	// and CreatedAt still parses correctly so a label-less epic
-	// remains useful for the active-epic filter.
-	if e.CreatedAt.IsZero() {
-		t.Error("CreatedAt lost on label-less unmarshal")
+	// and UpdatedAt still parses correctly, since the active-epic
+	// selection sort and FilterActiveEpics both key on it.
+	if e.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt lost on label-less unmarshal")
 	}
 	_ = time.Time{}
 }

@@ -63,18 +63,6 @@ go build -ldflags "-X main.version=vX.Y.Z -X main.commit=$(git rev-parse HEAD) -
 
 When the project lives under a GitLab group with Premium/Ultimate epics, the per-project report also surfaces them — events grouped under epic headers in an `## Epics active this period` section, with non-epic events flowing to `## Other activity`. Free-tier and user-namespace projects render flat as before. See `docs/how-it-works.md` for the data flow and `docs/deferred.md` for what deliberately is not yet included.
 
-## Install
-
-```bash
-go install github.com/inful/summarizer/cmd/summarizer@latest
-```
-
-Or build from source:
-
-```bash
-go build -o bin/summarizer ./cmd/summarizer
-```
-
 ## Configure
 
 Copy `examples/summarizer.yaml` to `./summarizer.yaml` (or pass `--config path/to/file.yaml`). The only required field is `gitlab_host`.
@@ -254,14 +242,15 @@ For a project with 50 MRs, `--include-diffs` adds one extra HTTP round-trip per 
 # Dry-run: fetch GitLab, print event count, no LLM call, no file write.
 summarizer run --project group/subgroup/project --dry-run
 
-# Real run: default 7-day window, two reports to ./summarizer-out/.
+# Real run: this ISO week, two reports to ./summarizer-out/.
 summarizer run --project group/subgroup/project
 
-# Custom window + provider.
+# Switch provider. The model default is per-provider, so this needs no
+# --model; set one in summarizer.yaml if you want something else.
 summarizer run --project group/subgroup/project --provider anthropic
 
 # Cron-friendly: period buckets overwrite in place, so a second run of
-# are weeks, so a re-run always overwrites the same path in place.
+# the same week rewrites the same path rather than piling up files.
 summarizer run --project group/subgroup/project
 
 # Multi-project: --project is repeatable; comma-separated works too.
@@ -428,13 +417,17 @@ both subcommands.
 |------|---------------------------------------------|
 | 0    | Success                                     |
 | 2    | Usage error (missing flag, bad subcommand)  |
-| 3    | Config error (missing/invalid YAML)         |
+| 3    | Config error (missing/invalid YAML, bad `--month`) |
 | 4    | GitLab fetch failure                        |
 | 5    | LLM call failure                            |
 | 6    | File write failure (e.g. target exists)     |
 | 7    | Missing env var (token / API key)           |
 | 8    | Prompt-injection guard rejected a prompt    |
 | 1    | Unclassified failure (see stderr)           |
+
+Both subcommands use this table. `summarizer monthly` used to return 4 for
+every failure, so an LLM outage or a guard rejection in the monthly path
+looked like a GitLab problem to a wrapper branching on these codes.
 
 ## Layout
 

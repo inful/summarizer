@@ -437,6 +437,13 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 // are not necessarily wrapped with a recognizable error type yet, so this is
 // a string-match pass. Tighten with typed sentinels if exit-code fidelity
 // becomes important.
+//
+// Shared by `run` and `monthly`: both wrap their failures in the same few
+// prefixes, so this is the single place deciding what a cron wrapper sees. A
+// new error string that starts with none of them falls to exitUnknown — the
+// honest answer, since we cannot tell which branch it belongs in — but the
+// operator gets 1 instead of a useful code, so new errors should reuse a
+// prefix rather than invent one.
 func classify(err error) int {
 	if err == nil {
 		return exitOK
@@ -453,7 +460,10 @@ func classify(err error) int {
 		return exitLLM
 	case strings.Contains(msg, "write "):
 		return exitWrite
-	case strings.Contains(msg, "config"):
+	// "want YYYY-MM" is parseMonth rejecting a --month flag value; it is
+	// a malformed-input error, not a config-file one. Matched on the
+	// tail rather than the whole string because %q renders the value.
+	case strings.Contains(msg, "config"), strings.Contains(msg, "want YYYY-MM"):
 		return exitConfig
 	case strings.Contains(msg, "render"):
 		return exitLLM

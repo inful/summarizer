@@ -84,7 +84,7 @@ type ProjectResult struct {
 	// thousands), and holding one per project for the whole run to
 	// produce twenty integers is memory that only grows. This carries
 	// the same information in a fraction of the space.
-	EpicEventCounts map[int]int
+	EpicEventCounts map[int]EpicEvents
 }
 
 // Result describes what the run produced. Used by main to write the stderr
@@ -114,11 +114,30 @@ type Pipeline struct {
 	// every Run.
 	lastActiveEpics map[string][]*gitlab.Epic
 
+	// runUntil is the window's upper bound, taken once per Run beside
+	// the other per-run state. It used to be time.Now() at the call
+	// site, which drifts per project — and once groupEpics made the
+	// window a cache key, a drifting bound meant later projects were
+	// silently filtered by an earlier project's "now".
+	runUntil time.Time
+
+	// groupEpics caches fetchProjectEpics per GROUP path. Epics, their
+	// child issues and the active-in-window filter are all group-scoped
+	// — only the namespace lookup is per-project — so without this the
+	// ten projects of one group fetched the same epics list and the same
+	// twenty epics' issues ten times. 50 projects over 5 groups with 20
+	// active epics each: 1100 requests where 110 are distinct work.
+	//
+	// The cached slice is read-only after construction: AttachEpics
+	// stores the *gitlab.Epic pointers on events and the rollups read
+	// labels off them, and nothing writes. Cleared with
+	// lastActiveEpics at the start of every Run, since the window moves.
+	groupEpics map[string][]*gitlab.Epic
+
 	// Resolution totals from the last resolveProjects call, so the
 	// "nothing to run" line can report real numbers instead of the
 	// hardcoded zeros it used to print — which contradicted the
 	// per-project exclusion lines printed immediately above it.
-	lastIncluded int
 	lastExcluded int
 }
 
@@ -135,7 +154,10 @@ func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Pu
 	if g == nil {
 		g = safety.NoopGuard{}
 	}
-	return &Pipeline{Cfg: cfg, GitLab: gc, LLM: p, Publisher: pub, Guard: g, Opts: opts}
+	return &Pipeline{
+		Cfg: cfg, GitLab: gc, LLM: p, Publisher: pub, Guard: g, Opts: opts,
+		groupEpics: map[string][]*gitlab.Epic{},
+	}
 }
 
 // Run executes the pipeline. Returns a Result on success; on failure
@@ -152,7 +174,9 @@ func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Pu
 func (p *Pipeline) Run(ctx context.Context) (Result, error) {
 	res := Result{Projects: []ProjectResult{}, TokensByAudience: map[string]llm.Usage{}}
 	p.lastActiveEpics = make(map[string][]*gitlab.Epic)
-	p.lastIncluded, p.lastExcluded = 0, 0
+	p.groupEpics = make(map[string][]*gitlab.Epic)
+	p.runUntil = time.Now().UTC()
+	p.lastExcluded = 0
 
 	if len(p.Opts.Projects) == 0 && len(p.Opts.DiscoveredGroups) == 0 && !p.Opts.DiscoverByTopic && !p.Opts.DiscoverActive {
 		return res, errors.New("at least one --project, --discover-group, --discover-by-topic or --discover-active is required")
@@ -343,7 +367,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		all = append(all, events.Commit(c))
 	}
 
-	epics, err := p.fetchProjectEpics(ctx, project, since, time.Now().UTC())
+	epics, err := p.fetchProjectEpics(ctx, project, since, p.runUntil)
 	if err != nil {
 		// Epic failure is non-fatal: skip the epic section but keep the
 		// run. Anything other than the (already-soft-degraded) 403/404
@@ -416,7 +440,6 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			Body:     []byte(text),
 			Kind:     publisher.KindPerProject,
 			Period:   period,
-			Title:    string(aud),
 			Audience: string(aud),
 			Project:  project,
 			Public:   aud == prompt.AudienceCustomer,
@@ -442,13 +465,11 @@ type audienceInputs struct {
 	parts func(prompt.Audience) ([]rollupPart, error)
 }
 
-// rollupPart is one published file: a filename segment, a frontmatter
-// title prefix, and the rendered prompt. A rollup that splits by
-// customer returns one part per customer; one that doesn't returns a
-// single part.
+// rollupPart is one published file: a filename segment and the
+// rendered prompt. A rollup that splits by customer returns one part
+// per customer; one that doesn't returns a single part.
 type rollupPart struct {
 	name   string // filename kind segment, e.g. "epics-rollup", "epics-acme"
-	title  string // frontmatter title prefix
 	system string
 	user   string
 }
@@ -510,7 +531,6 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				Body:     []byte(resp.Text),
 				Kind:     publisher.KindRollup,
 				Period:   p.Opts.Period,
-				Title:    part.title + " " + string(aud),
 				Audience: string(aud),
 				Project:  "",
 				Public:   aud == prompt.AudienceCustomer,
@@ -548,7 +568,7 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 			if err != nil {
 				return nil, fmt.Errorf("render rollup %s: %w", aud, err)
 			}
-			return []rollupPart{{name: "rollup", title: "rollup", system: system, user: user}}, nil
+			return []rollupPart{{name: "rollup", system: system, user: user}}, nil
 		},
 	})
 }
@@ -585,11 +605,16 @@ type epicRollupPart struct {
 // MORE THAN ONE bucket, on purpose: policy.EpicCustomerCodes unions the
 // epic's own org:: labels with those of its child issues, so an epic
 // tagged org::ACME carrying a GLOBEX-tagged issue appears in both ACME's
-// file and GLOBEX's. That is safe today only because the templates
-// render epic-level fields alone. The moment a template starts printing
-// Epic.Issues, the issues arrive unfiltered and ACME's customer report
-// lists GLOBEX's tasks. Filter e.Issues to the bucket's code when
-// building EpicSummary, before that work lands.
+// file and GLOBEX's. Both files are published public: true.
+//
+// The EventCount was the first field this applied to, and it leaked:
+// the epic's TOTAL went into every bucket, so ACME's file reported
+// GLOBEX's volume. It now carries ev.ByCustomer[code] — the events that
+// customer's own issues contributed. The trap for the next field is
+// the same shape: EpicSummary hands the whole *gitlab.Epic to the
+// template, Epic.Issues included. The moment a template prints them,
+// filter e.Issues to the bucket's code when building EpicSummary,
+// before that work lands.
 //
 // The team audience is not split — internal readers want the whole
 // picture, so its single combined part is built by bucketAllEpics.
@@ -620,22 +645,35 @@ func bucketEpicsByCustomer(projects []ProjectResult) []epicRollupPart {
 		}
 		perCode := make(map[string][]prompt.EpicSummary)
 		for _, e := range pr.ActiveEpics {
+			// A confidential epic is GitLab's own "not for everyone"
+			// flag. This audience's files are published public: true,
+			// so it cannot go here whatever its labels say. The team
+			// bucket keeps it — that file is internal and the team is
+			// who marked it.
+			if e.Confidential {
+				continue
+			}
 			// Inheritance: org::* labels on the epic OR on its
 			// child issues both attribute the epic to a customer.
 			// An unlabelled epic with one child issue labelled
 			// org::ACME is still an ACME epic.
 			codes := policy.EpicCustomerCodes(e)
-			// Counted once per epic, not once per customer bucket: it
-			// is a property of the epic, not of the attribution.
-			n := pr.EpicEventCounts[e.IID]
 			if len(codes) == 0 {
 				// No org:: anywhere → not this audience's business.
 				// Skipped rather than filed under a catch-all; see
 				// the note above.
 				continue
 			}
+			// Per-customer volume, not the epic's total. A shared epic
+			// lands in several of these files and each is published
+			// with public: true, so ACME's file must not report how
+			// many events GLOBEX's issues contributed.
+			ev := pr.EpicEventCounts[e.IID]
 			for _, code := range codes {
-				perCode[code] = append(perCode[code], prompt.EpicSummary{Epic: e, EventCount: n})
+				perCode[code] = append(perCode[code], prompt.EpicSummary{
+					Epic:       e,
+					EventCount: ev.ByCustomer[code],
+				})
 			}
 		}
 		for code, summaries := range perCode {
@@ -680,9 +718,12 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 		}
 		summaries := make([]prompt.EpicSummary, 0, len(pr.ActiveEpics))
 		for _, e := range pr.ActiveEpics {
+			// The whole fleet's view, so the epic's full total —
+			// internal readers want the whole picture, which is the
+			// reason this audience is not split per customer.
 			summaries = append(summaries, prompt.EpicSummary{
 				Epic:       e,
-				EventCount: pr.EpicEventCounts[e.IID],
+				EventCount: pr.EpicEventCounts[e.IID].Total,
 			})
 		}
 		entries = append(entries, prompt.EpicRollupEntry{Project: pr.Project, Epics: summaries})
@@ -718,12 +759,11 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 				if err != nil {
 					return nil, fmt.Errorf("render epics rollup %s: %w", aud, err)
 				}
-				name, title := "epics-rollup", "epics rollup"
+				name := "epics-rollup"
 				if b.Customer != "" {
 					name = "epics-" + slugCustomer(b.Customer)
-					title = "epics rollup for " + b.Customer
 				}
-				parts = append(parts, rollupPart{name: name, title: title, system: system, user: user})
+				parts = append(parts, rollupPart{name: name, system: system, user: user})
 			}
 			return parts, nil
 		},
@@ -734,9 +774,26 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 // no inputs, so no file should be published for it.
 var errSkipAudience = errors.New("no inputs for this audience")
 
-// epicEventCounts maps each epic IID to the number of events belonging
-// to it. Exact: AttachEpics annotates every issue event with the epic
-// that contains it, so this counts real annotations rather than
+// EpicEvents is one epic's event count for one project, split by
+// customer.
+//
+// Total is every event the epic owns and is what the team audience
+// sees. ByCustomer is the per-customer split, and it is NOT Total
+// spread across buckets: policy.EpicCustomerCodes attributes an epic
+// to every customer that labels the epic OR any of its issues, so one
+// epic can appear in ACME's report and GLOBEX's report at once. Each
+// of those files is published with public: true, so each may only
+// report the volume its own customer owns — an epic's event count
+// printed in full in a customer's file tells that customer how much
+// work another one did.
+type EpicEvents struct {
+	Total      int
+	ByCustomer map[string]int
+}
+
+// epicEventCounts maps each epic IID to its event count for this
+// project. Exact: AttachEpics annotates every issue event with the
+// epic that contains it, so this counts real annotations rather than
 // searching rendered text.
 //
 // The previous implementation counted occurrences of the epic's title in
@@ -746,20 +803,34 @@ var errSkipAudience = errors.New("no inputs for this audience")
 //
 // One pass over the events serves every epic, where counting per epic
 // was O(epics x events).
-func epicEventCounts(evs []events.NormalizedEvent, epics []*gitlab.Epic) map[int]int {
-	counts := make(map[int]int, len(epics))
+func epicEventCounts(evs []events.NormalizedEvent, epics []*gitlab.Epic) map[int]EpicEvents {
+	counts := make(map[int]EpicEvents, len(epics))
 	for _, e := range epics {
 		if e != nil {
-			counts[e.IID] = 0
+			counts[e.IID] = EpicEvents{ByCustomer: map[string]int{}}
 		}
 	}
 	for _, ev := range evs {
 		if ev.Epic == nil {
 			continue
 		}
-		if _, tracked := counts[ev.Epic.IID]; tracked {
-			counts[ev.Epic.IID]++
+		c, tracked := counts[ev.Epic.IID]
+		if !tracked {
+			continue
 		}
+		c.Total++
+		// The event IS an issue (AttachEpics only annotates Issue
+		// kinds), so its own labels are the issue's. Attribute the
+		// event to every customer that names it, so a shared epic
+		// contributes only its own customers' volume to each of
+		// their files. The epic's own labels are deliberately NOT
+		// added here: an epic tagged org::ACME is still attributed
+		// to ACME by EpicCustomerCodes, but the events counted for
+		// ACME are the ones ACME's own issues carry.
+		for _, code := range policy.CustomerCodes(ev.Labels) {
+			c.ByCustomer[code]++
+		}
+		counts[ev.Epic.IID] = c
 	}
 	return counts
 }
@@ -905,10 +976,6 @@ func checkPrompt(ctx context.Context, g safety.Guard, label, prompt string) erro
 	return nil
 }
 
-// filename: <sanitized project>--<since-days>d--<audience>.md. The "since"
-// is encoded in the filename so re-runs land on different files; combined
-// with the refuse-first policy in writer, double-runs are safe.
-
 // changeConcurrency caps how many /merge_requests/:iid/changes calls run
 // in parallel. The endpoint is one HTTP round-trip per MR; without this,
 // a 50-MR week serializes to ~50 seconds on a slow connection. 4 is small
@@ -998,6 +1065,16 @@ func fillMRDetail(ctx context.Context, gc *gitlab.Client, project string, mrs []
 // surfacing an error. 401s and 5xxs DO hard-fail the project — those
 // are real problems the operator must see.
 func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since, until time.Time) ([]*gitlab.Epic, error) {
+	// Pipeline's fields are exported, so a struct literal is a
+	// legitimate way to build one and groupEpics and runUntil arrive
+	// zero. Seed them here rather than panicking on the first write or
+	// filtering against the year 1.
+	if p.groupEpics == nil {
+		p.groupEpics = make(map[string][]*gitlab.Epic)
+	}
+	if p.runUntil.IsZero() {
+		p.runUntil = until
+	}
 	ns, err := p.GitLab.FetchProjectNamespace(ctx, project)
 	if err != nil {
 		return nil, err
@@ -1007,11 +1084,19 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 		// don't have epics. Skip silently; not an error.
 		return nil, nil
 	}
+	// Everything below this line is group-scoped, so the whole of it is
+	// served from the cache for the group's second and later projects.
+	// The ok-check rather than a nil check: a group with no epics, or
+	// with none active in the window, caches nil and must still be a hit.
+	if epics, cached := p.groupEpics[ns.FullPath]; cached {
+		return epics, nil
+	}
 	raw, err := p.GitLab.FetchEpics(ctx, ns.FullPath)
 	if err != nil {
 		return nil, err
 	}
 	if len(raw) == 0 {
+		p.groupEpics[ns.FullPath] = nil
 		return nil, nil
 	}
 	// Two different orders, for two different jobs.
@@ -1079,7 +1164,9 @@ func (p *Pipeline) fetchProjectEpics(ctx context.Context, project string, since,
 	for i := range raw {
 		all = append(all, &raw[i])
 	}
-	return events.FilterActiveEpics(all, since, until), nil
+	active := events.FilterActiveEpics(all, since, until)
+	p.groupEpics[ns.FullPath] = active
+	return active, nil
 }
 
 // projectTopics fetches the project's GitLab topic list, used by
@@ -1131,7 +1218,17 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	// and of what the operator chose. The project-owner signal wins: a
 	// cron line is not a licence to publish something the project asked
 	// not to be published.
+	// One project, one run. A path repeated in --project (or reached
+	// by two discovery sources below) used to be run twice: two LLM
+	// calls per audience, two commits on the branch, two entries in the
+	// cross-project rollup. First occurrence wins, matching the
+	// explicit-wins-on-overlap rule the discovered path already had.
+	admitted := make(map[string]bool, len(opts.Projects))
 	for _, path := range opts.Projects {
+		if admitted[path] {
+			fmt.Fprintf(os.Stderr, "  duplicate ignored: %s\n", path)
+			continue
+		}
 		summary, err := gc.FetchProjectSummary(ctx, path)
 		if err != nil {
 			return nil, nil, excluded, fmt.Errorf("fetch project %s: %w", path, err)
@@ -1150,6 +1247,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 			continue
 		}
 		included++
+		admitted[path] = true
 		finalList = append(finalList, path)
 	}
 
@@ -1176,6 +1274,15 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		// Skip projects already explicit-listed (dedupe wins to
 		// the explicit listing: FromDiscovery stays false).
 		if slices.Contains(opts.Projects, proj.Path) {
+			return nil
+		}
+		// Skip projects an EARLIER discovery loop already admitted.
+		// The README documents --discover-by-topic composing with
+		// --discover-group, and the group loops compose with
+		// --discover-active; a project two of them both surface was
+		// run twice, costing a full extra pair of LLM calls and a
+		// duplicated section in the rollup.
+		if admitted[proj.Path] {
 			return nil
 		}
 		// Skip the reports project. Its merge requests ARE summarizer's
@@ -1227,6 +1334,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 			return nil
 		}
 		included++
+		admitted[proj.Path] = true
 		finalList = append(finalList, proj.Path)
 		discoveredSet[proj.Path] = true
 		fmt.Fprintf(os.Stderr, "  included:%s %s last_activity_at=%s\n",
@@ -1324,14 +1432,16 @@ func discoveryTopics() []string {
 	return []string{policy.TopicSummarize, policy.TopicSummarizeTeamOnly}
 }
 
-// windowDays renders the window as the "Nd" segment every report
-// filename carries.
-// doesn't produce a file named "--0d--".
-// filename and rollupFilename carry the constant "wk" window token.
-// There is only one window — the current ISO week — so the token
-// records nothing that the period directory does not already say. It
-// is kept because the filenames were designed around it and docbuilder
-// may key on it; a second window is not a thing this tool has.
+// filename is the per-project report name: <sanitized project>--wk--<audience>.md.
+// The "wk" is the window token, and it is a constant — there is only one
+// window, the current ISO week, so the token records nothing the period
+// directory does not already say. It stays because the filenames were
+// designed around it and docbuilder may key on it; a second window is not
+// a thing this tool has.
+//
+// The project path is what makes the name unique. It goes through
+// sanitize, which drops every byte outside [A-Za-z0-9_-] and turns "/" into
+// "_".
 func filename(project string, aud prompt.Audience) string {
 	return fmt.Sprintf("%s--wk--%s.md", sanitize(project), aud)
 }

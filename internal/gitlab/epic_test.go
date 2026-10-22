@@ -11,16 +11,16 @@ import (
 	"time"
 )
 
-// TestEpic_UnmarshalShape: GitLab returns epics with start/due_date as
-// nullable strings. Pins the JSON shape our scanner expects so an
-// upstream field rename or type change fails here first.
+// TestEpic_UnmarshalShape: GitLab returns epics with nullable and
+// optional fields summarizer does not model. Pins the JSON shape the
+// scanner actually reads so an upstream field rename fails here first.
 func TestEpic_UnmarshalShape(t *testing.T) {
 	body := `{
 		"id": 1, "iid": 7,
 		"title": "Deploy v2 architecture",
 		"description": "Plan for the v2 cutover",
 		"state": "opened",
-		"confidential": false,
+		"confidential": true,
 		"web_url": "https://gitlab.example.com/groups/infra/-/epics/7",
 		"start_date": "2026-09-01",
 		"due_date": "2026-12-31",
@@ -35,22 +35,14 @@ func TestEpic_UnmarshalShape(t *testing.T) {
 	if e.IID != 7 || e.Title != "Deploy v2 architecture" || e.State != "opened" {
 		t.Errorf("core fields not decoded: %+v", e)
 	}
-	if e.StartDate == nil || e.DueDate == nil {
-		t.Fatalf("nullable date fields should decode when present: %+v", e)
+	if !e.UpdatedAt.Equal(time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)) {
+		t.Errorf("updated_at: got %v", e.UpdatedAt)
 	}
-}
-
-// TestEpic_UnmarshalShape_NullDates: a real GitLab response returns
-// null start_date / due_date on epics without a date. The decoder must
-// accept null without failure and leave the pointer nil.
-func TestEpic_UnmarshalShape_NullDates(t *testing.T) {
-	body := `{"iid": 1, "title": "x", "state": "opened", "start_date": null, "due_date": null}`
-	var e Epic
-	if err := json.Unmarshal([]byte(body), &e); err != nil {
-		t.Fatalf("unmarshal with null dates should not error: %v", err)
+	if !e.Confidential {
+		t.Error("confidential must decode; the customer epic rollup filters on it")
 	}
-	if e.StartDate != nil || e.DueDate != nil {
-		t.Errorf("null dates should leave pointer nil, got %+v", e)
+	if e.ClosedAt != nil {
+		t.Errorf("closed_at null should stay nil: %v", e.ClosedAt)
 	}
 }
 

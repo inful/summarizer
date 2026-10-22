@@ -138,7 +138,7 @@ Each period gets its own subdirectory on both publishers:
 `<output_dir>/<YYYY-Www>/<name>` locally, `<prefix>/<YYYY-Www>/<name>`
 in the target repo. That is what stops one week's reports from
 overwriting the previous week's — the filenames themselves carry the
-window (`--7d`) but not the date.
+constant `--wk` window token but not the date.
 
 (There is no `--force`; it was removed when week buckets made
 refuse-first unreachable. A run inside a period always overwrites it,

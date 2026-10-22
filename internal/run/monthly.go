@@ -81,7 +81,7 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 	// pushed); skip it rather than failing the whole month.
 	branches, err := r.Reader.ListPeriodBranches(ctx)
 	if err != nil {
-		return res, fmt.Errorf("list period branches: %w", err)
+		return res, fmt.Errorf("fetch branches: %w", err)
 	}
 	present := make(map[string]bool, len(branches))
 	for _, b := range branches {
@@ -146,13 +146,12 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 			Body:     []byte(resp.Text),
 			Kind:     publisher.KindRollup,
 			Period:   monthlySlug(month),
-			Title:    "monthly rollup " + string(aud),
 			Audience: string(aud),
 			Project:  "",
 			Public:   aud == prompt.AudienceCustomer,
 		})
 		if err != nil {
-			return res, fmt.Errorf("publish monthly %s: %w", aud, err)
+			return res, fmt.Errorf("write monthly %s: %w", aud, err)
 		}
 		res.Files = append(res.Files, out.Ref)
 		if aud == prompt.AudienceCustomer {
