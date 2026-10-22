@@ -27,8 +27,17 @@ import (
 //
 // An issue with no project reference cannot be placed in this project
 // and is skipped. That is the safe direction: GitLab has sent
+// An issue with no project reference cannot be placed in this project
+// and is skipped. That is the safe direction: GitLab has sent
 // references.full on this endpoint since 11.0, and a mis-attribution
 // costs a customer their own work.
+//
+// The comparison is case-insensitive because GitLab project routes
+// are. `--project Group/Sub/App` reaches the same project as
+// `group/sub/app` and works for MRs, issues, commits and discovery —
+// so an exact compare would have made the epic section the one place
+// where the operator's spelling mattered, and it would have failed
+// silently.
 //
 // On duplicate (project, IID) across epics — an operator-side mistake
 // in GitLab itself — the first epic wins. The cost of ambiguous data is
@@ -41,7 +50,7 @@ func AttachEpics(es []NormalizedEvent, epics []*gitlab.Epic, project string) {
 	byIID := make(map[int]*gitlab.Epic, 64)
 	for _, e := range epics {
 		for _, iss := range e.Issues {
-			if iss.Project() != project {
+			if !strings.EqualFold(iss.Project(), project) {
 				continue
 			}
 			if _, seen := byIID[iss.IID]; seen {

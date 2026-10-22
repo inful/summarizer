@@ -215,3 +215,29 @@ func TestAttachEpics_SkipsIssuesWithNoProjectReference(t *testing.T) {
 		t.Errorf("an issue with no project reference must not be correlated: %+v", evs[0].Epic)
 	}
 }
+
+// TestAttachEpics_ProjectMatchIsCaseInsensitive: GitLab project routes
+// are case-insensitive, so `--project Group/Sub/App` reaches the same
+// project as the canonical `group/sub/app` and works for MRs, issues,
+// commits and discovery. An exact compare made the epic section the
+// one place the operator's spelling mattered — and it failed silently,
+// with every epic gone from every rollup.
+func TestAttachEpics_ProjectMatchIsCaseInsensitive(t *testing.T) {
+	epic := &gitlab.Epic{IID: 1, Title: "Platform", Issues: []gitlab.Issue{
+		{IID: 10, Title: "login breaks", References: gitlab.IssueRef{Full: "group/sub/App#10"}},
+	}}
+	for _, typed := range []string{"group/sub/App", "group/sub/app", "Group/Sub/App", "GROUP/SUB/APP"} {
+		evs := []NormalizedEvent{{Kind: KindIssue, Ref: "#10"}}
+		AttachEpics(evs, []*gitlab.Epic{epic}, typed)
+		if evs[0].Epic == nil {
+			t.Errorf("--project %q lost the epic; GitLab routes are case-insensitive", typed)
+		}
+	}
+	// And a genuinely different project still does not match, case
+	// aside — the filter is not just returning true for everything.
+	evs := []NormalizedEvent{{Kind: KindIssue, Ref: "#10"}}
+	AttachEpics(evs, []*gitlab.Epic{epic}, "group/other/app")
+	if evs[0].Epic != nil {
+		t.Error("an issue from another project must not be correlated")
+	}
+}
