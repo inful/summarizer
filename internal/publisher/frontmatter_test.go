@@ -156,7 +156,7 @@ func TestNewFrontmatter_AudienceIsAnAtomicToken(t *testing.T) {
 	if !slices.Contains(fm.Tags, "customer") {
 		t.Errorf("tags should include the audience, got %v", fm.Tags)
 	}
-	if want := "Cross-project rollup customer report — all subscribed projects, 2026-09"; fm.Title != want {
+	if want := "Cross-project rollup customer report — all customer-facing projects, 2026-09"; fm.Title != want {
 		t.Errorf("title = %q,\n want %q", fm.Title, want)
 	}
 }
@@ -282,5 +282,41 @@ func TestNewFrontmatter_FingerprintCoversTheStrippedBody(t *testing.T) {
 	_ = b
 	if a.Fingerprint == "" {
 		t.Error("empty fingerprint")
+	}
+}
+
+// TestNewFrontmatter_RollupTitleDoesNotOverstateTheCustomerRollup: the
+// customer rollup is built from eligibleProjects, which drops every
+// team-only project. Customer output is opt-in per project, so on a
+// typical fleet the customer file covers a minority of the run — and
+// the title claimed "all subscribed projects" regardless.
+//
+// The body header is accurate (ProjectCount counts the eligible slice),
+// so only the docbuilder index entry overstated, and that is the part
+// a reader sees before opening the file.
+func TestNewFrontmatter_RollupTitleDoesNotOverstateTheCustomerRollup(t *testing.T) {
+	now := time.Now()
+	team := NewFrontmatter("", "team", "2026-W43", KindRollup, now, []byte("x"), "u")
+	cust := NewFrontmatter("", "customer", "2026-W43", KindRollup, now, []byte("x"), "u")
+
+	// Measured shape: 3 projects in the run, 2 customer-eligible.
+	t.Logf("team:    %s", team.Title)
+	t.Logf("customer:%s", cust.Title)
+
+	if strings.Contains(cust.Title, "all subscribed projects") {
+		t.Errorf("the customer rollup claims the whole fleet: %q", cust.Title)
+	}
+	if !strings.Contains(cust.Title, "customer-facing") {
+		t.Errorf("the customer rollup should say it covers the customer-facing "+
+			"subset; got %q", cust.Title)
+	}
+	if !strings.Contains(team.Title, "all projects") {
+		t.Errorf("the team rollup does see every project in the run: %q", team.Title)
+	}
+	// A per-customer rollup keeps the customer code and must not gain
+	// either label.
+	one := NewFrontmatter("ACME", "customer", "2026-W43", KindRollup, now, []byte("x"), "u")
+	if strings.Contains(one.Title, "all ") {
+		t.Errorf("a per-customer rollup should name the customer, not the fleet: %q", one.Title)
 	}
 }

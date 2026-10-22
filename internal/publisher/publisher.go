@@ -21,7 +21,7 @@ const (
 	// KindMonthly is a rollup over a calendar month rather than an ISO
 	// week. It exists so the document says so: sharing KindRollup gave
 	// a September month-end file the title "Cross-project rollup
-	// customer report — all subscribed projects, 2026-09", identical in
+	// customer report — all customer-facing projects, 2026-09", identical in
 	// shape to the weekly one and told apart only by the period token.
 	KindMonthly FileKind = "monthly"
 )

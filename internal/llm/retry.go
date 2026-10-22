@@ -5,8 +5,9 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"strconv"
 	"time"
+
+	"github.com/inful/summarizer/internal/textutil"
 )
 
 // Retry policy. Same shape as internal/gitlab's — a transient upstream
@@ -29,24 +30,6 @@ const (
 // the operator's error message.
 func retryable(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500
-}
-
-// retryAfter parses the Retry-After header, which may be delta-seconds
-// or an HTTP-date, capped at retryAfterCapDefault. Missing or
-// unparseable falls back to exponential backoff.
-func retryAfter(h string) time.Duration {
-	if h == "" {
-		return backoff(1)
-	}
-	var d time.Duration
-	if n, err := strconv.Atoi(h); err == nil && n >= 0 {
-		d = time.Duration(n) * time.Second
-	} else if t, err := http.ParseTime(h); err == nil {
-		d = max(time.Until(t), 0)
-	} else {
-		return backoff(1)
-	}
-	return min(d, retryAfterCapDefault)
 }
 
 // backoff returns the wait before retry attempt n (1-indexed), capped at
@@ -90,7 +73,7 @@ func doWithRetry(ctx context.Context, hc *http.Client, req *http.Request, body [
 		if !retryable(resp.StatusCode) {
 			return resp, nil
 		}
-		wait := retryAfter(resp.Header.Get("Retry-After"))
+		wait := textutil.RetryAfter(resp.Header.Get("Retry-After"), retryAfterCapDefault, backoff(1))
 		if attempt > maxRetries {
 			return resp, nil // out of attempts — hand back the real response
 		}

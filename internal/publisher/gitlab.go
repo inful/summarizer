@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +29,14 @@ import (
 // shortcut: identical values to internal/gitlab and internal/llm. If
 // one changes, this is the third place to change it; promote to a
 // shared package only when a fourth copy appears.
+//
+// retryAfter is NOT among them any more. All three copies of it shared
+// one defect — the cap was applied after the multiply, so a large
+// Retry-After overflowed time.Duration negative and meant "no wait",
+// the opposite of the header — so it now lives in textutil beside
+// Truncate and the three call sites share the fix. backoff and sleep
+// stay local: backoff differs on purpose (no jitter here) and sleepFn
+// is overwritten in tests.
 const (
 	maxRetries           = 3
 	retryAfterCapDefault = 60 * time.Second
@@ -40,21 +47,6 @@ const (
 // internal/llm does: this talks to a host, and an unbounded read is a
 // remote-triggered OOM.
 const maxResponseBytes = 16 << 20
-
-func retryAfter(h string) time.Duration {
-	if h == "" {
-		return backoff(1)
-	}
-	var d time.Duration
-	if n, err := strconv.Atoi(h); err == nil && n >= 0 {
-		d = time.Duration(n) * time.Second
-	} else if t, err := http.ParseTime(h); err == nil {
-		d = max(time.Until(t), 0)
-	} else {
-		return backoff(1)
-	}
-	return min(d, retryAfterCapDefault)
-}
 
 func backoff(n int) time.Duration {
 	if n < 1 {
@@ -759,7 +751,7 @@ func (g *GitLabPublisher) doRetry(ctx context.Context, urlStr, method string, bo
 		var wait time.Duration
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
-			wait = retryAfter(resp.Header.Get("Retry-After"))
+			wait = textutil.RetryAfter(resp.Header.Get("Retry-After"), retryAfterCapDefault, backoff(1))
 		case resp.StatusCode >= 500:
 			wait = backoff(attempt)
 		default:

@@ -1,8 +1,10 @@
 package textutil
 
 import (
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -66,5 +68,60 @@ func TestTruncate_NonPositiveCap(t *testing.T) {
 		if got := Truncate("anything", n); got != "" {
 			t.Errorf("Truncate(_, %d) = %q, want empty", n, got)
 		}
+	}
+}
+
+// TestRetryAfter: one copy for internal/gitlab, internal/llm and
+// internal/publisher, which each had their own — and each carried the
+// same defect, because all three multiplied seconds into a Duration
+// before capping it.
+//
+// The case that matters is the one the old internal/gitlab test
+// stopped short of. It asserted retryAfter("999999"), which is 999,999
+// seconds — it fits in int64 nanoseconds with eleven orders of
+// magnitude to spare, so it proves the cap works and says nothing
+// about the boundary. Overflow starts around 9.2e9.
+func TestRetryAfter(t *testing.T) {
+	const cap = 60 * time.Second
+	fallback := 1 * time.Second
+
+	cases := []struct {
+		name string
+		in   string
+		want time.Duration
+	}{
+		{"zero means retry now", "0", 0},
+		{"in range", "30", 30 * time.Second},
+		{"large but not overflowing", "999999", cap},
+		// The overflow boundary: 9.2e9 seconds is ~292 years, which
+		// time.Duration(n) * time.Second cannot hold.
+		{"just past the overflow boundary", "9223372037", cap},
+		{"far past it", "9999999999", cap},
+		{"math.MaxInt64", "9223372036854775807", cap},
+		{"missing header falls back", "", fallback},
+		{"garbage falls back", "not-a-date", fallback},
+		{"negative falls back", "-1", fallback},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := RetryAfter(c.in, cap, fallback)
+			if got != c.want {
+				t.Errorf("RetryAfter(%q) = %v, want %v", c.in, got, c.want)
+			}
+			if got < 0 {
+				t.Errorf("RetryAfter(%q) = %v; a negative wait is the bug this "+
+					"function exists to prevent", c.in, got)
+			}
+		})
+	}
+
+	// An HTTP-date in the past is a wait of zero, not a negative one.
+	past := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
+	if got := RetryAfter(past, cap, fallback); got != 0 {
+		t.Errorf("RetryAfter(past date) = %v, want 0", got)
+	}
+	future := time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)
+	if got := RetryAfter(future, cap, fallback); got <= 0 || got > cap {
+		t.Errorf("RetryAfter(future date) = %v, want (0, %v]", got, cap)
 	}
 }

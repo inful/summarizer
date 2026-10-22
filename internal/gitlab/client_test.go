@@ -28,22 +28,6 @@ func TestNormalizeGitLabURL(t *testing.T) {
 	}
 }
 
-func TestRetryAfterCap(t *testing.T) {
-	// "999999" seconds = 277 hours; must be capped to retryAfterCapDefault.
-	got := retryAfter("999999")
-	if got != retryAfterCapDefault {
-		t.Errorf("retryAfter(\"999999\") = %v, want cap %v", got, retryAfterCapDefault)
-	}
-	// Delta-seconds form, in-range.
-	if got := retryAfter("30"); got != 30*time.Second {
-		t.Errorf("retryAfter(\"30\") = %v, want 30s", got)
-	}
-	// Unparseable → fall back to backoff.
-	if got := retryAfter("not-a-date"); got <= 0 {
-		t.Errorf("retryAfter(unparseable) should fall back to backoff, got %v", got)
-	}
-}
-
 func TestBackoffInRange(t *testing.T) {
 	// ±20% jitter around the cap; 100 samples should all stay within [0.8*30s, 1.2*30s].
 	low := time.Duration(float64(maxBackoff)*0.8) - time.Second

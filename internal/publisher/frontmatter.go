@@ -156,7 +156,22 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 		// Request.Project), and forcing the fleet label onto it gave
 		// every customer's public document the same title and left
 		// nothing in the index but the filename to tell them apart.
-		projectLabel = "all subscribed projects"
+		//
+		// "All" is only true for the team audience. The customer rollup
+		// is built from eligibleProjects, which drops every team-only
+		// project — customer output is opt-in per project, so on a
+		// typical fleet the customer file covers a minority of the run.
+		// Measured: 3 projects in the run, 2 in the customer rollup,
+		// title reading "…all subscribed projects". The body header is
+		// accurate (ProjectCount counts the eligible slice); only the
+		// index entry overstated, which is the part a reader sees.
+		projectLabel = "all projects"
+		// audience is a plain string here — NewFrontmatter takes no
+		// prompt.Audience, and this package must not import internal/prompt.
+		// It is the same value the title already interpolates.
+		if audience == "customer" {
+			projectLabel = "all customer-facing projects"
+		}
 	}
 	title := fmt.Sprintf("%s %s report — %s, %s", titlePrefix, audience, projectLabel, period)
 

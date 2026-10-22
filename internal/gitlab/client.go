@@ -908,7 +908,7 @@ func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode f
 
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
-			wait := retryAfter(resp.Header.Get("Retry-After"))
+			wait := textutil.RetryAfter(resp.Header.Get("Retry-After"), retryAfterCapDefault, backoff(1))
 			if err := sleep(ctx, wait); err != nil {
 				return err
 			}
@@ -950,28 +950,6 @@ func getPage[T any](ctx context.Context, c *Client, path string, q url.Values, s
 		return nil, false, err
 	}
 	return batch, next, nil
-}
-
-// retryAfter parses the Retry-After header value, which may be either a
-// delta-seconds integer ("120") or an HTTP-date. Returns the requested
-// wait, capped at retryAfterCapDefault, or falls back to the exponential
-// backoff when the header is missing or unparseable.
-func retryAfter(h string) time.Duration {
-	if h == "" {
-		return backoff(1)
-	}
-	var d time.Duration
-	if n, err := strconv.Atoi(h); err == nil && n >= 0 {
-		d = time.Duration(n) * time.Second
-	} else if t, err := http.ParseTime(h); err == nil {
-		d = max(time.Until(t), 0)
-	} else {
-		return backoff(1)
-	}
-	if d > retryAfterCapDefault {
-		d = retryAfterCapDefault
-	}
-	return d
 }
 
 // backoff returns the wait before the next attempt: base * 2^(n-1), capped
