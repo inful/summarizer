@@ -44,6 +44,23 @@ max_events: 200
 # --discover-by-topic narrow or redirect that. A config-file project
 # list would be a second way to say the same thing that nothing reads.
 
+# Optional: force team-only for named projects. Every project that runs
+# gets a team report; a CUSTOMER-facing report needs the `summarize`
+# topic on the project. This list suppresses that for specific paths,
+# which is the switch to reach for when a project's work must never
+# reach a customer — and those documents are published public: true.
+#
+# Three sources union together: this block, the repeatable
+# --internal-only-project flag, and the `summarize-team-only` topic on
+# the project. Project paths are matched case-insensitively and values
+# here are trimmed, because GitLab's own project routes are: a spelling
+# difference between --project and --internal-only-project would
+# otherwise mark the same project both ways at once.
+#
+# internal_only_projects:
+#   - group/team-a/internal-tool
+#   - group/team-a/billing
+
 # Optional: publish to a GitLab project as MRs for review instead of
 # writing Markdown locally. Reports are committed per-period on a branch
 # named "<source_branch_prefix>/<period>" (default: summarizer/2026-10-19)
