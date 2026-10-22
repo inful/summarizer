@@ -172,14 +172,26 @@ func (f *fakeGitLab) handler() http.Handler {
 			f.mergeRequestListCount.Add(1)
 			// Filter by ?state= query param so the publisher's two-list
 			// strategy works as expected on the wire.
+			// Filter on BOTH source_branch and state, as GitLab does.
+			// Filtering on state alone made this fake report every
+			// branch's open MR to every caller, so a goroutine asking
+			// about its own branch would find another branch's MR and
+			// skip creating its own —
+			// TestGitLabPublisher_ConcurrentPublishAcrossBranchesIsRaceFree
+			// then failed intermittently with "5, want 6". The publisher
+			// has always sent source_branch; the fixture just ignored it.
 			q := r.URL.Query()
-			want := q.Get("state")
+			wantState, wantBranch := q.Get("state"), q.Get("source_branch")
 			filtered := make([]mergeRequest, 0)
 			f.mu.Lock()
 			for _, mr := range f.mergeRequests {
-				if want == "" || mr.State == want {
-					filtered = append(filtered, mr)
+				if wantState != "" && mr.State != wantState {
+					continue
 				}
+				if wantBranch != "" && mr.SourceBranch != wantBranch {
+					continue
+				}
+				filtered = append(filtered, mr)
 			}
 			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
