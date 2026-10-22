@@ -302,3 +302,17 @@ func monthlySlug(month string) string { return month }
 func monthlyRollupFilename(month string, aud prompt.Audience) string {
 	return fmt.Sprintf("monthly--%s--%s.md", month, aud)
 }
+
+// The monthly reader is implemented by exactly one type, and saying so
+// at compile time is cheaper than discovering it at runtime.
+//
+// *publisher.Local deliberately does NOT implement it — it lacks
+// ListPeriodBranches and PeriodBranch, so it cannot satisfy this
+// interface at all. It used to carry DefaultRef and ReadReportFile
+// stubs anyway, on the stated theory that the interface "deliberately
+// does not include" ReadReportFile. It does include it (three lines
+// above), and *Local could never be behind an interface value here
+// regardless, so both stubs were unreachable: cmd/summarizer rejects a
+// local-disk publisher with a type assertion before a runner is built.
+// Deleting them is what makes this assertion the whole story.
+var _ MonthlyReader = (*publisher.GitLabPublisher)(nil)

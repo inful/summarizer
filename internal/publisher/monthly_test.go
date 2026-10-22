@@ -207,16 +207,6 @@ func TestReadReportFile_Base64(t *testing.T) {
 	}
 }
 
-// TestLocalPublisher_ReadReportFileUnsupported: the local publisher
-// has no GitLab repo to read from. The monthly command must be able to
-// say so rather than silently producing an empty rollup.
-func TestLocalPublisher_ReadReportFileUnsupported(t *testing.T) {
-	lp := NewLocal(t.TempDir())
-	if _, err := lp.ReadReportFile(context.Background(), "x", "y"); err == nil {
-		t.Error("local publisher should reject ReadReportFile")
-	}
-}
-
 // TestListPeriodBranches_PagesUntilGitLabStops: a reports repo
 // accrues one branch per week and never loses them, so a single
 // per_page=100 stopped returning recent weeks in the second year — and

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -203,16 +202,3 @@ func (g *GitLabPublisher) getStatus(ctx context.Context, urlStr string) (rawResp
 // branch is where a merged week's rollup lives once its source branch
 // has been deleted.
 func (g *GitLabPublisher) DefaultRef() string { return g.DefaultBranch }
-
-// ReadReportFile is on GitLabPublisher only. The interface deliberately
-// does not include it: a monthly run against a local-disk publisher
-// has nothing to read, and forcing every implementation to stub an
-// unsupported method hides that. cmd/summarizer rejects a
-// local-disk publisher before it ever gets here.
-// DefaultRef is empty on Local: there is no default branch, and
-// ReadReportFile below rejects the whole local-disk case anyway.
-func (l *Local) DefaultRef() string { return "" }
-
-func (l *Local) ReadReportFile(context.Context, string, string) (string, error) {
-	return "", errors.New("local-disk publisher has no reports to read; monthly rollups need publish.enabled with a GitLab target")
-}
