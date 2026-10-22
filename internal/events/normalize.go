@@ -66,6 +66,7 @@ func Issue(g gitlab.Issue) NormalizedEvent {
 		Comments:            g.UserNotesCount,
 		Created:             g.CreatedAt,
 		Updated:             updated,
+		Confidential:        g.Confidential,
 		TeamOnlyDescription: textutil.Truncate(g.Description, DescriptionCap),
 	}
 }

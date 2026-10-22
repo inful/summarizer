@@ -85,6 +85,7 @@ func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int,
 		return "", "", fmt.Errorf("parse template %s: %w", tplName, err)
 	}
 
+	evs, epics = forAudience(aud, evs, epics)
 	kept, total, dropped := capEvents(evs, cap)
 
 	data := struct {
@@ -113,6 +114,60 @@ func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int,
 	system = systemPrompt(aud, subjectProject)
 	user = buf.String()
 	return system, user, nil
+}
+
+// forAudience drops what the customer-facing document must never carry.
+//
+// GitLab has a "confidential" flag on issues and on epics: the owner's
+// own "not for everyone". An api or read_api PAT owned by a project
+// member receives both from the ordinary list endpoints, so they arrive
+// here like anything else — and the customer report is published with
+// public: true. A confidential issue titled "ACME pricing renegotiation
+// — INTERNAL ONLY" would be summarised straight into a file anyone can
+// read.
+//
+// This is the same rule internal/run's bucketEpicsByCustomer already
+// applies to the customer epic rollup ("it cannot go here whatever its
+// labels say"). That guard was in one of the two paths that render
+// epics: runOneProject passes its slice straight to Render, which prints
+// "### <epic title> (epic #N)" and each event's title. Fixed in the
+// renderer rather than at the second call site, because the cross-
+// project rollup consumes the rendered text and would otherwise inherit
+// the leak anyway.
+//
+// Both halves of the pair are dropped:
+//   - an event whose own issue is confidential;
+//   - an event inside a confidential epic, and that epic's heading.
+//
+// The second is not redundant with the first. A confidential epic's
+// child issues are ordinary issues, so filtering on the event alone
+// would still print the confidential epic's title and group ordinary
+// work under it.
+//
+// Runs BEFORE capEvents, so a confidential item does not consume a slot
+// in the budget and push an ordinary one out of the report.
+//
+// The team audience returns both slices untouched — that document is
+// internal, and the team is who marked the work.
+func forAudience(aud Audience, evs []events.NormalizedEvent, epics []*gitlab.Epic) ([]events.NormalizedEvent, []*gitlab.Epic) {
+	if aud != AudienceCustomer {
+		return evs, epics
+	}
+	keptEpics := make([]*gitlab.Epic, 0, len(epics))
+	for _, e := range epics {
+		if e != nil && e.Confidential {
+			continue
+		}
+		keptEpics = append(keptEpics, e)
+	}
+	kept := make([]events.NormalizedEvent, 0, len(evs))
+	for _, e := range evs {
+		if e.Confidential || (e.Epic != nil && e.Epic.Confidential) {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept, keptEpics
 }
 
 // subject describes what the report is about, so one systemPrompt can

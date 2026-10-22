@@ -234,3 +234,36 @@ func TestFetchProjectNamespace_UserNamespace(t *testing.T) {
 		t.Errorf("user namespace path should not contain '/': %+v", ns)
 	}
 }
+
+// TestIssue_ConfidentialDecodes: the customer epic rollup has always
+// honoured Epic.Confidential; Issue carried no equivalent field at all,
+// so a confidential issue was indistinguishable from an ordinary one and
+// its title reached a document published public: true. The flag is now
+// decoded, and this pins that — a missing json tag would silently
+// default it to false and reopen the leak.
+func TestIssue_ConfidentialDecodes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"confidential", `[{"iid":1,"title":"ACME pricing renegotiation — INTERNAL ONLY","confidential":true}]`, true},
+		{"ordinary", `[{"iid":2,"title":"shipped it","confidential":false}]`, false},
+		// GitLab omits the key on some response shapes. Absent must
+		// decode as false, not error.
+		{"absent", `[{"iid":3,"title":"shipped it"}]`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []Issue
+			if err := json.Unmarshal([]byte(tc.body), &got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(got) != 1 {
+				t.Fatalf("got %d issues, want 1", len(got))
+			}
+			if got[0].Confidential != tc.want {
+				t.Errorf("Confidential = %v, want %v", got[0].Confidential, tc.want)
+			}
+		})
+	}
+}

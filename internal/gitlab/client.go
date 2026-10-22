@@ -110,6 +110,18 @@ type Issue struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	ClosedAt       *time.Time `json:"closed_at"`
+
+	// Confidential is GitLab's own "do not show this to people who
+	// shouldn't see it" flag. A read_api PAT owned by a project member
+	// sees these issues in /projects/:id/issues like any other.
+	//
+	// It was missing here, which made a confidential issue structurally
+	// indistinguishable from an ordinary one: no downstream filter could
+	// act on a field the model did not carry, so the title reached a
+	// customer-facing document published public: true. Epic carries the
+	// same flag and the customer epic rollup already honours it — this is
+	// the issue half of the same pair, and it was the half with no guard.
+	Confidential bool `json:"confidential"`
 }
 
 // IssueRef is GitLab's cross-project reference to an issue.

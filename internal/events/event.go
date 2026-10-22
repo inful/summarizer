@@ -60,6 +60,18 @@ type NormalizedEvent struct {
 	// the diff" rather than reproduce code into the report.
 	DiffChunks []gitlab.DiffChunk `json:"diff_chunks,omitempty"`
 
+	// Confidential carries GitLab's own "not for everyone" flag, which is
+	// only set on issues. The customer-facing prompt drops these events
+	// outright — that document is published public: true, and an issue
+	// title routinely carries the very thing the flag was set to hide.
+	// The team prompt keeps them; that file is internal and the team is
+	// who marked the issue.
+	//
+	// The Epic pointer below carries the same information for the epic
+	// half of the pair, which needs no field here — but see
+	// prompt.Render, which drops an event when EITHER flag is set.
+	Confidential bool `json:"confidential,omitempty"`
+
 	// Epic links this event to an enclosing epic, populated by the
 	// correlation step when the event's source (issue IID or MR-described
 	// issue link) matches an issue on a known epic. Nil for events with
