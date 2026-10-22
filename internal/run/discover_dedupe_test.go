@@ -85,3 +85,51 @@ func TestResolveProjects_DuplicateExplicitProjectRunsOnce(t *testing.T) {
 		t.Fatalf("admitted %d times, want once: %v", len(list), list)
 	}
 }
+
+// TestResolveProjects_DedupeIgnoresCase: the dedupe compares an
+// operator-typed --project against GitLab's path_with_namespace.
+// GitLab routes are case-insensitive, so a mis-cased flag name used to
+// miss, and since sanitize() preserves case the project then ran twice
+// and wrote two files with separate UIDs.
+func TestResolveProjects_DedupeIgnoresCase(t *testing.T) {
+	srv := oneProjectServer(t)
+	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
+
+	for _, typed := range []string{"Team-A/Payments", "team-a/PAYMENTS"} {
+		list, _, _, err := resolveProjects(context.Background(), gc, Options{
+			Projects:         []string{typed},
+			DiscoveredGroups: []string{"team-a"},
+			Since:            weekStart(),
+		})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if len(list) != 1 {
+			t.Errorf("--project %q + --discover-group produced %v; the same project "+
+				"must run once", typed, list)
+		}
+	}
+}
+
+// TestResolveProjects_PublishTargetExclusionIgnoresCase: discovery
+// skips the reports repo so summarizer does not spend an LLM call every
+// week describing last week's reports. A publish.project spelled
+// differently from path_with_namespace stopped excluding it.
+func TestResolveProjects_PublishTargetExclusionIgnoresCase(t *testing.T) {
+	srv := oneProjectServer(t)
+	gc := gitlab.New(srv.URL, "glpat-test", 5*time.Second)
+
+	for _, target := range []string{"Team-A/Payments", "TEAM-A/PAYMENTS"} {
+		list, _, _, err := resolveProjects(context.Background(), gc, Options{
+			DiscoveredGroups: []string{"team-a"},
+			PublishTarget:    target,
+			Since:            weekStart(),
+		})
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if len(list) != 0 {
+			t.Errorf("publish.project=%q did not exclude the reports repo: %v", target, list)
+		}
+	}
+}

@@ -323,7 +323,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		TokensByAudience: map[string]llm.Usage{},
 	}
 
-	inOverrideList := slices.Contains(p.Opts.InternalOnlyProjects, project)
+	inOverrideList := p.Opts.internalOnly(project)
 	topics := p.projectTopics(ctx, project)
 	audience := policy.Classify(topics, inOverrideList)
 	res.TeamOnly = audience.TeamOnly
@@ -1015,6 +1015,34 @@ func (o Options) maxProjects() int {
 	return DefaultMaxProjects
 }
 
+// hasProject reports whether want is on the list, case-insensitively.
+//
+// One helper rather than a slices.Contains at each call site, because
+// every project path compared here is operator input on one side and
+// GitLab's path_with_namespace on the other, and GitLab project routes
+// are case-insensitive. An exact compare made this list a spelling
+// test, and it fails OPEN: `--project group/secret
+// --internal-only-project Group/Secret` marked the same project
+// team-only and customer-facing in one command line, because
+// runOneProject receives --project verbatim and the two strings differed
+// only in case. Same shape with discovery — a mis-cased --project
+// missed the dedupe at the admit site and ran the project twice.
+func (o Options) hasProject(list []string, want string) bool {
+	for _, p := range list {
+		if strings.EqualFold(p, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// internalOnly is hasProject for the audience-override list. Named
+// because the confidentiality consequence of a miss is not obvious at
+// the call site.
+func (o Options) internalOnly(project string) bool {
+	return o.hasProject(o.InternalOnlyProjects, project)
+}
+
 // checkPrompt runs the rendered prompt through the safety guard.
 //
 // Verdict handling:
@@ -1359,7 +1387,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 	admit := func(proj gitlab.ProjectSummary) error {
 		// Skip projects already explicit-listed (dedupe wins to
 		// the explicit listing: FromDiscovery stays false).
-		if slices.Contains(opts.Projects, proj.Path) {
+		if opts.hasProject(opts.Projects, proj.Path) {
 			return nil
 		}
 		// Skip projects an EARLIER discovery loop already admitted.
@@ -1377,7 +1405,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		// explicit-listing check so `--project <reports repo>` still
 		// runs — an explicit listing is the operator overriding a
 		// default, same authority as setting publish.project.
-		if opts.PublishTarget != "" && proj.Path == opts.PublishTarget {
+		if opts.PublishTarget != "" && strings.EqualFold(proj.Path, opts.PublishTarget) {
 			excluded++
 			fmt.Fprintf(os.Stderr, "  excluded (publish target): %s\n", proj.Path)
 			return nil
@@ -1407,7 +1435,7 @@ func resolveProjects(ctx context.Context, gc *gitlab.Client, opts Options) ([]st
 		// config/CLI override still wins when set, and
 		// `summarize-team-only` continues to mean "team-only
 		// even if the project has `summarize`."
-		inOverride := slices.Contains(opts.InternalOnlyProjects, proj.Path)
+		inOverride := opts.internalOnly(proj.Path)
 		aud := policy.Classify(proj.Topics, inOverride)
 		tnoTag := ""
 		if aud.TeamOnly {

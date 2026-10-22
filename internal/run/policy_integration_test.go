@@ -25,6 +25,13 @@ import (
 // We arrange team-only via InternalOnlyProjects (union source #2 of 3).
 // The third source (the GitLab-side `summarize-team-only` topic) is
 // tested in policy's own truth table.
+//
+// Both projects carry the `summarize` topic in the fixture, so
+// customer output is the default and this test's team-only result is
+// attributable to the override rather than to an empty topic list.
+// TestRunOneProject_InternalOnlyIgnoresCase below is the case-variant
+// companion; it uses its own server so the vacuous-fixture trap cannot
+// bite it too.
 func TestRunOneProject_SkipsCustomerForTeamOnlyProject(t *testing.T) {
 	p, llm, pub := newTeamOnlyPipeline(t)
 	p.Opts.InternalOnlyProjects = []string{"group/secret"}
@@ -209,7 +216,13 @@ func newTeamOnlyPipeline(t *testing.T) (*Pipeline, *countingLLM, *capturePublish
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`[]`))
 		case strings.HasSuffix(path, "/projects/group%2Fpublic") || strings.HasSuffix(path, "/projects/group%2Fsecret"):
-			_, _ = w.Write([]byte(`{"namespace": {"kind": "group", "full_path": "group"}, "topics": []}`))
+			// `summarize` on BOTH projects, so customer output is the
+			// default and the team-only result is attributable to the
+			// audience decision rather than to an empty topic list.
+			// With topics: [] Classify returns team-only whatever the
+			// override says, which made every assertion below pass
+			// without the feature doing anything.
+			_, _ = w.Write([]byte(`{"namespace": {"kind": "group", "full_path": "group"}, "topics": ["summarize"]}`))
 		default:
 			w.Header().Set("X-Next-Page", "")
 			w.Header().Set("Content-Type", "application/json")
@@ -299,4 +312,86 @@ func anyContains(s []string, substr string) bool {
 		}
 	}
 	return false
+}
+
+// summarizeTopicsServer is a project carrying the `summarize` topic,
+// which is the ONLY thing that turns on customer output. Everything
+// else — the opt-out file is absent, no team-only topic — is arranged
+// so that the internal-only list is the single reason a project comes
+// out team-only. The shared newTeamOnlyPipeline fixture serves
+// topics: [], which makes Classify return team-only no matter what the
+// override says, so an override test built on it passes vacuously.
+func summarizeTopicsServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.EscapedPath()
+		switch {
+		case strings.Contains(path, "/repository/files/"):
+			w.WriteHeader(http.StatusNotFound) // no .summaryignore
+		case strings.HasSuffix(path, "/merge_requests"),
+			strings.HasSuffix(path, "/issues"),
+			strings.HasSuffix(path, "/repository/commits"),
+			strings.HasSuffix(path, "/epics"):
+			w.Header().Set("X-Next-Page", "")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"namespace": {"kind": "group", "full_path": "group"}, "topics": ["summarize"]}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunOneProject_InternalOnlyIgnoresCase: --project and
+// --internal-only-project are both operator input, so a mismatch
+// between them needs no GitLab misbehaviour at all — one command line
+// naming the same project two ways marked it team-only and
+// customer-facing simultaneously, and the customer document is
+// published public: true.
+//
+// The pre-existing test above passes the same string on both sides and
+// runs against a fixture whose empty topic list makes every project
+// team-only anyway, so it cannot fail for the reason the feature
+// exists. This one starts from a project that really would be
+// customer-facing and checks the override is what stops it.
+func TestRunOneProject_InternalOnlyIgnoresCase(t *testing.T) {
+	// Sanity: without the override this project IS customer-facing, so
+	// the assertions below cannot pass vacuously.
+	base := &Pipeline{
+		Cfg:       &config.Config{OutputDir: t.TempDir(), MaxEvents: 200},
+		LLM:       &countingLLM{OnCall: func() string { return "rendered" }},
+		Publisher: &capturePublisher{},
+		Guard:     safety.NoopGuard{},
+	}
+	base.GitLab = gitlab.New(summarizeTopicsServer(t).URL, "glpat-test", 5*time.Second)
+	pr, err := base.runOneProject(context.Background(), "group/secret")
+	if err != nil {
+		t.Fatalf("runOneProject: %v", err)
+	}
+	if !pr.CustomerOn {
+		t.Fatalf("fixture is not exercising anything: a summarize project with no "+
+			"override should be customer-facing, got TeamOnly=%v", pr.TeamOnly)
+	}
+
+	for _, typed := range []string{"Group/Secret", "GROUP/SECRET", "group/SECRET"} {
+		p := &Pipeline{
+			Cfg:       &config.Config{OutputDir: t.TempDir(), MaxEvents: 200},
+			GitLab:    gitlab.New(summarizeTopicsServer(t).URL, "glpat-test", 5*time.Second),
+			LLM:       &countingLLM{OnCall: func() string { return "rendered" }},
+			Publisher: &capturePublisher{},
+			Guard:     safety.NoopGuard{},
+			Opts:      Options{InternalOnlyProjects: []string{"group/secret"}},
+		}
+		pr, err := p.runOneProject(context.Background(), typed)
+		if err != nil {
+			t.Fatalf("runOneProject(%q): %v", typed, err)
+		}
+		if pr.CustomerOn {
+			t.Errorf("--project %q with --internal-only-project group/secret produced "+
+				"customer-facing output; the override is a confidentiality control and "+
+				"it fails open", typed)
+		}
+	}
 }
