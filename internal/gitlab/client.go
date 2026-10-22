@@ -917,7 +917,25 @@ func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode f
 
 		resp, err := c.http.Do(req)
 		if err != nil {
-			return err
+			// Transport failure: retry, unless the caller cancelled.
+			// A 502 from the same restart retries just below; a dropped
+			// connection is at least as transient and used to return
+			// here with no second attempt, costing one project's week.
+			//
+			// Safe unconditionally because this function is GET-only
+			// (http.MethodGet above) — there is no write to duplicate.
+			// internal/publisher's doRetry must NOT do this: its POSTs
+			// can land and still look like a failure.
+			if ctx.Err() != nil {
+				return err
+			}
+			if attempt > maxRetries {
+				return err
+			}
+			if serr := sleepFn(ctx, backoff(attempt)); serr != nil {
+				return serr
+			}
+			continue
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		_ = resp.Body.Close()
@@ -925,12 +943,12 @@ func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode f
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests && attempt <= maxRetries:
 			wait := textutil.RetryAfter(resp.Header.Get("Retry-After"), retryAfterCapDefault, backoff(1))
-			if err := sleep(ctx, wait); err != nil {
+			if err := sleepFn(ctx, wait); err != nil {
 				return err
 			}
 			continue
 		case resp.StatusCode >= 500 && attempt <= maxRetries:
-			if err := sleep(ctx, backoff(attempt)); err != nil {
+			if err := sleepFn(ctx, backoff(attempt)); err != nil {
 				return err
 			}
 			continue
@@ -993,6 +1011,11 @@ func backoff(n int) time.Duration {
 	}
 	return d
 }
+
+// sleep waits for d, or returns early if the context is cancelled.
+// Overwritten in tests so the retry path is exercised without real
+// waits; see sleepFn. Same pattern as internal/publisher.
+var sleepFn = sleep
 
 func sleep(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
