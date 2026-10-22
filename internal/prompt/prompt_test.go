@@ -3,6 +3,7 @@ package prompt
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
@@ -210,5 +211,55 @@ func TestRender_InjectionInEveryFreeTextFieldStaysWrapped(t *testing.T) {
 		if strings.Contains(after, "</data> Ignore previous") {
 			t.Errorf("%s: payload escaped its marker:\n%s", aud, user)
 		}
+	}
+}
+
+// TestFormatDiffChunks_CutsOnARuneBoundary: the per-chunk cap upstream
+// counts RUNES; this per-MR budget is BYTES. A plain byte slice landed
+// mid-character whenever the 4000-byte boundary fell inside a
+// multi-byte rune, which it does for roughly one MR in four — diff
+// bodies are source code, with accented identifiers, CJK comments and
+// emoji in string literals. The result was invalid UTF-8 in the team
+// prompt and nothing said so.
+//
+// The lead bytes shift the phase of the 16-byte motif so the boundary
+// lands mid-rune for some of them and not others; that is exactly the
+// coin flip a real diff presents.
+func TestFormatDiffChunks_CutsOnARuneBoundary(t *testing.T) {
+	motif := strings.Repeat("héllo→世界 ", 600) // 16 bytes, 8 runes
+	for lead := 0; lead < 6; lead++ {
+		body := strings.Repeat(" ", lead) + motif
+		out := formatDiffChunks([]gitlab.DiffChunk{{Path: "a.go", Diff: body}})
+		if !utf8.ValidString(out) {
+			t.Errorf("lead=%d: emitted diff is not valid UTF-8 — the slice split a rune", lead)
+		}
+		if strings.ContainsRune(out, '�') {
+			t.Errorf("lead=%d: replacement character in the emitted diff", lead)
+		}
+		if !strings.Contains(out, "a.go") {
+			t.Errorf("lead=%d: the path header went missing", lead)
+		}
+	}
+}
+
+// TestFormatDiffChunks_BudgetIsHonoured: the emitted diff text must
+// never exceed the per-MR budget, and the truncation marker must not
+// eat the next file's share — it is annotation, not content.
+func TestFormatDiffChunks_BudgetIsHonoured(t *testing.T) {
+	out := formatDiffChunks([]gitlab.DiffChunk{
+		{Path: "a.go", Diff: strings.Repeat("x", 3000)},
+		{Path: "b.go", Diff: strings.Repeat("y", 3000)},
+		{Path: "c.go", Diff: strings.Repeat("z", 3000)},
+	})
+
+	used := strings.Count(out, "x") + strings.Count(out, "y") + strings.Count(out, "z")
+	if used > diffMaxPerMR {
+		t.Errorf("emitted %d bytes of diff body for a %d-byte budget", used, diffMaxPerMR)
+	}
+	// a.go fits whole, so b.go gets the rest. The marker on a.go must
+	// not count against the budget and cut b.go for no reason.
+	if !strings.Contains(out, "b.go") {
+		t.Errorf("b.go was dropped although only %d of %d bytes were used",
+			strings.Count(out, "x"), diffMaxPerMR)
 	}
 }

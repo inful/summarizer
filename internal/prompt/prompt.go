@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"unicode/utf8"
 
 	"github.com/inful/summarizer/internal/events"
 	"github.com/inful/summarizer/internal/gitlab"
@@ -540,6 +541,13 @@ func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
 // maxDiffRunesPerFile by the client; this function adds one more level of
 // capping (per-MR total) so a single MR with many big files doesn't blow
 // the team prompt budget.
+//
+// The cut is on a rune boundary. The cap upstream is in RUNES
+// (maxDiffRunesPerFile), and a plain byte slice lands mid-character
+// whenever this budget falls inside a multi-byte rune — which it does
+// for roughly one MR in four, since diff bodies are source code with
+// accented identifiers, CJK comments and emoji in string literals. The
+// result was invalid UTF-8 in the team prompt, with nothing to say so.
 func formatDiffChunks(chunks []gitlab.DiffChunk) string {
 	var buf bytes.Buffer
 	remaining := diffMaxPerMR
@@ -547,19 +555,33 @@ func formatDiffChunks(chunks []gitlab.DiffChunk) string {
 		if remaining <= 0 {
 			break
 		}
-		var diffPart string
-		if len(c.Diff) > remaining {
-			diffPart = c.Diff[:remaining] + "...[truncated]"
-		} else {
-			diffPart = c.Diff
+		diffPart := c.Diff
+		// The truncation marker is annotation, not content: it must not
+		// eat the next file's budget, so the used count is the slice,
+		// not the slice plus the marker.
+		used := len(c.Diff)
+		if used > remaining {
+			// Walk back off any continuation bytes so the slice ends
+			// on a rune start.
+			cut := remaining
+			for cut > 0 && !utf8.RuneStart(diffPart[cut]) {
+				cut--
+			}
+			diffPart = diffPart[:cut] + "...[truncated]"
+			used = cut
 		}
-		remaining -= len(c.Diff)
+		remaining -= used
 		fmt.Fprintf(&buf, "%s (+%d/-%d):\n%s\n---\n", c.Path, c.Additions, c.Deletions, diffPart)
 	}
 	return strings.TrimRight(buf.String(), "\n-")
 }
 
-const diffMaxPerMR = 4000 // total diff text per event, summed across files
+// diffMaxPerMR is the total diff text per event, summed across files.
+// Counted in BYTES, like every other prompt budget in this package, and
+// deliberately different from the per-chunk cap upstream which counts
+// runes — each is applied in its own unit, and both now respect rune
+// boundaries.
+const diffMaxPerMR = 4000
 
 func kindLabel(k events.Kind) string {
 	switch k {
