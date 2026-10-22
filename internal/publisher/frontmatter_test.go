@@ -158,3 +158,42 @@ func TestNewFrontmatter_AudienceIsAnAtomicToken(t *testing.T) {
 		t.Errorf("title = %q,\n want %q", fm.Title, want)
 	}
 }
+
+// TestNewFrontmatter_TitleNamesThePeriod: the file name says
+// monthly--2026-09--customer.md, so the title had better not say
+// "Cross-project rollup ... 2026-09" — a month-end document has to
+// identify as one, or a docbuilder index shows a September summary
+// indistinguishable in shape from the weekly rollups sitting beside it.
+func TestNewFrontmatter_TitleNamesThePeriod(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name   string
+		kind   FileKind
+		period string
+		wantIn string
+	}{
+		{"weekly rollup", KindRollup, "2026-W43", "Cross-project rollup"},
+		{"monthly rollup", KindMonthly, "2026-09", "Monthly cross-project rollup"},
+		{"per project", KindPerProject, "2026-W43", "Weekly"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fm := NewFrontmatter("", "customer", c.period, c.kind, now, []byte("x"), "u")
+			if !strings.Contains(fm.Title, c.wantIn) {
+				t.Errorf("title = %q, want it to contain %q", fm.Title, c.wantIn)
+			}
+			if !strings.Contains(fm.Title, c.period) {
+				t.Errorf("title = %q, want it to carry the period %q", fm.Title, c.period)
+			}
+			if !slices.Contains(fm.Tags, "rollup") && c.kind != KindPerProject {
+				t.Errorf("tags = %v, want a rollup tag", fm.Tags)
+			}
+		})
+	}
+	// The two rollups must not produce the same title.
+	w := NewFrontmatter("", "customer", "2026-W43", KindRollup, now, []byte("x"), "u")
+	m := NewFrontmatter("", "customer", "2026-09", KindMonthly, now, []byte("x"), "u")
+	if w.Title == m.Title {
+		t.Errorf("weekly and monthly rollups share a title: %q", w.Title)
+	}
+}

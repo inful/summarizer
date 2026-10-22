@@ -111,9 +111,12 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 	fingerprint := mdfp.CalculateFingerprintFromParts("", string(body))
 
 	tags := []string{"summarizer", string(audience), period}
-	if kind == KindRollup {
+	switch kind {
+	case KindRollup:
 		tags = append(tags, "rollup")
-	} else {
+	case KindMonthly:
+		tags = append(tags, "rollup", "monthly")
+	default:
 		tags = append(tags, "per-project")
 	}
 	if project != "" {
@@ -123,12 +126,14 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 	}
 
 	titlePrefix := "Weekly"
+	projectLabel := project
 	switch kind {
 	case KindRollup:
 		titlePrefix = "Cross-project rollup"
+	case KindMonthly:
+		titlePrefix = "Monthly cross-project rollup"
 	}
-	projectLabel := project
-	if projectLabel == "" && kind == KindRollup {
+	if projectLabel == "" && (kind == KindRollup || kind == KindMonthly) {
 		// A rollup that spans the fleet says so. One that does NOT is
 		// per-customer (the epic rollups carry the org:: code in
 		// Request.Project), and forcing the fleet label onto it gave

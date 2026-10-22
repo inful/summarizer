@@ -11,13 +11,19 @@ package publisher
 
 import "context"
 
-// FileKind controls how the publisher treats the report. Future use:
-// distinguishes per-project vs rollup, or weekly vs monthly.
+// FileKind controls how the publisher treats the report: per-project,
+// cross-project rollup, or whole-month rollup.
 type FileKind string
 
 const (
 	KindPerProject FileKind = "project"
 	KindRollup     FileKind = "rollup"
+	// KindMonthly is a rollup over a calendar month rather than an ISO
+	// week. It exists so the document says so: sharing KindRollup gave
+	// a September month-end file the title "Cross-project rollup
+	// customer report — all subscribed projects, 2026-09", identical in
+	// shape to the weekly one and told apart only by the period token.
+	KindMonthly FileKind = "monthly"
 )
 
 // Request carries everything a Publisher needs to write a single file.
