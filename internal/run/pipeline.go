@@ -516,10 +516,12 @@ type rollupPart struct {
 	//
 	// It exists because NewFrontmatter builds a document title out of
 	// project/audience/period/kind alone. Two per-customer epic rollups
-	// in one period therefore shipped the SAME title ("Cross-project
-	// rollup customer report — all subscribed projects, 2026-W43") and
-	// the same tags, so nothing in the docbuilder index — every one of
-	// them public: true — said which customer a document belonged to.
+	// in one period therefore shipped the SAME title — back then
+	// "Cross-project rollup customer report — all subscribed projects,
+	// 2026-W43"; the customer half of that wording is now "all
+	// customer-facing projects", see NewFrontmatter — and the same
+	// tags, so nothing in the docbuilder index, every one of them
+	// public: true, said which customer a document belonged to.
 	label string
 }
 
@@ -863,9 +865,17 @@ func bucketAllEpics(projects []ProjectResult) []epicRollupPart {
 
 func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) ([]string, int, map[string]llm.Usage, error) {
 	// No representative project name: the epic rollups name every
-	// project in the body and the frontmatter carries Project: "",
-	// because they span N projects. A "first project for determinism"
-	// used to be threaded into the prompt data and rendered by nothing.
+	// project in the body and span N of them, so there is no single
+	// project to carry. A "first project for determinism" used to be
+	// threaded into the prompt data and rendered by nothing.
+	//
+	// What DOES reach the frontmatter is rollupPart.label, which is
+	// set per bucket further down: the customer code for a
+	// per-customer bucket, "" for the single team-wide one. That is
+	// the whole point of the field — two customers' public: true
+	// documents would otherwise share a title and a tag set. This
+	// comment used to say the frontmatter carries Project: "", which
+	// stopped being true when label was introduced.
 	return p.runAudienceRollups(ctx, projects, audienceInputs{
 		name: "epics-rollup",
 		parts: func(aud prompt.Audience) ([]rollupPart, error) {

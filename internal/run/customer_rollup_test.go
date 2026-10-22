@@ -874,3 +874,57 @@ func keysOf(m map[string]llm.Usage) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestEpicRollup_TeamBucketCarriesNoCustomerLabel: the companion to
+// TestEpicRollup_PerCustomerFrontmatterNamesTheCustomer, which pins the
+// other half of the claim runEpicRollup's comment makes: a per-customer
+// bucket carries the customer code, the single team-wide bucket carries
+// none.
+//
+// That second half was asserted nowhere, and the comment that used to
+// describe it — "the frontmatter carries Project: \"\"" — was
+// half-wrong for several rounds before anyone noticed, because nothing
+// tested either half. A claim in a comment about which of two branches
+// a field takes is exactly the kind a test can hold and a reader
+// cannot.
+func TestEpicRollup_TeamBucketCarriesNoCustomerLabel(t *testing.T) {
+	sp := newSourcePipeline(t, nil, nil)
+	projects := []ProjectResult{
+		on("a", epic(1, "alpha", "org::ACME")),
+		on("b", epic(2, "beta", "org::ACME")),
+	}
+	if _, _, _, err := sp.p.runEpicRollup(context.Background(), projects); err != nil {
+		t.Fatalf("runEpicRollup: %v", err)
+	}
+
+	var team publisher.Request
+	found := false
+	for _, w := range sp.pub.written {
+		if w.Audience != "team" {
+			continue
+		}
+		team, found = w, true
+	}
+	if !found {
+		t.Fatalf("no team rollup published; names: %v", publishedNames(sp))
+	}
+	if !strings.HasSuffix(team.Name, "--team.md") || !strings.Contains(team.Name, "epics-rollup") {
+		t.Fatalf("expected the single combined team file, got %q", team.Name)
+	}
+	if team.Project != "" {
+		t.Errorf("the team-wide bucket carried Project=%q; it spans every "+
+			"project, so it must name none — and NewFrontmatter turns a "+
+			"non-empty value here into a title that reads as one project", team.Project)
+	}
+	// And it must still be titled as the fleet, not as ACME: the two
+	// epics here are ACME's, but the file is internal and spans
+	// everything.
+	title := fmt.Sprint(publisher.NewFrontmatter(team.Project, team.Audience, team.Period, team.Kind,
+		time.Now(), team.Body, "").Title)
+	if strings.Contains(title, "ACME") {
+		t.Errorf("the combined team rollup is titled %q, as if it were ACME's", title)
+	}
+	if !strings.Contains(title, "all projects") {
+		t.Errorf("team rollup title = %q, want it to say it spans every project", title)
+	}
+}
