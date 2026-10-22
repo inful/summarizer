@@ -836,7 +836,10 @@ old body`, existingUID, existingUID))
 	p := NewGitLab(srv.URL, "glpat-test", "group/reports", "reports", "main", "summarizer")
 
 	_, err := p.Publish(context.Background(), Request{
-		Name: "x.md", Body: []byte("# new body"), Period: "2026-10-19",
+		// Not an H1: NewFrontmatter strips a leading "# ..." title so the
+		// body does not duplicate the frontmatter one, and this test is
+		// about which body landed, not about titles.
+		Name: "x.md", Body: []byte("new body"), Period: "2026-10-19",
 		Kind: KindPerProject, Project: "group/proj", Public: true,
 	})
 	if err != nil {
@@ -853,7 +856,7 @@ old body`, existingUID, existingUID))
 		t.Errorf("re-run should preserve existing uid %q, got:\n%s", existingUID, got)
 	}
 	// Body should be the new one, not the old.
-	if !strings.Contains(got, "# new body") {
+	if !strings.Contains(got, "new body") {
 		t.Errorf("re-run should write new body, got:\n%s", got)
 	}
 	if strings.Contains(got, "old body") {

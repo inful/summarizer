@@ -75,7 +75,14 @@ func (f Frontmatter) Render(body []byte) []byte {
 		}
 	}
 	sb.WriteString("---\n\n")
-	sb.Write(body)
+	// Stripped here as well as in NewFrontmatter, and that is deliberate:
+	// this is the function that assembles the bytes that land in the
+	// file, and Publish passes it req.Body rather than the slice
+	// NewFrontmatter derived its fingerprint from. Stripping in one
+	// place only left the H1 in the document and out of the hash.
+	// stripLeadingTitle is idempotent, so the second call is a no-op on
+	// an already-stripped body.
+	sb.Write(stripLeadingTitle(body))
 	return []byte(sb.String())
 }
 
@@ -102,6 +109,16 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 	if uid == "" {
 		uid = mdid.GenerateUID()
 	}
+
+	// Before the fingerprint, not after: the hash has to cover the
+	// bytes that actually land in the file, or docbuilder sees a
+	// content change on every read.
+	//
+	// The templates already tell the model not to write a title. This
+	// is the enforcement, because a model that ignores the rule would
+	// otherwise put a second "# Weekly engineering update" under the
+	// frontmatter title that is already there.
+	body = stripLeadingTitle(body)
 
 	// mdfp.CalculateFingerprintFromParts("", body) hashes the body only —
 	// the same SHA-256-of-bytes we'd compute inline, but routed through
@@ -153,4 +170,51 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 		Categories:  []string{"engineering-update"},
 		Aliases:     []string{"/_uid/" + uid + "/"},
 	}
+}
+
+// stripLeadingTitle removes a single leading Markdown H1 and the blank
+// lines around it, so the body does not repeat the title docbuilder
+// already renders from the frontmatter.
+//
+// Returns body byte-for-byte unchanged when there is no leading H1,
+// which keeps the fingerprint stable for every existing document.
+//
+// Only the GitLab publisher calls this, and that is correct: the
+// local-disk publisher writes no frontmatter, so on disk the H1 is the
+// only title the file has and removing it would leave an unnamed
+// document.
+//
+// Only one H1, and only at the very start. A "## Highlights" further
+// down is content, not a title, and "#not-a-heading" is not a heading
+// in Markdown at all — stripping it would corrupt a line the model
+// wrote on purpose.
+func stripLeadingTitle(body []byte) []byte {
+	rest := string(body)
+	for {
+		line, after, more := strings.Cut(rest, "\n")
+		trimmed := strings.TrimRight(line, " \t\r")
+		if trimmed == "" {
+			if !more {
+				return body // nothing but blank lines
+			}
+			rest = after
+			continue
+		}
+		// ATX heading: up to three leading spaces, then "#", then a
+		// space, tab or end of line. Four spaces is an indented code
+		// block, not a heading.
+		indent := len(trimmed) - len(strings.TrimLeft(trimmed, " "))
+		if indent <= 3 && isH1(trimmed[indent:]) {
+			return []byte(strings.TrimLeft(after, "\r\n"))
+		}
+		return body
+	}
+}
+
+func isH1(line string) bool {
+	if !strings.HasPrefix(line, "#") {
+		return false
+	}
+	rest := line[1:]
+	return rest == "" || rest[0] == ' ' || rest[0] == '\t'
 }

@@ -28,8 +28,33 @@ aliases:
   - /_uid/0192b6a0-72cd-7abc-8def-0123456789ab/
 ---
 
-(rendered Markdown body)
+(rendered Markdown body — no top-level `#` title; see below)
 ```
+
+## The body carries no title
+
+The frontmatter `title` is the only title a report has. The body does
+not repeat it as a `# …` heading — docbuilder renders the frontmatter
+title above the Markdown, so an H1 in the body is a visible duplicate.
+
+This is enforced twice, because the first attempt is a model that may
+not listen:
+
+1. **The prompt.** All eight templates carry a rule telling the model
+   not to write a line starting with `#`.
+2. **The publisher.** `stripLeadingTitle` removes a single leading H1
+   and the blank lines around it, in `NewFrontmatter` before the
+   fingerprint is computed and again in `Render` where the file's bytes
+   are assembled.
+
+A body with no leading H1 comes back byte-for-byte unchanged, so
+existing documents keep their fingerprints. Only one H1 and only at the
+very start: `## Highlights` further down is content, and `#notaheading`
+is not a heading in Markdown at all.
+
+**This applies to the GitLab publisher only.** The local-disk publisher
+writes no frontmatter, so on disk the H1 is the only title the file has
+and removing it would leave an unnamed document.
 
 `date` and `lastmod` are the run timestamp, so they move within a
 week while `title` and `tags` stay pinned to the week slug — a weekly

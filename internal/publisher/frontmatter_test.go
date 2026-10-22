@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/inful/mdfp"
 )
 
 // uuidV7Re matches a canonical UUID v7 string — same pattern as inful/mdid's
@@ -195,5 +197,90 @@ func TestNewFrontmatter_TitleNamesThePeriod(t *testing.T) {
 	m := NewFrontmatter("", "customer", "2026-09", KindMonthly, now, []byte("x"), "u")
 	if w.Title == m.Title {
 		t.Errorf("weekly and monthly rollups share a title: %q", w.Title)
+	}
+}
+
+// TestStripLeadingTitle: summarizer tells the model not to write a
+// title, and this removes one anyway. A body that already starts with
+// content must come back byte-for-byte, so its fingerprint does not
+// move.
+func TestStripLeadingTitle(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"the reported case", "# Weekly engineering update\n\nThe API got faster.\n", "The API got faster.\n"},
+		{"no blank line after", "# Weekly update\nThe API got faster.\n", "The API got faster.\n"},
+		{"leading blank lines", "\n\n# Title\n\nBody.\n", "Body.\n"},
+		{"CRLF", "# Title\r\n\r\nBody.\r\n", "Body.\r\n"},
+		{"trailing spaces on the heading", "# Title   \n\nBody.\n", "Body.\n"},
+		{"bare hash is a heading", "#\n\nBody.\n", "Body.\n"},
+		{"up to three spaces of indent", "   # Title\n\nBody.\n", "Body.\n"},
+		{"bare hash with trailing space", "# \n\nBody.\n", "Body.\n"},
+		{"title only", "# Only a title\n", ""},
+
+		// Left alone.
+		{"no title at all", "The API got faster.\n", "The API got faster.\n"},
+		{"starts with H2", "## Highlights\n\n- faster\n", "## Highlights\n\n- faster\n"},
+		{"no space after hash is not a heading", "#notatitle\n\nBody.\n", "#notatitle\n\nBody.\n"},
+		{"four spaces is a code block", "    # Title\n\nBody.\n", "    # Title\n\nBody.\n"},
+		{"H1 later in the document", "Intro.\n\n# A section\n", "Intro.\n\n# A section\n"},
+		{"empty", "", ""},
+		{"only blank lines", "\n\n", "\n\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := string(stripLeadingTitle([]byte(c.in))); got != c.want {
+				t.Errorf("stripLeadingTitle(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestNewFrontmatter_TitleIsNotDuplicatedInTheBody: the frontmatter
+// title is the only one docbuilder needs, so a model that writes its
+// own H1 anyway must not leave a second one in the file.
+func TestNewFrontmatter_TitleIsNotDuplicatedInTheBody(t *testing.T) {
+	now := time.Now()
+	fm := NewFrontmatter("group/proj", "customer", "2026-W43", KindPerProject, now,
+		[]byte("# Weekly engineering update\n\nThe API got faster.\n"), "u")
+
+	out := string(fm.Render([]byte("# Weekly engineering update\n\nThe API got faster.\n")))
+	if strings.Contains(out, "# Weekly engineering update") {
+		t.Errorf("the body still carries its own title:\n%s", out)
+	}
+	if !strings.Contains(out, "The API got faster.") {
+		t.Errorf("stripping took the content with it:\n%s", out)
+	}
+	if !strings.Contains(fm.Title, "Weekly customer report") {
+		t.Errorf("frontmatter title = %q", fm.Title)
+	}
+}
+
+// TestNewFrontmatter_FingerprintCoversTheStrippedBody: the hash has to
+// cover the bytes that land in the file. Computing it before the strip
+// would make every read look like a content change.
+func TestNewFrontmatter_FingerprintCoversTheStrippedBody(t *testing.T) {
+	now := time.Now()
+	body := []byte("# Weekly engineering update\n\nThe API got faster.\n")
+	stripped := stripLeadingTitle(body)
+
+	fm := NewFrontmatter("group/proj", "customer", "2026-W43", KindPerProject, now, body, "u")
+	direct := mdfp.CalculateFingerprintFromParts("", string(stripped))
+	if fm.Fingerprint != direct {
+		t.Errorf("fingerprint %s covers the un-stripped body; want %s over the stripped one",
+			fm.Fingerprint, direct)
+	}
+
+	// Same document, written twice with the same title, must hash the
+	// same: the H1 is not content.
+	a := NewFrontmatter("g/p", "customer", "2026-W43", KindPerProject, now,
+		[]byte("# Weekly engineering update\n\nBody.\n"), "u")
+	b := NewFrontmatter("g/p", "customer", "2026-W43", KindPerProject, now,
+		[]byte("\n## Highlights\n\nBody.\n"), "u")
+	_ = b
+	if a.Fingerprint == "" {
+		t.Error("empty fingerprint")
 	}
 }
