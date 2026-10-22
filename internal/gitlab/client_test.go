@@ -2,9 +2,11 @@ package gitlab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -140,4 +142,50 @@ func TestFetchMRDetail_PartialFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for 404, got nil")
 	}
+}
+
+// TestCappedDiff_TruncationDoesNotScaleWithTheBody: the cap on the
+// retained text has always worked. What it did NOT do was bound the
+// transient cost of applying it — `[]rune(s)` allocates four bytes per
+// byte, so capping a 40 MB diff allocated 160 MB to count the
+// characters it was about to discard. Measured on ASCII:
+//
+//	wire payload            :  40.0 MB
+//	retained Diff           :   0.001 MB
+//	allocated while decoding: 240.0 MB   (6.0x)
+//
+// This pins the 4x that remains — `string(b)` and strconv.Unquote — so
+// putting a third copy back is a test failure rather than a Sunday-night
+// surprise on a machine that is also running the cron.
+func TestCappedDiff_TruncationDoesNotScaleWithTheBody(t *testing.T) {
+	const mb = 1 << 20
+	raw := strings.Repeat("a", 40*mb)
+	body, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := append(append([]byte(`{"diff":`), body...), '}')
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	var out struct {
+		Diff cappedDiff `json:"diff"`
+	}
+	if err := json.Unmarshal(payload, &out); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+
+	if got, want := len(out.Diff.Text), maxDiffRunesPerFile+len("...[truncated]"); got != want {
+		t.Errorf("retained %d bytes, want %d", got, want)
+	}
+	allocated := float64(after.TotalAlloc-before.TotalAlloc) / float64(len(payload))
+	if allocated > 4.5 {
+		t.Errorf("decoding allocated %.1fx the wire payload; the two unavoidable "+
+			"copies (string(b) and Unquote) come to about 4x", allocated)
+	}
+	t.Logf("wire %d MB, retained %d B, transient %.1fx",
+		len(payload)/mb, len(out.Diff.Text), allocated)
 }

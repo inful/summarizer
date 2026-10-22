@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/inful/summarizer/internal/textutil"
 )
@@ -434,7 +435,7 @@ func (c *Client) probeHasAny(ctx context.Context, projectPath, kind string, sinc
 	case resp.StatusCode >= 400:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 		return false, fmt.Errorf("gitlab %s: %d %s",
-			http.MethodGet, resp.StatusCode, truncate(string(body), 200))
+			http.MethodGet, resp.StatusCode, textutil.Truncate(string(body), 200))
 	}
 	var batch json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil {
@@ -667,16 +668,26 @@ func (c *Client) FetchCommits(ctx context.Context, projectPath string, since tim
 // than after it.
 //
 // The naive version decodes `Diff` into a plain string and truncates
-// afterwards. That allocates the full multi-megabyte body first and
-// throws it away — so a vendor-bump MR with a 40 MB diff cost 40 MB
-// of string allocation per MR, times changeConcurrency concurrent
-// workers, on every run including the default --include-diffs=off one
-// that never uses the text.
+// afterwards. That retains the full multi-megabyte body — so a
+// vendor-bump MR with a 40 MB diff cost 40 MB of retained string per
+// MR, times changeConcurrency concurrent workers, on every run
+// including the default --include-diffs=off one that never uses the
+// text.
 //
 // encoding/json hands a custom Unmarshaler a SUBSLICE of its input
-// buffer (d.data[start:end]), so nothing is copied: we convert at most
-// maxDiffRunesPer runes and the rest of the value is simply never
-// materialised as a string.
+// buffer, so the value is never RETAINED whole: only the first
+// maxDiffRunesPerFile runes survive into the struct.
+//
+// It is not free, though: `string(b)` materialises the escaped literal
+// on the way in. Measured on a 40 MB ASCII diff that is ~1x the wire
+// payload, transient. Do not add a second. The first version also did
+// `[]rune(s)`, which allocates FOUR BYTES PER BYTE and put the whole
+// thing at 5x — 200 MB of garbage per in-flight MR, purely to count
+// characters it was about to throw away.
+// utf8.RuneCountInString counts without allocating and
+// utf8.DecodeRuneInString walks to the cut point, which gets the same
+// answer for nothing. TestCappedDiff_TruncationDoesNotScaleWithTheBody
+// fails if a copy comes back.
 type cappedDiff struct {
 	Text string
 }
@@ -692,8 +703,15 @@ func (c *cappedDiff) UnmarshalJSON(b []byte) error {
 		c.Text = ""
 		return nil
 	}
-	if r := []rune(s); len(r) > maxDiffRunesPerFile {
-		s = string(r[:maxDiffRunesPerFile]) + "...[truncated]"
+	if utf8.RuneCountInString(s) > maxDiffRunesPerFile {
+		// Walk to the Nth rune rather than slicing a []rune: the rune
+		// count is free and the walk allocates nothing.
+		cut := 0
+		for range maxDiffRunesPerFile {
+			_, size := utf8.DecodeRuneInString(s[cut:])
+			cut += size
+		}
+		s = s[:cut] + "...[truncated]"
 	}
 	c.Text = s
 	return nil
@@ -716,9 +734,12 @@ func (c *cappedDiff) UnmarshalJSON(b []byte) error {
 // pool.
 //
 // shortcut: the HTTP response body is still buffered whole by getJSON
-// before decoding, so peak memory is ~1x the /changes payload per
-// in-flight MR rather than being bounded outright. Streaming the decode
-// is the upgrade if a real MR ever ships a multi-GB diff; at 4-way
+// before decoding, and materialising the diff string costs one more
+// copy, so peak memory is ~1x the /changes payload per in-flight MR
+// rather than being bounded outright. That 1x is measured, not guessed:
+// cappedDiff's own comment used to claim 1x while the code spent 5x,
+// because of a []rune that is no longer there. Streaming the decode is
+// the upgrade if a real MR ever ships a multi-GB diff; at 4-way
 // concurrency a 40 MB payload is ~160 MB, which is survivable.
 func (c *Client) FetchMRDetail(ctx context.Context, projectPath string, iid int) (ChangesSummary, []DiffChunk, error) {
 	chunks, err := c.fetchMRChangesRaw(ctx, projectPath, iid)
@@ -900,7 +921,7 @@ func (c *Client) doJSON(ctx context.Context, path string, q url.Values, decode f
 		case slices.Contains(soft, resp.StatusCode):
 			return nil
 		case resp.StatusCode >= 400:
-			return fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, truncate(string(body), 200))
+			return fmt.Errorf("gitlab %s %s: %d %s", http.MethodGet, path, resp.StatusCode, textutil.Truncate(string(body), 200))
 		}
 		return decode(resp, body)
 	}
@@ -992,5 +1013,3 @@ func sleep(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
-
-func truncate(s string, n int) string { return textutil.Truncate(s, n) }
