@@ -219,16 +219,29 @@ The diff text is always wrapped in `<data>` markers (same OWASP LLM01:2025 mitig
 
 ### Caps
 
-| Cap | Value | Source |
-|---|---|---|
-| Projects per run | `--max-projects`, default 50 | `internal/run/pipeline.go` `DefaultMaxProjects` |
-| Events per project in the prompt | `--max-events`, default 200 | `internal/prompt/prompt.go` `capEvents` |
-| Per-file diff (decode-time, memory bound) | 600 runes | `internal/gitlab/client.go` `maxDiffRunesPerFile` |
-| Per-MR diff total (prompt-time) | 4000 runes | `internal/prompt/prompt.go` `diffMaxPerMR` |
-| Active epics per project in the epic rollup | 20 | `internal/run/pipeline.go` `maxActiveEpics` |
-| Rollup body, per input / total | 4000 / 16000 runes, oldest inputs dropped first | `internal/prompt/prompt.go` `rollupPerBodyCap` / `rollupTotalCap` |
+Every cap names its unit, and the units are **not** uniform: two of
+these count runes and three count bytes. That is not a typo to be tidied
+away — `formatDiffChunks` slices a string by byte offset and
+`maxDiffRunesPerFile` truncates by rune, and when the per-chunk cap
+counted runes while the per-MR cap counted bytes the slice landed inside
+a multi-byte character and put invalid UTF-8 in the team prompt. Both
+now respect rune boundaries; the units still differ because each cap is
+applied in the unit its own code uses.
 
-The 16000-rune total is the rollup's whole budget across every input,
+| Cap | Value | Unit | Source |
+|---|---|---|---|
+| Projects per run | `--max-projects`, default 50 | count | `internal/run/pipeline.go` `DefaultMaxProjects` |
+| Events per project in the prompt | `--max-events`, default 200 | count | `internal/prompt/prompt.go` `capEvents` |
+| Event list pages per project per week | 20 pages = 2,000 records | count | `internal/gitlab/client.go` `maxEventPages` |
+| Active-project scan pages | 10 pages = 1,000 candidates | count | `internal/gitlab/client.go` `maxActiveScanPages` |
+| Active epics per project in the epic rollup | 20 | count | `internal/run/pipeline.go` `maxActiveEpics` |
+| Per-file diff (decode-time, memory bound) | 600 | **runes** | `internal/gitlab/client.go` `maxDiffRunesPerFile` |
+| Rollup body, per input | 4,000 | **runes** | `internal/prompt/prompt.go` `rollupPerBodyCap` |
+| Rollup body, total across all inputs | 16,000, oldest inputs dropped first | **bytes** | `internal/prompt/prompt.go` `rollupTotalCap` |
+| Per-MR diff total (prompt-time) | 4,000 | **bytes** | `internal/prompt/prompt.go` `diffMaxPerMR` |
+| HTTP response body read | 16 MB (GitLab, publisher), 8 MB (LLM) | bytes | `maxResponseBytes` |
+
+The 16,000-byte total is the rollup's whole budget across every input,
 so on a wide run most projects never reach it — measured at 20 projects
 and ~2 KB reports, 8 bodies carried and 12 dropped. The prompt header
 says so explicitly (`Projects in this rollup: 20 (8 shown, 12 omitted
