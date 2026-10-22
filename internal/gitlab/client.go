@@ -995,14 +995,16 @@ func backoff(n int) time.Duration {
 	if n < 1 {
 		n = 1
 	}
-	mult := 1 << (n - 1) // n=1 → 1, n=2 → 2, n=3 → 4, ...
-	if mult > 30 {
-		mult = 30
-	}
-	d := time.Duration(mult) * time.Second
-	if d > maxBackoff {
-		d = maxBackoff
-	}
+	// One clamp, matching internal/llm and internal/publisher. This used
+	// to clamp the multiplier to 30 and then clamp the resulting
+	// duration to maxBackoff — and both were 30, so the second could
+	// never fire: two bounds for one value, one of them dead.
+	//
+	// The cap is applied before the jitter, so maxBackoff is the base,
+	// not the ceiling: the largest wait this returns is
+	// maxBackoff*1.2. At maxRetries=3 the largest base is 4s, so
+	// nothing here comes close either way.
+	d := min(time.Duration(1<<(n-1))*time.Second, maxBackoff)
 	// ±20% jitter.
 	jitter := time.Duration(float64(d) * 0.2 * (2*rand.Float64() - 1))
 	d += jitter

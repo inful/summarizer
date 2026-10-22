@@ -134,3 +134,42 @@ func TestClient_TransportRetryGivesUpAfterMaxRetries(t *testing.T) {
 		t.Errorf("attempts = %d, want %d", got, want)
 	}
 }
+
+// TestBackoffBounds: backoff had two clamps for one bound —
+// `if mult > 30 { mult = 30 }` and `if d > maxBackoff` — with both
+// values 30, so the second could never fire. This pins the real bounds
+// instead, and pins the one fact the old code made ambiguous: the cap is
+// the BASE, not the ceiling, because jitter is added after it.
+func TestBackoffBounds(t *testing.T) {
+	// The call range. maxRetries=3 means the largest attempt is 3, but
+	// check well past it so a future bump to maxRetries is covered.
+	for n := 1; n <= 8; n++ {
+		base := min(time.Duration(1<<(n-1))*time.Second, maxBackoff)
+		var lo, hi time.Duration = time.Hour, 0
+		for range 400 { // jitter is random; bound the range empirically
+			d := backoff(n)
+			if d < lo {
+				lo = d
+			}
+			if d > hi {
+				hi = d
+			}
+			if d < 0 {
+				t.Fatalf("backoff(%d) = %v, negative", n, d)
+			}
+		}
+		if lo < base*8/10 {
+			t.Errorf("backoff(%d) min %v is below 0.8*base %v", n, lo, base)
+		}
+		if hi > base*12/10+time.Millisecond {
+			t.Errorf("backoff(%d) max %v exceeds 1.2*base %v — the cap is the "+
+				"base, not the ceiling, because jitter is added after it", n, hi, base)
+		}
+	}
+	// n<1 must not produce a negative shift.
+	for _, n := range []int{0, -1, -100} {
+		if d := backoff(n); d < 0 {
+			t.Errorf("backoff(%d) = %v", n, d)
+		}
+	}
+}
