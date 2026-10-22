@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -23,8 +24,40 @@ var unsafeFields = map[string]bool{
 	".Project":    true, // project path — a maintainer can rename it
 	"$name":       true, // .ProjectNames — project paths again
 	"$body":       true, // rolled-up week / project body
-	// $week is deliberately absent: weeksInMonth builds it with
-	// weekSlugFor from a time.Time, so it is always "YYYY-Www".
+	".":           true, // the single-variable form: {{data .}} over .ProjectNames
+	// "." is the single-variable form of the same thing: `{{data .}}`
+	// over .ProjectNames. It was MISSING here, so downgrading that to a
+	// bare `{{.}}` in rollup-team.tmpl passed this test — in a template
+	// published public: true, where a project path containing "</data>"
+	// would escape the block. The monthly templates also ranged over a
+	// list with `.`, but theirs are week slugs and safe; they now use a
+	// named `$week :=` so `.` means one thing and one thing only.
+}
+
+// safeFields is the other half of the classification: every template
+// interpolation must appear in exactly one of these two maps.
+// TestTemplates_EveryFieldIsClassified fails on an unclassified field,
+// so "add a field, remember the list" stops being a convention and
+// becomes a compile-time-shaped requirement.
+//
+// Each entry says why the value cannot carry instructions.
+var safeFields = map[string]string{
+	"$week":         "weekSlugFor(time.Time) — always YYYY-Www, built from an int year and week",
+	".Window":       "WeekWindowLabel, a package-level const",
+	".Month":        "parseMonth validated it with time.Parse, layout 2006-01",
+	".ProjectCount": "an int",
+	".WeekCount":    "an int",
+	".DroppedCount": "an int",
+	".Dropped":      "an int",
+	".Used":         "an int",
+	".Total":        "an int",
+	".ShownCount":   "an int",
+	".EventCount":   "an int",
+	".Epic.IID":     "an int",
+	".Epic.State":   "a GitLab enum: opened / closed / started",
+	".Epic.WebURL":  "server-generated from the project path and IID; GitLab paths are [A-Za-z0-9_.-]",
+	".Events":       "writeEventLine escapes every field as it builds the blob",
+	"len":           "the template builtin; yields an int",
 }
 
 func TestTemplates_UntrustedFieldsAreEscaped(t *testing.T) {
@@ -112,4 +145,53 @@ func templateFields(line string) []templateRef {
 		i += 2 + j + 1
 	}
 	return out
+}
+
+// TestTemplates_EveryFieldIsClassified: the escaping test above can
+// only check fields someone remembered to list. A new interpolation,
+// or one whose field name changes, passes silently — which is exactly
+// how `.` stayed out of unsafeFields while `{{data .}}` sat in two
+// `public: true` templates: downgrading it to a bare `{{.}}` passed the
+// suite.
+//
+// Every field must land in exactly one of the two maps, and the maps
+// must not overlap. Adding a field to a template without classifying it
+// fails here.
+func TestTemplates_EveryFieldIsClassified(t *testing.T) {
+	for field := range safeFields {
+		if unsafeFields[field] {
+			t.Errorf("%s is in both maps: it cannot be both safe and unsafe", field)
+		}
+	}
+
+	files, err := templatesFS.ReadDir("templates")
+	if err != nil {
+		t.Fatalf("read templates: %v", err)
+	}
+	seen := map[string]string{} // field -> where it was first seen
+	for _, f := range files {
+		raw, err := templatesFS.ReadFile("templates/" + f.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", f.Name(), err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, ref := range templateFields(line) {
+				if unsafeFields[ref.field] || safeFields[ref.field] != "" {
+					continue
+				}
+				where := fmt.Sprintf("%s:%d", f.Name(), i+1)
+				if prev, dup := seen[ref.field]; dup {
+					t.Errorf("{{%s}} is unclassified (first seen %s, now %s); add it to "+
+						"unsafeFields or safeFields", ref.field, prev, where)
+					continue
+				}
+				seen[ref.field] = where
+				t.Errorf("{{%s}} at %s is in neither map; unsafeFields if a GitLab "+
+					"user controls it, safeFields (with a reason) if not", ref.field, where)
+			}
+		}
+	}
+	if t.Failed() {
+		t.Logf("re-derive the field list with: grep -oh '{{[^}]*}}' internal/prompt/templates/*.tmpl")
+	}
 }

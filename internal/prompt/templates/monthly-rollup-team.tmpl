@@ -11,7 +11,7 @@ Rules:
 
 Month: {{.Month}}
 Weeks in this rollup: {{.WeekCount}}
-{{range .WeekNames}}  - {{.}}
+{{range $week := .WeekNames}}  - {{$week}}
 {{end}}
 
 <data>
