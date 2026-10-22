@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -159,7 +160,32 @@ func (c *Config) Validate() error {
 	if c.MaxEvents < 1 {
 		return fmt.Errorf("config: max_events must be ≥ 1, got %d", c.MaxEvents)
 	}
+	c.InternalOnlyProjects = trimAll(c.InternalOnlyProjects)
 	return nil
+}
+
+// trimAll drops surrounding whitespace from a list of operator-supplied
+// strings, and drops the entries that were whitespace only.
+//
+// The --internal-only-project flag already does this (stringSliceFlag
+// trims each value), but the YAML block did not — so a list pasted out
+// of a spreadsheet behaved differently from the same list typed as a
+// flag, and an entry like "  group/secret  " could never match a
+// project path. The two sources are documented as unioning together, so
+// they have to normalise the same way. A missed match here is an
+// audience control failing open: the project gets customer-facing
+// output it was marked as never having.
+func trimAll(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Load reads path (if it exists) and unmarshals into a fresh Config. A

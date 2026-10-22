@@ -217,3 +217,48 @@ func TestPublishTarget(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_TrimsInternalOnlyProjects: the --internal-only-project
+// flag trims each value; the YAML block used not to. A list pasted out
+// of a spreadsheet therefore behaved differently from the same list
+// typed as a flag, and "  group/secret  " could never match a project
+// path — which is an audience control failing open, not a cosmetic
+// difference.
+func TestValidate_TrimsInternalOnlyProjects(t *testing.T) {
+	cfg := &Config{
+		GitLabHost: "https://gitlab.example.com",
+		Provider:   "openai",
+		MaxEvents:  200,
+		InternalOnlyProjects: []string{
+			"  group/secret  ",
+			"\tgroup/other\t",
+			"   ", // whitespace only: no project, drop it
+			"group/third",
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	want := []string{"group/secret", "group/other", "group/third"}
+	if len(cfg.InternalOnlyProjects) != len(want) {
+		t.Fatalf("got %q, want %q", cfg.InternalOnlyProjects, want)
+	}
+	for i, w := range want {
+		if cfg.InternalOnlyProjects[i] != w {
+			t.Errorf("entry %d = %q, want %q", i, cfg.InternalOnlyProjects[i], w)
+		}
+	}
+}
+
+// TestValidate_NilListStaysNil: a config with no internal_only_projects
+// block must not turn into an empty non-nil slice, so "unset" stays
+// distinguishable from "set to nothing" the way CustomerCodes does.
+func TestValidate_NilListStaysNil(t *testing.T) {
+	cfg := &Config{GitLabHost: "https://gitlab.example.com", Provider: "openai", MaxEvents: 200}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if cfg.InternalOnlyProjects != nil {
+		t.Errorf("unset list became %q", cfg.InternalOnlyProjects)
+	}
+}
