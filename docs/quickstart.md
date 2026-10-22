@@ -37,8 +37,13 @@ flag, summarizer runs **every project the token can see that had
 activity in the window** — no topic, no config entry needed. A project
 opts out with the `no-summarize` topic or a `.summaryignore` /
 `.docignore` file at its repo root. Both also win over an explicit
-`--project` listing. The reports project itself is skipped too, so
-`publish.project` never summarises itself. To narrow the scope instead:
+`--project` listing. **One thing is skipped by default but not by name:**
+discovery leaves out the reports project itself, so `summarizer`
+writing to `sfb/reports` does not also summarise `sfb/reports` — its
+merge requests are summarizer's own publishing MRs. Naming it
+explicitly brings it back, because an explicit `--project` is the
+operator overriding a default:
+`--project sfb/reports` will run it. To narrow the scope instead:
 
 | Flag | Selects |
 |---|---|
@@ -83,15 +88,20 @@ group@subgroup@project--wk--customer.md
 group@subgroup@project--wk--team.md
 ```
 
-Both have a one-line run summary on stderr:
+Both are reported on stderr, one summary line followed by the files and
+their token cost:
 
 ```
-summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=this ISO week (since Monday 00:00 UTC, 60h0m0s elapsed))
+summarizer: ok — 1 project(s), 47 event(s) (47 used), 2 file(s) written (window=this ISO week 2026-10-19 → 2026-10-22 17:04 (89h4m0s elapsed))
   → ./summarizer-out/2026-W43/group@subgroup@project--wk--customer.md
   → ./summarizer-out/2026-W43/group@subgroup@project--wk--team.md
   tokens[group/subgroup/project/customer]: prompt=2103 completion=812 total=2915
-  tokens[group/subgroup/project/team]:     prompt=2478 completion=901 total=3379
+  tokens[group/subgroup/project/team]: prompt=2478 completion=901 total=3379
 ```
+
+The window shows both its dates and how long it actually was, because a
+cron on Monday prints a correct-looking three-day range that covers three
+hours of work. `89h4m0s elapsed` is the number that says so.
 
 ## Cron
 
