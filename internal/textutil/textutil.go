@@ -6,6 +6,7 @@ package textutil
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -22,8 +23,31 @@ func Truncate(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	r := []rune(s)
-	return string(r[:n]) + "..."
+	// Built rune by rune, not by converting the whole string to a
+	// []rune first. []rune allocates FOUR BYTES PER BYTE for the entire
+	// input: truncating a 16 MB HTTP error body to these 200 characters
+	// allocated 64 MB to produce a 203-byte string, on the error path,
+	// where memory is already under pressure.
+	//
+	// Ranging over a string is lazy — it decodes one rune at a time —
+	// so the break at n makes this O(n), not O(len(s)). And ranging
+	// yields utf8.RuneError for each invalid byte while WriteRune
+	// encodes that as the replacement character, so the output is
+	// byte-identical to the []rune version, invalid input included.
+	//
+	// Same trap, same fix as cappedDiff.UnmarshalJSON in internal/gitlab.
+	var b strings.Builder
+	b.Grow(n * 4) // worst case for n runes
+	i := 0
+	for _, r := range s {
+		if i == n {
+			break
+		}
+		b.WriteRune(r)
+		i++
+	}
+	b.WriteString("...")
+	return b.String()
 }
 
 // RetryAfter parses an HTTP Retry-After header, which may be

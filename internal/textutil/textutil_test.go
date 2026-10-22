@@ -2,6 +2,7 @@ package textutil
 
 import (
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -123,5 +124,75 @@ func TestRetryAfter(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format(http.TimeFormat)
 	if got := RetryAfter(future, cap, fallback); got <= 0 || got > cap {
 		t.Errorf("RetryAfter(future date) = %v, want (0, %v]", got, cap)
+	}
+}
+
+// truncateReference is the []rune implementation Truncate used to be.
+// It is not efficient, and it is not going back — it is here so the
+// cheap one can be checked for byte-identical output, which is the only
+// reason to prefer it.
+func truncateReference(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:n]) + "..."
+}
+
+// TestTruncate_MatchesTheRuneSliceByteForByte: the fix replaced
+// []rune(s) with a rune-by-rune build because []rune allocates four
+// bytes per byte for the whole input. Ranging over a string yields
+// utf8.RuneError for an invalid byte while []rune yields the same rune,
+// and WriteRune encodes it identically — so the outputs must match
+// exactly, invalid input included.
+//
+// This is the assertion that makes the cheap version safe. A plain
+// s[:cut] would have been faster still and silently stopped
+// normalising invalid bytes to the replacement character.
+func TestTruncate_MatchesTheRuneSliceByteForByte(t *testing.T) {
+	inputs := []string{
+		"",
+		"short",
+		"héllo→世界 🚀 mixed script",
+		"a\xffb",               // one invalid byte
+		"\xff\xff\xff\xff\xff", // invalid throughout
+		"valid prefix \xc3 truncated mid-sequence",
+		"abc\xffdef",
+		strings.Repeat("é", 1000),
+	}
+	for _, in := range inputs {
+		for _, n := range []int{-1, 0, 1, 3, 8, 14, 100, 1000, 5000} {
+			got, want := Truncate(in, n), truncateReference(in, n)
+			if got != want {
+				t.Errorf("Truncate(%q, %d) = %q, []rune version = %q", in, n, got, want)
+			}
+		}
+	}
+}
+
+// TestTruncate_DoesNotAmplifyLargeInput: six call sites pass a whole
+// HTTP response body — bounded at 16 MB — into a 200- or 300-character
+// truncation, all on error paths. []rune made that 64 MB of garbage to
+// produce a 203-byte string.
+func TestTruncate_DoesNotAmplifyLargeInput(t *testing.T) {
+	body := strings.Repeat("x", 16<<20)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	out := Truncate(body, 200)
+	runtime.ReadMemStats(&after)
+
+	if got, want := len(out), 203; got != want {
+		t.Fatalf("output %d bytes, want %d — the cap itself is broken", got, want)
+	}
+	allocated := float64(after.TotalAlloc-before.TotalAlloc) / float64(len(body))
+	t.Logf("input 16.0 MB -> %d bytes out, transient %.3fx", len(out), allocated)
+	if allocated > 0.01 {
+		t.Errorf("truncating to 200 chars allocated %.3fx its input; the "+
+			"whole string must not be materialised", allocated)
 	}
 }
