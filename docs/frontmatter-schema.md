@@ -84,9 +84,13 @@ report is refined in place across seven runs but keeps one identity.
 | rollup, team | `summarizer, team, <period>, rollup` | *(omitted)* |
 | monthly rollup, customer | `summarizer, customer, <month>, rollup, monthly` | `true` |
 | monthly rollup, team | `summarizer, team, <month>, rollup, monthly` | *(omitted)* |
+| per-customer epic rollup | `summarizer, customer, <period>, rollup, <customer>` | `true` |
 
 The per-project tag is dropped on rollups because there's no single
-project; subscribers filter by `rollup` instead. Monthly rollups carry
+project; subscribers filter by `rollup` instead. A per-customer epic
+rollup carries the customer code as its project, so it gets the code as
+a tag — which is what tells ACME's and GLOBEX's `public: true`
+documents apart in the index. Monthly rollups carry
 `monthly` too, so a subscriber can select "a whole month" and "a single
 month" apart without parsing the period slug.
 
@@ -99,6 +103,7 @@ month" apart without parsing the period slug.
 | rollup, customer | `Cross-project rollup customer report — all customer-facing projects, <period>` | `Cross-project rollup customer report — all customer-facing projects, 2026-W43` |
 | monthly rollup, team | `Monthly cross-project rollup team report — all projects, <month>` | `Monthly cross-project rollup team report — all projects, 2026-09` |
 | monthly rollup, customer | `Monthly cross-project rollup customer report — all customer-facing projects, <month>` | `Monthly cross-project rollup customer report — all customer-facing projects, 2026-09` |
+| per-customer epic rollup | `Cross-project rollup customer report — <customer>, <period>` | `Cross-project rollup customer report — ACME, 2026-W43` |
 
 The customer rollup is built from the projects that opted in to
 customer output, which is a subset of the run, so it says

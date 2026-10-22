@@ -1,6 +1,8 @@
 package publisher
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -318,5 +320,60 @@ func TestNewFrontmatter_RollupTitleDoesNotOverstateTheCustomerRollup(t *testing.
 	one := NewFrontmatter("ACME", "customer", "2026-W43", KindRollup, now, []byte("x"), "u")
 	if strings.Contains(one.Title, "all ") {
 		t.Errorf("a per-customer rollup should name the customer, not the fleet: %q", one.Title)
+	}
+}
+
+// schemaDoc is the contract for the frontmatter every published file
+// carries: docs/frontmatter-schema.md.
+func schemaDoc(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "frontmatter-schema.md"))
+	if err != nil {
+		t.Fatalf("read schema doc: %v", err)
+	}
+	return string(b)
+}
+
+// TestNewFrontmatter_EveryTitleShapeIsInTheSchemaDoc: the schema doc's
+// title table had five rows for six shapes the code produces. A
+// per-customer epic rollup is KindRollup with Project carrying the
+// org:: code — the change that stopped two customers' public: true
+// documents sharing a title — and no row described it.
+//
+// Nothing caught that. docbuilder-lint is the tool that validates this
+// file and it SKIPS SILENTLY when the binary is missing or broken,
+// which a bare mise shim with no pinned version is; lefthook.yml says
+// so itself. So "✔️ docbuilder-lint" on a commit that changed a
+// document shape can mean "never ran", and this Go test is the only
+// thing left.
+//
+// A presence assertion in both directions: every title the code can
+// build appears among the doc's examples, so neither a new shape nor a
+// deleted row passes silently.
+func TestNewFrontmatter_EveryTitleShapeIsInTheSchemaDoc(t *testing.T) {
+	doc := schemaDoc(t)
+	now := time.Now()
+	cases := []struct {
+		what    string
+		project string
+		aud     string
+		kind    FileKind
+		period  string
+	}{
+		{"per-project", "group/proj", "customer", KindPerProject, "2026-W43"},
+		{"rollup, whole fleet", "", "team", KindRollup, "2026-W43"},
+		{"rollup, whole fleet", "", "customer", KindRollup, "2026-W43"},
+		{"monthly, whole fleet", "", "team", KindMonthly, "2026-09"},
+		{"monthly, whole fleet", "", "customer", KindMonthly, "2026-09"},
+		// The one that was missing: one customer, named.
+		{"epic rollup, per customer", "ACME", "customer", KindRollup, "2026-W43"},
+	}
+	for _, c := range cases {
+		fm := NewFrontmatter(c.project, c.aud, c.period, c.kind, now, []byte("b"), "u")
+		if !strings.Contains(doc, fm.Title) {
+			t.Errorf("%s: the schema doc does not show %q — a document shape the "+
+				"code produces is missing from the contract, and nothing validates "+
+				"that file", c.what, fm.Title)
+		}
 	}
 }
