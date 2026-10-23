@@ -1,11 +1,11 @@
 github.com/inful/decide v0.0.0-20261008064855-f78fd7ad59b9 h1:0rj/5hZyEM42NCBEknr/CYxP20aSmchxCh3lLx/Q1HM=
 github.com/inful/decide v0.0.0-20261008064855-f78fd7ad59b9/go.mod h1:5mu+1jXGKzP6MBbsolWA8tF62xujZQw/6spMIV+GA/s=
-github.com/inful/mdfm v0.3.0 h1:QrLIa63jm4o64W2+Gm34zI3aAsgnqI7WC7jxj9bEfAE=
-github.com/inful/mdfm v0.3.0/go.mod h1:D8RVg6Zzz4bekTwuvr8pKDRb3QvIaV9/VQ4c1Y0nNTo=
+github.com/inful/mdfm v0.3.1 h1:eLTg0Z7u4H5ulnwF1P0EBnw0DOVyZSUAiDJJhCaorw0=
+github.com/inful/mdfm v0.3.1/go.mod h1:D8RVg6Zzz4bekTwuvr8pKDRb3QvIaV9/VQ4c1Y0nNTo=
 github.com/inful/mdfp v1.3.0 h1:g714OO5tshxw85QoQM64hKTfcqB9PVEwqgIx2q/CYnc=
 github.com/inful/mdfp v1.3.0/go.mod h1:P1CLAPrUwbXBq4Da68yH8X4y5Tf9T/yatxpiucz5ah4=
-github.com/inful/mdid v0.3.0 h1:YXlwZLmYZqZZlWBfiXT6SfU6ACy68jpaIm/gjDLrt7M=
-github.com/inful/mdid v0.3.0/go.mod h1:3PKMJv8FyXHj5E7sKs1KrrQ200ld5edqEL3UdZbSU2U=
+github.com/inful/mdid v0.4.0 h1:iNLdVOjoxGzWaI0ppQ9wkA0uCMHbo4gr8cO3AKKN+JU=
+github.com/inful/mdid v0.4.0/go.mod h1:NI3EzsmnsSsQevrOTJ0k8DxEVO24uPhVInaU6gbp8lQ=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
