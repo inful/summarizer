@@ -1140,6 +1140,21 @@ func checkPrompt(ctx context.Context, g safety.Guard, label, prompt string) erro
 		// what a nil here always means.
 		g = safety.NoopGuard{}
 	}
+	// A NoopGuard is not a guard. It answers "safe" to a question it was
+	// never asked, and its score is always exactly 0.000 — so printing
+	// "safety guard cleared" for it makes a positive security claim
+	// about a check that did not happen. safety.enabled is opt-in, so
+	// this is EVERY default install's log:
+	//
+	//	summarizer: safety guard cleared g/p/customer (score=0.000)
+	//
+	// Silence is the honest output: there is no guard, so there is no
+	// result to report. An operator reading the log can now tell
+	// "checked and passed" from "never checked" apart.
+	switch g.(type) {
+	case safety.NoopGuard, *safety.NoopGuard:
+		return nil
+	}
 	verdict, score, err := g.Check(ctx, prompt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "summarizer: WARN safety guard unavailable for %s — proceeding without check: %v\n", label, err)
