@@ -35,22 +35,30 @@ below), which `cron` mails to the operator.
 | 2 | `exitUsage` | Bad CLI args or no `--project`. | operator typo, automation bug |
 | 3 | `exitConfig` | YAML parse error, missing required field, validation failed. | typo in `summarizer.yaml` |
 | 4 | `exitGitLab` | GitLab API fetch failed (auth, 5xx exhausted retries, network). | token expired, host unreachable, MR list too big |
-| 5 | `exitLLM` | LLM call failed (auth, 4xx, 5xx exhausted retries, prompt-render error, safety-verdict rejection). | OPENAI_API_KEY wrong, model id typo, safety guard said injection |
+| 5 | `exitLLM` | LLM call failed (auth, 4xx, 5xx exhausted retries, prompt-render error). | OPENAI_API_KEY wrong, model id typo |
 | 6 | `exitWrite` | Disk-write failed (local publisher only). | EACCES; ENOSPC |
 | 7 | `exitEnv` | Required env var missing; `--safety-enabled` without URL; invalid combo. | missing $GITLAB_TOKEN, $OPENAI_API_KEY, $ANTHROPIC_API_KEY |
+| 8 | `exitInjection` | The safety guard rejected a rendered prompt as a prompt-injection attempt. | a GitLab issue or MR body carried instructions aimed at the model |
 
 Wire these in your cron wrapper:
 
 ```bash
 case $? in
   0|2|3|4|5|6|7) mail -s "summarizer exit=$?" /var/log/summarizer.log ;;
+  8)             mail -s "summarizer PROMPT REJECTED by the safety guard" /var/log/summarizer.log ;;
   *)             mail -s "summarizer EXIT ABEND" /var/log/summarizer.log ;;
 esac
 ```
 
+Code 8 is its own arm on purpose. It is not an outage: the run stopped
+because the guard classified a prompt as an injection attempt, and that
+is worth an alert that says so rather than one that says "EXIT ABEND".
+`classify` maps it with `errors.Is(err, run.ErrInjection)`, so both
+`run` and `monthly` return it.
+
 ## Safety guard scenarios
 
-### "Summarizer rejected my prompt" (exit 5)
+### "Summarizer rejected my prompt" (exit 8)
 
 ```
 summarizer: safety guard REJECTED prompt for group/proj/team (score=0.913 >= threshold)
