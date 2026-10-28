@@ -142,6 +142,31 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 		tags = append(tags, project)
 	}
 
+	title := Title(project, audience, period, kind)
+
+	return Frontmatter{
+		UID:         uid,
+		Title:       title,
+		Date:        now,
+		LastMod:     now,
+		Fingerprint: fingerprint,
+		Tags:        tags,
+		Categories:  []string{"engineering-update"},
+		Aliases:     []string{"/_uid/" + uid + "/"},
+	}
+}
+
+// Title builds the document title for one report.
+//
+// It is the same string in both sinks: the frontmatter carries it on
+// the GitLab path, and the local-disk publisher writes it as the file's
+// H1. One function, so a local file and a published file with the same
+// inputs are titled identically.
+//
+// Extracted from NewFrontmatter when the local publisher started
+// writing its own heading — the two must not drift, and a title
+// assembled twice is a title that will drift.
+func Title(project, audience, period string, kind FileKind) string {
 	titlePrefix := "Weekly"
 	projectLabel := project
 	switch kind {
@@ -173,18 +198,7 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 			projectLabel = "all customer-facing projects"
 		}
 	}
-	title := fmt.Sprintf("%s %s report — %s, %s", titlePrefix, audience, projectLabel, period)
-
-	return Frontmatter{
-		UID:         uid,
-		Title:       title,
-		Date:        now,
-		LastMod:     now,
-		Fingerprint: fingerprint,
-		Tags:        tags,
-		Categories:  []string{"engineering-update"},
-		Aliases:     []string{"/_uid/" + uid + "/"},
-	}
+	return fmt.Sprintf("%s %s report — %s, %s", titlePrefix, audience, projectLabel, period)
 }
 
 // stripLeadingTitle removes a single leading Markdown H1 and the blank
@@ -194,10 +208,19 @@ func NewFrontmatter(project, audience, period string, kind FileKind, now time.Ti
 // Returns body byte-for-byte unchanged when there is no leading H1,
 // which keeps the fingerprint stable for every existing document.
 //
-// Only the GitLab publisher calls this, and that is correct: the
-// local-disk publisher writes no frontmatter, so on disk the H1 is the
-// only title the file has and removing it would leave an unnamed
-// document.
+// Only the GitLab publisher strips the title, and that is correct: it
+// replaces the model's H1 with the frontmatter title docbuilder
+// renders. The local-disk publisher writes no frontmatter, so it KEEPS
+// a title — but it supplies one itself (see local.go's titled), because
+// the prompts tell the model not to write one and a file with no title
+// is not a document.
+//
+// An earlier version of this comment said the local H1 was "the only
+// title the file has". That was wrong from the moment it was written:
+// the same commit that added the exemption also told all eight
+// templates not to write a title, so the local file had neither the
+// H1 nor a frontmatter to carry one. It was titled or untitled
+// depending on whether the model obeyed.
 //
 // Only one H1, and only at the very start. A "## Highlights" further
 // down is content, not a title, and "#not-a-heading" is not a heading

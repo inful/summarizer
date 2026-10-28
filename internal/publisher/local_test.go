@@ -15,7 +15,8 @@ import (
 func TestLocal_OverwritesInPlace(t *testing.T) {
 	dir := t.TempDir()
 	l := NewLocal(dir)
-	req := Request{Name: "a.md", Period: "2026-W42", Body: []byte("first")}
+	req := Request{Name: "a.md", Period: "2026-W42", Body: []byte("first"),
+		Project: "g/p", Audience: "customer", Kind: KindPerProject}
 
 	if _, err := l.Publish(context.Background(), req); err != nil {
 		t.Fatalf("first publish: %v", err)
@@ -29,8 +30,8 @@ func TestLocal_OverwritesInPlace(t *testing.T) {
 		t.Error("Ref must name the written file")
 	}
 	got, _ := os.ReadFile(res.Ref)
-	if string(got) != "second" {
-		t.Errorf("re-publish did not overwrite: %q", got)
+	if want := "# " + Title("g/p", "customer", "2026-W42", KindPerProject) + "\n\nsecond"; string(got) != want {
+		t.Errorf("re-publish did not overwrite: got %q, want %q", got, want)
 	}
 }
 
@@ -85,7 +86,8 @@ func TestLocal_CreatesMissingDirectories(t *testing.T) {
 func TestLocal_CancelledRunLeavesThePreviousFileIntact(t *testing.T) {
 	dir := t.TempDir()
 	l := NewLocal(dir)
-	req := Request{Name: "proj--wk--team.md", Body: []byte("first run"), Period: "2026-W43"}
+	req := Request{Name: "proj--wk--team.md", Body: []byte("first run"), Period: "2026-W43",
+		Project: "g/p", Audience: "team", Kind: KindPerProject}
 
 	if _, err := l.Publish(context.Background(), req); err != nil {
 		t.Fatalf("first publish: %v", err)
@@ -103,7 +105,7 @@ func TestLocal_CancelledRunLeavesThePreviousFileIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("previous file should still be readable: %v", err)
 	}
-	if string(got) != "first run" {
+	if want := "# " + Title("g/p", "team", "2026-W43", KindPerProject) + "\n\nfirst run"; string(got) != want {
 		t.Errorf("target = %q, want the previous run's content left intact", got)
 	}
 	entries, err := os.ReadDir(filepath.Join(dir, "2026-W43"))

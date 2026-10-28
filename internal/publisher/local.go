@@ -31,6 +31,32 @@ type Local struct {
 // NewLocal returns a disk-backed publisher rooted at dir.
 func NewLocal(dir string) *Local { return &Local{Dir: dir} }
 
+// titled gives a local-disk report its heading.
+//
+// The GitLab publisher puts the title in the file's frontmatter and
+// strips any H1 the model wrote, because docbuilder renders the
+// frontmatter title. The local publisher writes no frontmatter, so
+// without this the file had no title at all: v0.3.0 taught all eight
+// prompts not to write one, and this is the path that had no other
+// source for it. The output was titled only when the model disobeyed
+// the instruction, which is not a property to rely on.
+//
+// The heading is the same string the frontmatter would have carried —
+// publisher.Title — so a local file and a published file with the same
+// inputs are titled identically.
+//
+// The model's own H1 is stripped first, so the file always has exactly
+// one heading: the specific one, not "# Weekly engineering update".
+func titled(req Request) []byte {
+	title := Title(req.Project, req.Audience, req.Period, req.Kind)
+	body := stripLeadingTitle(req.Body)
+	out := make([]byte, 0, len(title)+len(body)+4)
+	out = append(out, '#', ' ')
+	out = append(out, title...)
+	out = append(out, '\n', '\n')
+	return append(out, body...)
+}
+
 // Publish conforms to Publisher. Returns the absolute path as Ref;
 // MRURL is empty — there is no merge request on local disk.
 func (l *Local) Publish(ctx context.Context, req Request) (Result, error) {
@@ -43,6 +69,8 @@ func (l *Local) Publish(ctx context.Context, req Request) (Result, error) {
 	}
 	target := filepath.Join(dir, req.Name)
 
+	body := titled(req)
+
 	tmp, err := os.CreateTemp(dir, "."+req.Name+".tmp-*")
 	if err != nil {
 		return Result{}, fmt.Errorf("create tmp: %w", err)
@@ -54,7 +82,7 @@ func (l *Local) Publish(ctx context.Context, req Request) (Result, error) {
 			_ = os.Remove(tmpPath)
 		}
 	}()
-	if _, err := tmp.Write(req.Body); err != nil {
+	if _, err := tmp.Write(body); err != nil {
 		_ = tmp.Close() // best-effort cleanup; the Write error is what we report
 		return Result{}, fmt.Errorf("write tmp: %w", err)
 	}

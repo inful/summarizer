@@ -18,17 +18,23 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 	lp := NewLocal(dir)
 
 	w1, err := lp.Publish(context.Background(), Request{
-		Name:   "group-proj--7d--customer.md",
-		Period: "2026-W42",
-		Body:   []byte("week 42"),
+		Name:     "group-proj--7d--customer.md",
+		Period:   "2026-W42",
+		Body:     []byte("week 42"),
+		Project:  "g/p",
+		Audience: "customer",
+		Kind:     KindPerProject,
 	})
 	if err != nil {
 		t.Fatalf("publish W42: %v", err)
 	}
 	w2, err := lp.Publish(context.Background(), Request{
-		Name:   "group-proj--7d--customer.md",
-		Period: "2026-W43",
-		Body:   []byte("week 43"),
+		Name:     "group-proj--7d--customer.md",
+		Period:   "2026-W43",
+		Body:     []byte("week 43"),
+		Project:  "g/p",
+		Audience: "customer",
+		Kind:     KindPerProject,
 	})
 	if err != nil {
 		t.Fatalf("publish W43: %v", err)
@@ -37,16 +43,17 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 	if w1.Ref == w2.Ref {
 		t.Fatalf("both periods wrote to %s; the second overwrote the first", w1.Ref)
 	}
-	for _, c := range []struct{ ref, want string }{
-		{w1.Ref, "week 42"},
-		{w2.Ref, "week 43"},
+	for _, c := range []struct{ ref, period, body string }{
+		{w1.Ref, "2026-W42", "week 42"},
+		{w2.Ref, "2026-W43", "week 43"},
 	} {
+		want := "# " + Title("g/p", "customer", c.period, KindPerProject) + "\n\n" + c.body
 		got, err := os.ReadFile(c.ref)
 		if err != nil {
 			t.Fatalf("read %s: %v", c.ref, err)
 		}
-		if string(got) != c.want {
-			t.Errorf("%s: got %q, want %q", c.ref, got, c.want)
+		if string(got) != want {
+			t.Errorf("%s: got %q, want %q", c.ref, got, want)
 		}
 	}
 	// Both files must still be on disk after both writes.
@@ -69,7 +76,8 @@ func TestLocalPublisher_PeriodSubdirectory(t *testing.T) {
 func TestLocalPublisher_SamePeriodOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	lp := NewLocal(dir)
-	req := Request{Name: "combined--rollup--7d--team.md", Period: "2026-W42"}
+	req := Request{Name: "combined--rollup--7d--team.md", Period: "2026-W42",
+		Audience: "team", Kind: KindRollup}
 
 	if _, err := lp.Publish(context.Background(), withBody(req, "first")); err != nil {
 		t.Fatal(err)
@@ -82,8 +90,9 @@ func TestLocalPublisher_SamePeriodOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "second" {
-		t.Errorf("re-run in the same period should overwrite, got %q", got)
+	want := "# " + Title("", "team", "2026-W42", KindRollup) + "\n\nsecond"
+	if string(got) != want {
+		t.Errorf("re-run in the same period should overwrite, got %q, want %q", got, want)
 	}
 }
 
