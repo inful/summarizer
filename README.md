@@ -70,6 +70,26 @@ go build -ldflags "-X main.version=vX.Y.Z -X main.commit=$(git rev-parse HEAD) -
 
 When the project lives under a GitLab group with Premium/Ultimate epics, the per-project report also surfaces them — events grouped under epic headers in an `## Epics active this period` section, with non-epic events flowing to `## Other activity`. Free-tier and user-namespace projects render flat as before. See `docs/how-it-works.md` for the data flow and `docs/deferred.md` for what deliberately is not yet included.
 
+### Confidential work stays out of customer-facing output
+
+GitLab marks issues and epics `confidential` — the owner's own "not for
+everyone". A token with `read_api` on the project receives them from
+the ordinary list endpoints, exactly like any other issue.
+
+They are dropped from **customer-facing** output: a confidential issue,
+an issue inside a confidential epic, and the confidential epic's own
+heading are all removed before the customer prompt is rendered, so they
+cannot reach the customer report — which is published `public: true` —
+or the cross-project and epic rollups built from it.
+
+The **team-facing** output keeps them. That document is internal, and
+the team is who marked the work.
+
+> Before v0.3.0 this was only true for epics, and only in the epic
+> rollup. A confidential issue's *title* reached the customer report,
+> silently, with no warning and a zero exit code. See the v0.3.0
+> changelog.
+
 ## Configure
 
 Copy `examples/summarizer.yaml` to `./summarizer.yaml` (or pass `--config path/to/file.yaml`). The only required field is `gitlab_host`.

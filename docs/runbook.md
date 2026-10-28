@@ -6,6 +6,31 @@ screwed up.
 
 ## Top-of-mind: what you see, what it means
 
+### "Will my confidential work reach the customer?"
+
+No. GitLab marks issues and epics `confidential` — the owner's own "not
+for everyone" — and a token with `read_api` on the project receives them
+from the ordinary list endpoints like any other issue.
+
+They are dropped from customer-facing output before the prompt is
+rendered: a confidential issue, an issue inside a confidential epic, and
+the confidential epic's own heading all go. So they cannot reach the
+customer report (published `public: true`) or the rollups built from it.
+
+Team-facing output keeps them — that document is internal, and the team
+is who marked the work.
+
+This is a guarantee about **content the model was given**. It is not a
+guarantee about the model's output: a report is still a summary written
+by an LLM from the events it was shown. If a customer-visible fact
+belongs in a confidential issue, it does not belong in a customer
+report — see `internal_only_projects` in the config playbook below.
+
+> Before v0.3.0 this held only for epics, and only in the epic rollup. A
+> confidential issue's title reached the customer report, silently.
+
+## Exit codes
+
 The run emits two kinds of output:
 
 | Channel | Content | When |
