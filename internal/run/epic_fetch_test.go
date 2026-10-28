@@ -33,7 +33,16 @@ func (e *epicCountingServer) handler() http.Handler {
 		switch {
 		case strings.Contains(p, "/epics/") && strings.HasSuffix(p, "/issues"):
 			e.issueCalls++
-			_, _ = w.Write([]byte(`[{"iid":1,"updated_at":"2026-10-20T00:00:00Z"}]`))
+			// Relative to now, NOT a fixed date. The window these tests
+			// use is time.Now()-7d → time.Now(), and FilterActiveEpics
+			// drops an epic whose issues have no activity inside it. A
+			// hardcoded "2026-10-20" was inside that window on the day
+			// it was written and 8 days stale a week later, so three
+			// tests here failed on a calendar rather than on a change.
+			// The sibling recencyEpicServer below already dates its
+			// fixtures this way.
+			stamp := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+			_, _ = w.Write([]byte(`[{"iid":1,"updated_at":"` + stamp + `"}]`))
 		case strings.HasSuffix(p, "/epics"):
 			e.epicCalls++
 			var list []map[string]any
