@@ -28,11 +28,18 @@ docker run --rm \
     run --project group/sub/proj --output-dir /out
 ```
 
-A `:debug` tag is published alongside each release with a busybox shell layered in (CI use, or `docker exec` for debugging):
+A debug variant is published alongside each release with a busybox shell
+layered in (CI use, or `docker exec` for debugging). It is tagged
+`:latest-debug` and `:<version>-debug` — there is no plain `:debug` tag:
 
 ```bash
-docker pull ghcr.io/inful/summarizer:debug
+docker pull ghcr.io/inful/summarizer:latest-debug
+docker run --rm --entrypoint /busybox/sh ghcr.io/inful/summarizer:latest-debug -c 'id'
 ```
+
+`--entrypoint` is required: the image's entrypoint is the binary, so
+without it `/busybox/sh` is passed to `summarizer` as an argument and
+the binary prints its usage instead of giving you a shell.
 
 ### From source
 

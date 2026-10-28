@@ -18,9 +18,13 @@
 #      /etc/os-release`, `env | sort`, etc.) without switching
 #      images.
 #   2. Operators debugging a deployment: `docker run -it
-#      ghcr.io/inful/summarizer:debug /busybox/sh` for an
-#      interactive shell inside the same filesystem the binary
-#      ships in.
+#      --entrypoint /busybox/sh ghcr.io/inful/summarizer:latest-debug`
+#      for an interactive shell inside the same filesystem the binary
+#      ships in. The --entrypoint is required: this image's entrypoint
+#      is the binary, so without it /busybox/sh arrives as an argument
+#      to summarizer and the binary prints its usage instead of a
+#      shell. The tag is :latest-debug or :<version>-debug — there is
+#      no plain :debug tag.
 #
 # Size: ~3 MB larger than the production image (busybox + debug
 # metadata). Same multi-arch support (linux/amd64, linux/arm64)
