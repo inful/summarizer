@@ -508,7 +508,7 @@ const (
 
 // Limits are the budgets the prompt builder applies.
 //
-// A zero field means "use the default" — the same convention
+// A zero or negative field means "use the default" — the same convention
 // pickMaxTokens uses in internal/llm. A caller that does not care about
 // a cap passes a zero Limits and gets the documented default rather
 // than an empty prompt.

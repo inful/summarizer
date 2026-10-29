@@ -394,9 +394,6 @@ func TestLimits_MapsEveryCap(t *testing.T) {
 		MaxDiffRunesPerFile: 444,
 	}
 	c.Defaults()
-	c.RollupBodyCap = 111
-	c.RollupTotalCap = 222
-	c.DiffMaxPerMR = 333
 	lim := c.Limits()
 	if lim.RollupPerBody != 111 || lim.RollupTotal != 222 || lim.DiffPerMR != 333 {
 		t.Errorf("Limits() = %+v, want the config's own numbers", lim)

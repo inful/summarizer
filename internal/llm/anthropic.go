@@ -29,11 +29,15 @@ func NewAnthropic(apiKey, model, baseURL string) *AnthropicProvider {
 // Complete posts to the Messages endpoint and concatenates every text
 // block in the reply.
 func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response, error) {
+	// The cap this call actually uses — see the same note in the OpenAI
+	// adapter: the truncation error has to report the number the request
+	// body carried, not the adapter's default.
+	maxTokens := pickMaxTokens(req.MaxTokens, a.MaxTokens)
 	body := map[string]any{
 		"model":      resolveModel(req.Model, a.Model),
 		"system":     req.System,
 		"messages":   []map[string]string{{"role": "user", "content": req.User}},
-		"max_tokens": pickMaxTokens(req.MaxTokens, a.MaxTokens),
+		"max_tokens": maxTokens,
 	}
 	headers := map[string]string{
 		"Content-Type":      "application/json",
@@ -69,7 +73,7 @@ func (a *AnthropicProvider) Complete(ctx context.Context, req Request) (Response
 	// finished customer report.
 	if out.StopReason == "max_tokens" {
 		return Response{}, fmt.Errorf("%w (%d of %d tokens)",
-			ErrTruncated, out.Usage.OutputTokens, a.MaxTokens)
+			ErrTruncated, out.Usage.OutputTokens, maxTokens)
 	}
 	return Response{
 		Text: text,

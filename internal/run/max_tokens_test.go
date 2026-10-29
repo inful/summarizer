@@ -3,8 +3,6 @@ package run
 import (
 	"context"
 	"testing"
-
-	"github.com/inful/summarizer/internal/config"
 )
 
 // TestRunOneProject_TheCompletionCapComesFromTheConfig: the completion
@@ -38,7 +36,6 @@ func TestRunOneProject_TheCompletionCapComesFromTheConfig(t *testing.T) {
 // "default" completion cap is.
 func TestRunOneProject_TheDefaultCapIsTheDocumentedOne(t *testing.T) {
 	p, llmStub := triageFixture(t, "")
-	p.Cfg = &config.Config{OutputDir: p.Cfg.OutputDir, MaxEvents: 200}
 	p.Cfg.Defaults()
 
 	if _, err := p.runOneProject(context.Background(), "group/public"); err != nil {

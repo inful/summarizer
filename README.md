@@ -282,7 +282,7 @@ The diff text is always wrapped in `<data>` markers (same OWASP LLM01:2025 mitig
 
 ### Caps
 
-Every cap names its unit, and the units are **not** uniform: two of
+Every cap names its unit, and the units are **not** uniform: four of
 these count runes and three count bytes. That is not a typo to be tidied
 away — `formatDiffChunks` slices a string by byte offset and
 `maxDiffRunesPerFile` truncates by rune, and when the per-chunk cap
@@ -292,14 +292,17 @@ now respect rune boundaries; the units still differ because each cap is
 applied in the unit its own code uses.
 
 Five of them are yours to set, in `summarizer.yaml` (and `--max-events`
-on the command line). The rest are structural bounds on what the
-tool talks to, and are listed so you know what they are.
+on the command line). The rest are listed so you know what they are:
+most are structural bounds on what the tool talks to, and two bound the
+text the model reads.
 
 | Cap | Default | Unit | Config key | Source |
 |---|---|---|---|---|
 | Projects per run | 50 | count | `--max-projects` | `internal/run/pipeline.go` `DefaultMaxProjects` |
 | Events per project in the prompt | 200 | count | `max_events` / `--max-events` | `internal/prompt/prompt.go` `capEvents` |
 | **Completion tokens per LLM call** | **4096** | tokens | `max_tokens` | `internal/llm/provider.go` `DefaultMaxTokens` |
+| MR / issue / commit title | 200 | **runes** | — | `internal/events/normalize.go` `TitleCap` |
+| MR / issue body (team prompt only) | 600 | **runes** | — | `internal/events/normalize.go` `DescriptionCap` |
 | Event list pages per project per week | 20 pages = 2,000 records | count | — | `internal/gitlab/client.go` `maxEventPages` |
 | Active-project scan pages | 10 pages = 1,000 candidates | count | — | `internal/gitlab/client.go` `maxActiveScanPages` |
 | Active epics per project in the epic rollup | 20 | count | — | `internal/run/pipeline.go` `maxActiveEpics` |
@@ -308,6 +311,13 @@ tool talks to, and are listed so you know what they are.
 | Rollup body, total across all inputs | 16,000, least-active inputs dropped first | **bytes** | `rollup_total_cap` | `internal/prompt/prompt.go` `DefaultRollupTotal` |
 | Per-MR diff total (prompt-time) | 4,000 | **bytes** | `diff_max_per_mr` | `internal/prompt/prompt.go` `DefaultDiffMaxPerMR` |
 | HTTP response body read | 16 MB (GitLab, publisher), 8 MB (LLM) | bytes | — | `maxResponseBytes` |
+
+**The title and body caps bound what the model reads.** They are not
+structural: a 250-rune MR title is cut to 200 and a 700-rune body to 600
+before the prompt is built, so a long title can arrive saying less than
+it says. They are fixed constants, not config keys — if you need a
+longer title or body, that is a change to `internal/events`, not to
+`summarizer.yaml`.
 
 **`max_tokens` is the one that bites.** A completion that hits the cap
 is *detected* — both providers return a truncation error rather than a

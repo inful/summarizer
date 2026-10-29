@@ -268,6 +268,31 @@ rollup synthesised over a partial project set would read as a complete
 week. Per-project reports for the projects that did succeed are still
 published.
 
+### "My report was cut off"
+
+```
+llm response hit the token cap and is truncated (1000 of 1000 tokens)
+```
+
+The model ran into the completion cap mid-sentence. That fails the
+project, and a failed project is why the rollups are missing — the two
+symptoms are one bug.
+
+The number after "of" is the cap that was applied, so it is the one to
+raise:
+
+```yaml
+# summarizer.yaml
+max_tokens: 8192
+```
+
+The default is 4096. It was 2048 until the budgets became
+configurable, and a busy week could reach it: a per-project prompt
+carries up to `max_events` events plus diffs, and the model writes a
+report about all of it. Raising the cap moves the cliff; it does not
+remove it — a completion that hits it is still refused rather than
+published as a fragment.
+
 ### "GitLab MR didn't auto-merge"
 
 summarizer opens merge requests; it does **not** auto-merge. Check

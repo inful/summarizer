@@ -5,11 +5,64 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
 // completeFn is the method value both providers expose.
 type completeFn func(context.Context, Request) (Response, error)
+
+// TestComplete_TruncationErrorReportsTheCapThatWasSent: the error has
+// to name the cap the request carried, not the adapter's default.
+//
+// The completion cap is an operator-facing config key now, so the two
+// numbers differ whenever the operator sets one: an operator who set
+// max_tokens: 1000 and read "of 4096 tokens" would be told nothing
+// about why their report was cut off, and would conclude the wrong
+// thing. Before the cap was configurable the two numbers were always
+// the same, so this was accidentally right.
+func TestComplete_TruncationErrorReportsTheCapThatWasSent(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider func(baseURL string) completeFn
+		body     string
+	}{
+		{
+			name:     "openai",
+			provider: func(u string) completeFn { return NewOpenAI("k", "gpt-4o", u).Complete },
+			body: `{"choices":[{"finish_reason":"length","message":{"content":"cut off"}}],` +
+				`"usage":{"prompt_tokens":100,"completion_tokens":1000,"total_tokens":1100}}`,
+		},
+		{
+			name:     "anthropic",
+			provider: func(u string) completeFn { return NewAnthropic("k", "claude", u).Complete },
+			body: `{"stop_reason":"max_tokens","content":[{"type":"text","text":"cut off"}],` +
+				`"usage":{"input_tokens":100,"output_tokens":1000}}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+
+			_, err := c.provider(srv.URL)(context.Background(), Request{
+				System: "s", User: "u", MaxTokens: 1000,
+			})
+			if err == nil {
+				t.Fatal("a truncated response must error")
+			}
+			if !errors.Is(err, ErrTruncated) {
+				t.Fatalf("err = %v, want ErrTruncated", err)
+			}
+			if !strings.Contains(err.Error(), "of 1000 tokens") {
+				t.Errorf("the error names the wrong cap: %v", err)
+			}
+		})
+	}
+}
 
 // TestComplete_TruncatedResponseIsAnError: a model that runs into
 // max_tokens is stopped mid-sentence, and the provider hands back

@@ -7,6 +7,15 @@
 //  2. Env var
 //  3. YAML file
 //  4. Built-in default
+//
+// This package imports the packages that ENFORCE the budgets (prompt,
+// llm, gitlab, triage) so that each default has exactly one home: the
+// package that applies it. The alternative is a second copy of every
+// number, and two copies of a cap are two answers to "what is the
+// limit". The cost is that config can no longer be imported by those
+// packages without a cycle — which is the price of the single copy, and
+// is worth it. Adding a fifth import for the same reason is fine; adding
+// one for a different reason is not.
 package config
 
 import (

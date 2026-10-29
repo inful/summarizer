@@ -34,13 +34,19 @@ func NewOpenAI(apiKey, model, baseURL string) *OpenAIProvider {
 // Complete posts to the Chat Completions endpoint and decodes the
 // choice's content.
 func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, error) {
+	// The cap this call actually uses. The request wins over the
+	// adapter's default, and the truncation error below has to report
+	// the SAME number the request body carried: an operator who set
+	// max_tokens: 1000 and reads "of 4096 tokens" has been told
+	// nothing useful about why their report was cut off.
+	maxTokens := pickMaxTokens(req.MaxTokens, o.MaxTokens)
 	body := map[string]any{
 		"model": resolveModel(req.Model, o.Model),
 		"messages": []map[string]string{
 			{"role": "system", "content": req.System},
 			{"role": "user", "content": req.User},
 		},
-		"max_tokens": pickMaxTokens(req.MaxTokens, o.MaxTokens),
+		"max_tokens": maxTokens,
 	}
 	headers := map[string]string{"Content-Type": "application/json"}
 	// Local OpenAI-compatible servers (Ollama, vLLM, LM Studio) usually
@@ -75,7 +81,7 @@ func (o *OpenAIProvider) Complete(ctx context.Context, req Request) (Response, e
 	// notice that it stops mid-sentence.
 	if out.Choices[0].FinishReason == "length" {
 		return Response{}, fmt.Errorf("%w (%d of %d tokens)",
-			ErrTruncated, out.Usage.CompletionTokens, o.MaxTokens)
+			ErrTruncated, out.Usage.CompletionTokens, maxTokens)
 	}
 	return Response{
 		Text: out.Choices[0].Message.Content,
