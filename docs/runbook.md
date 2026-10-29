@@ -157,6 +157,60 @@ What to do:
    the rollout window
 3. Or disable in config: `safety.enabled: false`
 
+## Triage scenarios
+
+Triage classifies each project's week with the same decision API the
+safety guard uses, before the prompt is rendered. It is off by default
+and config-only (`triage.enabled`).
+
+### "My report has no blockers section"
+
+Three different things look the same in the report, and the run summary
+tells them apart:
+
+```
+  triage[group/proj]: 1 call(s), 120 in / 30 out
+  triage[group/proj]: FAILED — the report has no classifier hint
+```
+
+- **No `triage[...]` line at all** — triage is off. Turn it on with
+  `triage.enabled: true`.
+- **`triage[...]: FAILED`** — the decision API could not be reached.
+  The report still published; it just has no hint. Same service as the
+  safety guard, so check `curl https://api.example.com/healthz` and
+  look for `WARN triage unavailable for …` in the log.
+- **A line with calls but no blockers section** — the classifier ran
+  and its score was below the threshold (0.5). That is the classifier
+  saying "probably nothing is blocked this week". The report is
+  correct: it says so rather than inventing one.
+
+The classifier never says *which* item is blocked — a `noul` is one
+probability for the whole week. The prompt asks the model to find it
+from the events, and the prompt also tells it that "none of them are"
+is a valid answer. So a report with a blockers section does not
+guarantee a real blocker, and a report without one does not guarantee
+the absence of one.
+
+### "The triage cost more than I expected"
+
+The run summary reports what the classification actually cost:
+
+```
+  triage[group/proj]: 155 call(s), 57505 in / 20835 out
+```
+
+The two shapes differ by two orders of magnitude:
+
+| `triage.mode` | calls per project | cost |
+|---|---|---|
+| `week` (default) | 1 | flat — does not scale with the size of the week |
+| `mr` | one per merge request | one call per event |
+
+If `mode: "mr"` is what you are running and the numbers look like the
+`mr` row, that is expected: it is asking the decision API about every
+merge request separately. Switch back to `week` unless you need
+per-item answers.
+
 ## GitLab publish scenarios
 
 ### Overwrite behaviour
@@ -307,6 +361,20 @@ Or one-off: `summarizer run --safety-enabled=false`.
 
 Or one-off: drop the `publish:` block entirely (no flag for it
 currently).
+
+### Disabling triage
+
+```yaml
+# summarizer.yaml
+triage:
+  enabled: false
+```
+
+There is no CLI flag for triage — it is config-only, and it is off by
+default. With it off, the team prompt does not ask "what is blocked"
+at all: nothing collects anything that means blocked, and a question
+the data cannot answer produces either an invented blocker or a
+hollow "nothing appears blocked".
 
 ### Changing cadence
 

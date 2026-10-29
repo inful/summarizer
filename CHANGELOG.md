@@ -6,6 +6,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Activity triage: the week is classified before the prompt is rendered.** The team report asked "what is blocked" and nothing in the pipeline collected anything that *meant* blocked, so the model either invented blockers or wrote "nothing appears blocked" — neither of which is an answer. `triage.enabled: true` classifies each project's week with the same decision API the safety guard uses, and the verdict becomes a note the prompt carries: "something in this week's activity looks blocked (confidence 0.83) — say WHICH item is blocked, or say plainly that none of them are." The division of labour is the point: a `noul` is one probability for the whole state, so the classifier decides *whether to look* and the LLM, which sees every event, finds *which one*. The note is team-only and never reaches a customer-facing document, which is published `public: true`.
+- **Two triage call shapes, because they cost very differently.** `mode: "week"` (default) makes one call per project over its whole event list — the cost does not scale with the size of the week. `mode: "mr"` makes one call per merge request: the only shape that can answer per item, and one call per event. Measured against a 4K-context stand-in, `mr` cost 155 calls / 57.5k input tokens / 6m16s for one project where `week` cost 1 call / 2k tokens / 4.5s. Whether `mr` is viable depends on the decision API's own latency and price per token, so the run summary reports what the classification actually cost (`triage[group/proj]: 155 call(s), 57505 in / 20835 out`) and the operator chooses on numbers rather than on a guess.
+- **A classifier that is down does not take the week's reports with it.** A failed classification logs `WARN triage unavailable for <project> — proceeding without the classifier hint` and the project still publishes. The summary also prints `triage[...]: FAILED`, because a report that silently lost its hint reads exactly like a report that found nothing.
+
+### Changed
+
+- **The team prompt asks what a peer team needs to know.** It asked for status — what shipped, what is queued, who drove the most movement — and never for the thing a peer team actually needs: a changed interface, a new capability, a deprecation, a behaviour change someone else could be affected by. "What shipped" is not the same question as "what changes for me", and a report that only answers the first is a status list, not an update. The prompt now asks for both, and the classifier's peer-relevance score adds a note when there is something to look for.
+- **The "what is blocked" ask is now conditional.** The team prompt no longer asks a question the data cannot answer: with no classifier configured, the section is not asked for at all, and with one configured it is asked only when the classifier's score says there is something to find. The prompt that carries the note tells the model the note is a hint rather than a finding, and that "none of them are" is a valid answer — which is what stops the classifier's guess from becoming the report's claim.
+
 ## [0.3.1] - 2026-10-28
 
 ### Added

@@ -39,6 +39,17 @@ These extend it.
 | **S4 — Configurable hard/soft-fail on guard errors** | Hardcoded soft-fail: a flaky `/v1/systemone` does not block summary generation. The "hard-fail on transport error" alternative is not exposed as a flag. | Operator chose soft-fail; a `safety.fail_closed_on_error bool` could be added if a security-sensitive deployment wants the opposite. |
 | **S5 — `--i-know-what-im-doing` override on injection verdict** | A `VerdictInjection` verdict is final; no override path. | Intentionally not added — would defeat the guard's purpose. If you need this, add it explicitly with a clear "I am overriding a security check" log line. |
 
+### Triage extensions
+
+The activity classifier (`triage.enabled`) shipped with two call shapes
+and one prompt integration. These extend it.
+
+| Item | What's missing | Why deferred |
+|---|---|---|
+| **T1 — `mr` mode viability** | `mode: "mr"` asks the decision API about each merge request separately. It is the only shape that can answer *per item*, and the only one whose cost scales with the size of the week. | Whether it is affordable depends on the decision API's own latency and price per token, which cannot be measured locally. Measured against a 4K-context stand-in it cost 155 calls / 57.5k input tokens / 6m16s for one project, where `week` mode cost 1 call / 2k tokens / 4.5s — and break-even needs decide to be ≥~4× cheaper per token *and* under ~100ms per call. The run summary reports what the classification actually cost, so the answer is a number rather than an estimate. |
+| **T2 — The rollup still reads prose, not events** | The cross-project rollup is fed each project's *report body*, so it can only find themes the per-project model already noticed. A cross-team theme that no single project owns (a shared dependency changed in three of them) is invisible to it. | The obvious fix is a fleet-level classification over the events rather than the reports — the same shape as `triage`, one question asked of the whole run. It needs the fleet's events gathered in one place, which the rollup does not have today. |
+| **T3 — Per-item verdicts never reach the prompt** | In `mr` mode the classifier answers per merge request, but only the strongest score is carried into the prompt. The report does not say "MR #7 specifically looks blocked". | A noul is one probability for the whole state; per-item answers need per-item calls, which is `T1`'s cost question. The note stays a hint — "the LLM finds which one" — so per-item carrying is a refinement of the hint, not a new capability. |
+
 ### Production validation
 
 Two paths the project's own code covers with httptest but have never
@@ -47,7 +58,7 @@ been walked end-to-end with real credentials:
 | Item | What's missing |
 |---|---|
 | **P1 — End-to-end against real GitLab** | httptest covers the publisher's wire shape; a live PAT against a write-capable GitLab target project is the one path nobody has walked. |
-| **P2 — End-to-end against real `/v1/systemone`** | Same caveat for the safety guard's decision API. |
+| **P2 — End-to-end against real `/v1/systemone`** | Same caveat for the safety guard's decision API — and now for the activity classifier, which talks to the same service. `triage.enabled: true` has only ever been run against a local stand-in. |
 
 Both are 30-minute affairs once a token is issued. Cheap to do, just
 not done.

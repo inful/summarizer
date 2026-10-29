@@ -221,6 +221,42 @@ If the `/v1/systemone` API is down, returns malformed data, or times out, summar
 
 A **prompt-injection verdict** (`VerdictInjection`) is the one case that hard-fails the run with a non-zero exit. That's the scenario where the guard did its job and we should respect it.
 
+## Activity triage (classify the week before the prompt)
+
+Opt-in. Each project's week is classified with your `inful/decide` API **before** the prompt is rendered, and the verdict becomes a note the prompt carries.
+
+```bash
+# config only — there is no CLI flag for this
+#   triage:
+#     enabled: true
+#     decision_url: "https://api.example.com"   # defaults to safety.decision_url
+#     decision_token_env: "SAFETY_DECISION_TOKEN"  # defaults to safety.decision_token_env
+#     mode: "week"                              # "week" (default) or "mr"
+```
+
+**Why.** The team report asks "what is blocked" — and nothing in the pipeline used to collect anything that *meant* blocked. So the model either invented blockers or wrote "nothing appears blocked", and neither is an answer. A classifier answers that question; the model, which sees every event, still says *which* item is blocked and what it waits on.
+
+That division is not a limitation of the design, it is the division of labour: a `noul` is one probability for the whole state, so it can say "there is blocked work this week" and never "MR #7 is blocked". The classifier decides **whether to look**; the LLM finds **which one**.
+
+**What the classifier can and cannot reach.** The note is team-only. It never appears in a customer-facing document — those are published `public: true`, and "our team is blocked on X" is not a customer update.
+
+The classifier itself sees the project's **full** activity, including work marked confidential — it is the same service the safety guard already sees the whole rendered prompt through, and a classification that omitted half the week would be a worse answer than one that saw all of it. What the confidential work can reach is the internal team report, which is where it already belongs.
+
+**Two call shapes, and they cost very differently:**
+
+| mode | calls per project | what it can answer | cost |
+|------|-------------------|--------------------|------|
+| `week` (default) | 1 | "is there blocked work this week?" | flat — does not scale with the size of the week |
+| `mr` | one per merge request | per-item answers | one call per event |
+
+Measured against a 4K-context stand-in, `mr` cost 155 calls / 57.5k input tokens / 6m16s for one project, where `week` cost 1 call / 2k tokens / 4.5s. Whether `mr` is viable depends entirely on your decision API's latency and price per token — so the run summary reports what the classification actually cost:
+
+```
+  triage[group/proj]: 155 call(s), 57505 in / 20835 out
+```
+
+**Soft-fail on classifier errors.** If the decision API is down, summarizer logs `WARN triage unavailable for <project> — proceeding without the classifier hint` and the project still publishes. The report is then missing its blockers section, which is why the summary also prints `triage[...]: FAILED` — a report that silently lost its hint reads exactly like a report that found nothing.
+
 ## `--include-diffs` (team prompt only)
 
 ```bash
@@ -520,7 +556,8 @@ summarizer/
 │   ├── publisher/         # local-disk + GitLab-MR sinks
 │   ├── run/               # pipeline orchestrator
 │   ├── safety/            # prompt-injection guard port
-│   └── textutil/          # shared string helpers
+│   ├── textutil/          # shared string helpers
+│   └── triage/            # activity classifier (decide) port
 ├── examples/
 │   └── summarizer.yaml    # sample config
 └── README.md

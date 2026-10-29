@@ -70,6 +70,17 @@ have to guess which of two coexisting files was current.
    └──────────────────────────────┬───────────────────────────────┘
                                   │ []NormalizedEvent (cap to max_events, drop oldest)
                                   ▼
+   ┌──────────────────────────────┴───────────────────────────────┐
+   │  internal/triage  (opt-in, triage.enabled)                     │
+   │  classify the week with the decision API:                      │
+   │    "is something blocked?"  "does a peer team need to know?"   │
+   │  mode "week" → one call per project (flat cost)                │
+   │  mode "mr"   → one call per merge request (per-item answers)   │
+   │  the score becomes a HINT the prompt carries, not a finding:   │
+   │  the model sees every event and says WHICH item                │
+   │  classifier error → SOFT-FAIL (WARN, the report still goes)    │
+   └──────────────────────────────┬───────────────────────────────┘
+                                  │ []NormalizedEvent + the classifier hint
    ┌───────────────────────────────────────────────────────────────┐
    │  internal/prompt                                              │
    │  pick template: customer.tmpl OR team.tmpl                   │
@@ -123,7 +134,7 @@ have to guess which of two coexisting files was current.
 
 | Package | Owns |
 |---|---|
-| `cmd/summarizer` | Entry point. Subcommand routing (`run`, `monthly`, `version`), flag parsing, env-fallback for secrets, config + publisher + safety wiring. |
+| `cmd/summarizer` | Entry point. Subcommand routing (`run`, `monthly`, `version`), flag parsing, env-fallback for secrets, config + publisher + safety + triage wiring. |
 | `internal/config` | YAML loader; defaults; CLI-override merge; per-field validation. |
 | `internal/gitlab` | `net/http` GitLab REST v4 client. MRs, issues, commits, project summary/namespace, epics + epic issues, the opt-out-file read, and the activity-default project scan. Offset pagination (`X-Next-Page`), 429-aware backoff with ±20% jitter, request caps. |
 | `internal/events` | `NormalizedEvent` type. The single shape that crosses the port boundary between GitLab (any-specific) and the prompt builder (clean). All GitLab-JSON quirks stay in this package. `AttachEpics` mutates Issue events in place to attach their containing epic (`Epic *gitlab.Epic`); `FilterActiveEpics(window)` filters the pipeline's epic list to those with at least one issue updated within the window. |
@@ -132,6 +143,7 @@ have to guess which of two coexisting files was current.
 | `internal/llm` | `Provider` interface. OpenAI Chat Completions + Anthropic Messages adapters. Pluggable — adding a third provider is one new file. |
 | `internal/publisher` | `Publisher` interface (`Publish`). `Local` (atomic disk write) + `GitLab` (branch + Files API + MR, with a read-back path used by `summarizer monthly`). Frontmatter generation in `frontmatter.go`. |
 | `internal/safety` | `Guard` interface. `DecideGuard` wraps `inful/decide` for pre-LLM prompt-injection checks. `NoopGuard` is the default-off path. `FakeGuard` for tests. |
+| `internal/triage` | Classifies a project's week with `inful/decide` before the prompt is rendered. Two call shapes: `week` (one call per project) and `mr` (one call per merge request). The scores become a prompt *hint* — a noul is one probability for the whole state, so the classifier says whether to look and the LLM, which sees every event, says which one. Team-only; the hint never reaches a customer-facing prompt. |
 | `internal/run` | The pipeline. `resolveProjects` does discovery + opt-out + audience classification. `runOneProject` does fetch + normalise + 2× LLM + 2× publish per project. `runRollup` / `runEpicRollup` share one audience loop. `MonthlyRunner` is the separate `summarizer monthly` path, which reads last month's published weekly rollups instead of re-fetching GitLab. |
 
 ## What stays out of scope
