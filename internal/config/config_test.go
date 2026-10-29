@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/inful/summarizer/internal/triage"
 )
 
 // writeFixture drops a config file into a temp dir and returns its path.
@@ -44,6 +46,11 @@ safety:
   decision_url: "https://decide.example.com"
   decision_token_env: "DEC"
   injection_threshold: 0.9
+triage:
+  enabled: true
+  decision_url: "https://triage.example.com"
+  decision_token_env: "TRIAGE_TOK"
+  mode: "mr"
 `
 	cfg, err := Load(writeFixture(t, body))
 	if err != nil {
@@ -63,6 +70,9 @@ safety:
 		{"publish.source_branch_prefix", cfg.Publish.SourceBranchPrefix, "sum"},
 		{"safety.decision_url", cfg.Safety.DecisionURL, "https://decide.example.com"},
 		{"safety.decision_token_env", cfg.Safety.DecisionTokenEnv, "DEC"},
+		{"triage.decision_url", cfg.Triage.DecisionURL, "https://triage.example.com"},
+		{"triage.decision_token_env", cfg.Triage.DecisionTokenEnv, "TRIAGE_TOK"},
+		{"triage.mode", cfg.Triage.Mode, "mr"},
 	}
 	for _, c := range strs {
 		if c.got != c.want {
@@ -75,8 +85,9 @@ safety:
 	if cfg.Safety.InjectionThreshold != 0.9 {
 		t.Errorf("safety.injection_threshold: got %v, want 0.9", cfg.Safety.InjectionThreshold)
 	}
-	if !cfg.Publish.Enabled || !cfg.Safety.Enabled {
-		t.Errorf("publish.enabled=%v safety.enabled=%v, want both true", cfg.Publish.Enabled, cfg.Safety.Enabled)
+	if !cfg.Publish.Enabled || !cfg.Safety.Enabled || !cfg.Triage.Enabled {
+		t.Errorf("publish.enabled=%v safety.enabled=%v triage.enabled=%v, want all true",
+			cfg.Publish.Enabled, cfg.Safety.Enabled, cfg.Triage.Enabled)
 	}
 	if len(cfg.InternalOnlyProjects) != 1 || cfg.InternalOnlyProjects[0] != "group/secret" {
 		t.Errorf("internal_only_projects: got %v", cfg.InternalOnlyProjects)
@@ -183,6 +194,42 @@ func TestValidate(t *testing.T) {
 				t.Errorf("expected an error, got nil (%+v)", c)
 			}
 		})
+	}
+}
+
+// TestValidate_TriageMode: the two triage call shapes differ in cost
+// by two orders of magnitude, so a misspelled mode must not silently
+// pick one of them — the operator would be running the expensive shape
+// and billing for it without knowing.
+//
+// An empty mode is the default (week) and is fine.
+func TestValidate_TriageMode(t *testing.T) {
+	base := func() *Config {
+		c := &Config{GitLabHost: "https://gitlab.example.com", Triage: TriageConfig{Enabled: true}}
+		c.Defaults()
+		return c
+	}
+	for _, mode := range []string{"", triage.ModeWeek, triage.ModeMR} {
+		c := base()
+		c.Triage.Mode = mode
+		if err := c.Validate(); err != nil {
+			t.Errorf("mode %q rejected: %v", mode, err)
+		}
+	}
+	for _, mode := range []string{"per-event", "project", "MR", "Week"} {
+		c := base()
+		c.Triage.Mode = mode
+		if err := c.Validate(); err == nil {
+			t.Errorf("mode %q accepted; only %q and %q are real", mode, triage.ModeWeek, triage.ModeMR)
+		}
+	}
+	// A bad mode with triage switched off is nobody's problem: the
+	// field is never read.
+	c := base()
+	c.Triage.Enabled = false
+	c.Triage.Mode = "per-event"
+	if err := c.Validate(); err != nil {
+		t.Errorf("a disabled triage must not reject the config: %v", err)
 	}
 }
 

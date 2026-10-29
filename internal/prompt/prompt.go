@@ -74,7 +74,36 @@ func dataBlock(v any) string {
 // annotation flow to an "Other activity" section. When empty, the
 // rendering falls back to the existing flat list — backwards
 // compatible with no-epic projects.
-func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int, epics []*gitlab.Epic) (system, user string, err error) {
+// Hint carries facts the pipeline established about this period that
+// the prompt should PRESENT rather than ask the model to infer.
+//
+// The blocker note is the whole reason this exists. The team prompt
+// asked for "what is blocked" and nothing in the pipeline collected
+// anything that meant blocked, so the model either invented blockers or
+// wrote "nothing appears blocked". A classifier (internal/triage) is
+// asked instead, and its answer is a HINT rather than a finding: it
+// knows there is blocked work, and the model — which sees every event
+// with full context — says which one and what it is waiting on.
+//
+// The scores are probabilities, not verdicts. The prompt shows them and
+// lets the model judge the evidence in front of it.
+type Hint struct {
+	// Blocked says a classifier judged this period to contain blocked
+	// work. BlockedScore is its confidence.
+	Blocked      bool
+	BlockedScore float64
+	// PeerRelevant says a classifier judged that a team depending on
+	// this project needs to know about it. PeerScore is its confidence.
+	PeerRelevant bool
+	PeerScore    float64
+}
+
+// Render builds the prompt for one project and audience.
+//
+// hint carries what the pipeline already knows. It is only used for the
+// team audience: the customer document is published public: true, and
+// "our team is blocked on X" is not a customer update.
+func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int, epics []*gitlab.Epic, hint Hint) (system, user string, err error) {
 	tplName := string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -85,25 +114,38 @@ func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int,
 		return "", "", fmt.Errorf("parse template %s: %w", tplName, err)
 	}
 
+	if aud != AudienceTeam {
+		// Internal notes never reach a customer-facing prompt.
+		hint = Hint{}
+	}
+
 	evs, epics = forAudience(aud, evs, epics)
 	kept, total, dropped := capEvents(evs, cap)
 
 	data := struct {
-		Window    string
-		Project   string
-		Truncated bool
-		Used      int
-		Total     int
-		Dropped   int
-		Events    string
+		Window       string
+		Project      string
+		Truncated    bool
+		Used         int
+		Total        int
+		Dropped      int
+		Events       string
+		Blocked      bool
+		BlockedScore string
+		PeerRelevant bool
+		PeerScore    string
 	}{
-		Window:    WeekWindowLabel,
-		Project:   project,
-		Truncated: dropped > 0,
-		Used:      len(kept),
-		Total:     total,
-		Dropped:   dropped,
-		Events:    renderEvents(kept, aud, epics),
+		Window:       WeekWindowLabel,
+		Project:      project,
+		Truncated:    dropped > 0,
+		Used:         len(kept),
+		Total:        total,
+		Dropped:      dropped,
+		Events:       renderEvents(kept, aud, epics),
+		Blocked:      hint.Blocked,
+		BlockedScore: fmt.Sprintf("%.2f", hint.BlockedScore),
+		PeerRelevant: hint.PeerRelevant,
+		PeerScore:    fmt.Sprintf("%.2f", hint.PeerScore),
 	}
 
 	var buf bytes.Buffer

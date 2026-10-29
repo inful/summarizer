@@ -57,7 +57,7 @@ func TestPrintSamplePrompts(t *testing.T) {
 	}
 
 	for _, aud := range []Audience{AudienceCustomer, AudienceTeam} {
-		system, user, err := Render(aud, "group/proj", sample, 200, nil)
+		system, user, err := Render(aud, "group/proj", sample, 200, nil, Hint{})
 		if err != nil {
 			t.Fatalf("render %s: %v", aud, err)
 		}

@@ -42,6 +42,7 @@ import (
 	"github.com/inful/summarizer/internal/publisher"
 	"github.com/inful/summarizer/internal/run"
 	"github.com/inful/summarizer/internal/safety"
+	"github.com/inful/summarizer/internal/triage"
 )
 
 // Build-time variables, overridden via:
@@ -146,6 +147,39 @@ func newGuard(cfg *config.Config, enabled bool, url, token string) (safety.Guard
 		threshold = 0.7
 	}
 	return safety.NewDecide(decisionURL, token, threshold), exitOK
+}
+
+// newTriage builds the activity classifier. Returns nil when triage is
+// disabled, which is the signal to the pipeline that no classification
+// happens at all.
+//
+// Shared with the monthly path so both resolve the same way: the
+// decision API connection is the same service the safety guard uses,
+// and an operator who set safety.decision_url gets it for free.
+func newTriage(cfg *config.Config) (*triage.Triage, int) {
+	if !cfg.Triage.Enabled {
+		return nil, exitOK
+	}
+	mode := cfg.Triage.Mode
+	if mode == "" {
+		mode = triage.ModeWeek
+	}
+	decisionURL := cfg.Triage.DecisionURL
+	if decisionURL == "" {
+		decisionURL = cfg.Safety.DecisionURL
+	}
+	if decisionURL == "" {
+		fmt.Fprintln(os.Stderr, "error: triage.enabled=true but no decision URL (set triage.decision_url or safety.decision_url)")
+		return nil, exitConfig
+	}
+	tokenEnv := cfg.Triage.DecisionTokenEnv
+	if tokenEnv == "" {
+		tokenEnv = cfg.Safety.DecisionTokenEnv
+	}
+	if tokenEnv == "" {
+		tokenEnv = "SAFETY_DECISION_TOKEN"
+	}
+	return triage.New(decisionURL, os.Getenv(tokenEnv), mode), exitOK
 }
 
 // newPublisher builds the publisher for both `run` and `monthly`.
@@ -333,6 +367,13 @@ Env:
 		return code
 	}
 
+	// Activity classifier. Disabled by default. When enabled, each
+	// project's week is classified before its prompt is rendered.
+	triager, code := newTriage(cfg)
+	if code != exitOK {
+		return code
+	}
+
 	// The report lands in a week-numbered directory, so the window is
 	// that week. One window, no flag: an operator who wants something
 	// else can post-date the cron line or read the branch by hand.
@@ -343,7 +384,7 @@ Env:
 	now := time.Now().UTC()
 	weekStart := run.WeekStart(now)
 
-	pipe := run.New(cfg, gc, llmProvider, pub, guard, run.Options{
+	pipe := run.New(cfg, gc, llmProvider, pub, guard, triager, run.Options{
 		Projects:             projects,
 		DiscoveredGroups:     discoverGroups,
 		Since:                weekStart,
@@ -456,6 +497,19 @@ func printSummary(res run.Result, err error, dryRun bool, weekStart time.Time) {
 				u := p.TokensByAudience[aud]
 				fmt.Fprintf(os.Stderr, "  tokens[%s/%s]: prompt=%d completion=%d total=%d\n",
 					p.Project, aud, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+			}
+			// The classifier's cost, per project. It is reported because
+			// the two triage shapes differ by two orders of magnitude:
+			// an operator choosing between them needs the number, and
+			// a run that failed to classify needs to say so — a report
+			// that silently lost its blockers section reads exactly like
+			// a report that found none.
+			switch {
+			case p.TriageFailed:
+				fmt.Fprintf(os.Stderr, "  triage[%s]: FAILED — the report has no classifier hint\n", p.Project)
+			case p.Triage.Calls > 0:
+				fmt.Fprintf(os.Stderr, "  triage[%s]: %d call(s), %d in / %d out\n",
+					p.Project, p.Triage.Calls, p.Triage.InputTokens, p.Triage.OutputTokens)
 			}
 		}
 		for _, f := range res.RollupFiles {

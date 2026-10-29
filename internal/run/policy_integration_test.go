@@ -257,6 +257,32 @@ type countingLLM struct {
 	customerCalls atomic.Int64
 	teamCalls     atomic.Int64
 	mu            sync.Mutex
+	// seen records each call's prompt, so a test can assert on what
+	// the model actually saw.
+	seen []seenPrompt
+}
+
+// seenPrompt is one recorded call: enough to identify its audience and
+// to inspect what the model was given.
+type seenPrompt struct {
+	team bool
+	user string
+}
+
+// promptFor returns the user prompt of the call that served the given
+// audience. team=true picks the team audience, team=false the customer
+// one. Fails the test when no such call was made.
+func (c *countingLLM) promptFor(t *testing.T, team bool) string {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.seen {
+		if s.team == team {
+			return s.user
+		}
+	}
+	t.Fatalf("no %s prompt was sent (saw %d calls)", map[bool]string{true: "team", false: "customer"}[team], len(c.seen))
+	return ""
 }
 
 func (c *countingLLM) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
@@ -266,7 +292,9 @@ func (c *countingLLM) Complete(_ context.Context, req llm.Request) (llm.Response
 	// Audience classification by system-prompt marker: "internal
 	// engineering" → team, otherwise → customer. Tests use this to
 	// verify the pipeline's per-audience iteration.
-	if strings.Contains(req.System, "internal engineering") {
+	isTeam := strings.Contains(req.System, "internal engineering")
+	c.seen = append(c.seen, seenPrompt{team: isTeam, user: req.User})
+	if isTeam {
 		c.teamCalls.Add(1)
 	} else {
 		c.customerCalls.Add(1)

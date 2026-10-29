@@ -24,6 +24,7 @@ import (
 	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/publisher"
 	"github.com/inful/summarizer/internal/safety"
+	"github.com/inful/summarizer/internal/triage"
 )
 
 // Options are run-time parameters resolved at the CLI boundary.
@@ -51,6 +52,16 @@ type Options struct {
 // nested events add roughly 200–400 tokens to the prompt; 20 keeps
 // even a 4-project rollup under 16K tokens for the epic section.
 const maxActiveEpics = 20
+
+// triageHintThreshold is the classifier score at which a classification
+// becomes a prompt hint.
+//
+// A noul is a probability, not a verdict, and the pipeline does not
+// pretend otherwise: half means "look at this", which is the right bias
+// for a hint. A false positive costs a few lines of prompt; a false
+// negative silently drops the blockers section from a report that
+// should have had one.
+const triageHintThreshold = 0.5
 
 // DefaultMaxProjects caps how many projects one run feeds to the LLM
 // when --max-projects is not given. 50 projects is ~100 completions
@@ -87,6 +98,12 @@ type ProjectResult struct {
 	// produce twenty integers is memory that only grows. This carries
 	// the same information in a fraction of the space.
 	EpicEventCounts map[int]EpicEvents
+	// Triage is what the classifier said about this project's week and
+	// what the classification cost. Zero when triage is disabled.
+	Triage triage.Result
+	// TriageFailed is true when classification errored and the project
+	// ran without a hint.
+	TriageFailed bool
 }
 
 // Result describes what the run produced. Used by main to write the stderr
@@ -133,7 +150,12 @@ type Pipeline struct {
 	LLM       llm.Provider
 	Publisher publisher.Publisher
 	Guard     safety.Guard // nil-safe; NoopGuard is substituted when safety is disabled
-	Opts      Options
+	// Triage classifies a project's activity before its prompt is
+	// rendered. nil means triage is disabled and no classification
+	// happens — the prompt then asks about nothing the data cannot
+	// answer.
+	Triage *triage.Triage
+	Opts   Options
 
 	// lastActiveEpics is populated during runOneProject so the
 	// subsequent runEpicRollup step can publish the cross-project
@@ -177,12 +199,12 @@ var ErrInjection = errors.New("safety guard classified prompt as injection")
 // clients. publisher is chosen by main based on config (local disk
 // by default, GitLab MR when PublishConfig.Enabled is true). Pass
 // safety.NoopGuard{} to disable the check.
-func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Publisher, g safety.Guard, opts Options) *Pipeline {
+func New(cfg *config.Config, gc *gitlab.Client, p llm.Provider, pub publisher.Publisher, g safety.Guard, tr *triage.Triage, opts Options) *Pipeline {
 	if g == nil {
 		g = safety.NoopGuard{}
 	}
 	return &Pipeline{
-		Cfg: cfg, GitLab: gc, LLM: p, Publisher: pub, Guard: g, Opts: opts,
+		Cfg: cfg, GitLab: gc, LLM: p, Publisher: pub, Guard: g, Triage: tr, Opts: opts,
 		groupEpics: map[string][]*gitlab.Epic{},
 	}
 }
@@ -434,6 +456,33 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 		p.lastActiveEpics[project] = epics
 	}
 
+	// Classify the week before the prompt is rendered. A hint, not a
+	// finding: the classifier says whether the week looks blocked or
+	// peer-relevant, and the model — which sees every event — says
+	// which item and why.
+	//
+	// A classification failure is non-fatal, like the epic fetch: the
+	// project still runs and still gets a report, it just gets one
+	// without the hint. The warning says so, because a report that
+	// silently lost its blockers section reads exactly like a report
+	// that found none.
+	var hint prompt.Hint
+	if p.Triage != nil {
+		t, err := p.Triage.Analyse(ctx, project, all)
+		if err != nil {
+			res.TriageFailed = true
+			fmt.Fprintf(os.Stderr, "summarizer: WARN triage unavailable for %s — proceeding without the classifier hint: %v\n", project, err)
+		} else {
+			res.Triage = t
+			hint = prompt.Hint{
+				Blocked:      t.Blocked >= triageHintThreshold,
+				BlockedScore: t.Blocked,
+				PeerRelevant: t.PeerRelevant >= triageHintThreshold,
+				PeerScore:    t.PeerRelevant,
+			}
+		}
+	}
+
 	for _, aud := range []prompt.Audience{prompt.AudienceCustomer, prompt.AudienceTeam} {
 		if aud == prompt.AudienceCustomer && !res.CustomerOn {
 			// Audience policy (D5) says team-only. Skip the
@@ -443,7 +492,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			continue
 		}
 
-		system, user, err := prompt.Render(aud, project, all, p.Cfg.MaxEvents, epics)
+		system, user, err := prompt.Render(aud, project, all, p.Cfg.MaxEvents, epics, hint)
 		if err != nil {
 			return res, fmt.Errorf("render %s: %w", aud, err)
 		}

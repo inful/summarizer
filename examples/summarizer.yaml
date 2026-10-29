@@ -101,3 +101,29 @@ max_events: 200
 #   decision_url: "https://api.example.com"
 #   decision_token_env: "SAFETY_DECISION_TOKEN"  # default
 #   injection_threshold: 0.7                       # default
+
+# Optional: classify each project's week with the decision API before
+# the prompt is rendered. Default OFF.
+#
+# The team report asks "what is blocked" — and nothing in the pipeline
+# used to collect anything that MEANT blocked, so the model either
+# invented blockers or wrote "nothing appears blocked". A classifier
+# answers that question about the WEEK; the model, which sees every
+# event, still says WHICH item is blocked and what it waits on. The
+# classifier's note is team-only: it never reaches a customer-facing
+# document, and those are published public: true.
+#
+# Two call shapes, and they cost very differently:
+#   "week" (default) — one call per project, over its whole event list.
+#                      The cost does not scale with the size of the week.
+#   "mr"             — one call per merge request. The only shape that
+#                      can answer per item, and one call per event.
+#
+# decision_url and decision_token_env default to the safety block's
+# values — it is the same service.
+#
+# triage:
+#   enabled: true
+#   decision_url: "https://api.example.com"
+#   decision_token_env: "SAFETY_DECISION_TOKEN"  # default
+#   mode: "week"                                 # "week" or "mr"

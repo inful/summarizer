@@ -58,6 +58,19 @@ var safeFields = map[string]string{
 	".Epic.WebURL":  "server-generated from the project path and IID; GitLab paths are [A-Za-z0-9_.-]",
 	".Events":       "writeEventLine escapes every field as it builds the blob",
 	"len":           "the template builtin; yields an int",
+	// The classifier's verdict and its score. Both come from the
+	// decision API's answer, formatted in Go from a float64 the
+	// pipeline produced — no GitLab user controls them.
+	//
+	// .Blocked and .PeerRelevant are condition fields: the extractor
+	// below skips {{if}} conditions, so nothing would ask for them to
+	// be listed. They are here anyway, so the ledger covers every
+	// field the templates touch rather than only the ones the
+	// extractor happens to reach.
+	".Blocked":      "a bool the pipeline set from the classifier's score",
+	".BlockedScore": "the classifier's score, formatted in Go from a float64",
+	".PeerRelevant": "a bool the pipeline set from the classifier's score",
+	".PeerScore":    "the classifier's score, formatted in Go from a float64",
 }
 
 func TestTemplates_UntrustedFieldsAreEscaped(t *testing.T) {

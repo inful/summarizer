@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/inful/summarizer/internal/triage"
 )
 
 // Config is the resolved summarizer configuration for one run.
@@ -73,6 +75,11 @@ type Config struct {
 	// Safety gates LLM calls behind a prompt-injection detector.
 	// Off by default; opt in with safety.enabled=true.
 	Safety SafetyConfig `yaml:"safety"`
+
+	// Triage classifies each project's activity with the decision API
+	// before the prompt is rendered. Off by default; opt in with
+	// triage.enabled=true.
+	Triage TriageConfig `yaml:"triage"`
 }
 
 // PublishConfig is the GitLab-MR publisher configuration. All-zero value
@@ -97,6 +104,30 @@ type SafetyConfig struct {
 	DecisionURL        string  `yaml:"decision_url"`        // base URL of the /v1/systemone API
 	DecisionTokenEnv   string  `yaml:"decision_token_env"`  // env var holding the API token; default "SAFETY_DECISION_TOKEN"
 	InjectionThreshold float64 `yaml:"injection_threshold"` // noul above this = injection; default 0.7
+}
+
+// TriageConfig classifies a project's week of activity with the decision
+// API before the prompt is rendered. Opt-in (Enabled=false means no
+// classification, and the prompt asks about nothing the data cannot
+// answer).
+//
+// The classifier answers questions ABOUT a period, not about an item: a
+// noul is one probability for the whole state. So it can say "there is
+// blocked work this week" and never "MR #7 is blocked" — the report's
+// model, which sees every event, says which one. See internal/triage.
+type TriageConfig struct {
+	Enabled bool `yaml:"enabled"` // when true, every project is classified before its prompt is rendered
+	// DecisionURL is the base URL of the /v1/systemone API. Empty
+	// falls back to safety.decision_url — it is the same service.
+	DecisionURL string `yaml:"decision_url"`
+	// DecisionTokenEnv names the env var holding the API token. Empty
+	// falls back to safety.decision_token_env.
+	DecisionTokenEnv string `yaml:"decision_token_env"`
+	// Mode selects the call shape: "week" (default) makes one call per
+	// project over its whole event list; "mr" makes one call per merge
+	// request, which is the only shape that can answer per item and
+	// the only one whose cost scales with the size of the week.
+	Mode string `yaml:"mode"`
 }
 
 // PublishTarget is the project summarizer writes its reports into, or
@@ -159,6 +190,13 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxEvents < 1 {
 		return fmt.Errorf("config: max_events must be ≥ 1, got %d", c.MaxEvents)
+	}
+	if c.Triage.Enabled {
+		switch c.Triage.Mode {
+		case "", triage.ModeWeek, triage.ModeMR:
+		default:
+			return fmt.Errorf("config: triage.mode must be %q or %q, got %q", triage.ModeWeek, triage.ModeMR, c.Triage.Mode)
+		}
 	}
 	c.InternalOnlyProjects = trimAll(c.InternalOnlyProjects)
 	return nil

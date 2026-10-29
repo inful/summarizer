@@ -7,6 +7,7 @@ Rules:
 - When per-file diff text is provided in <data>, USE it to infer what each MR does — its kind (feature / bugfix / refactor / chore / docs / test), its scope, and any cross-file pattern (e.g. "this MR adds a new retry layer across the LLM provider interface"). PARAPHRASE in your own words. NEVER paste code, identifiers, or file paths verbatim from the diff into the report.
 - Output Markdown only. No preamble. Start with a short summary paragraph.
 - Do not write a title of your own: no line starting with "#". The document already carries its title, and a second one in the body is a duplicate.
+- Call out what a PEER TEAM needs to know: a changed interface, a new capability, a deprecation, a behaviour change someone else could be affected by, a shared dependency. A peer team is anyone who depends on this project and does not own it. "What shipped" is not the same question as "what changes for me", and a report that only answers the first is a status list, not an update.
 
 <data>
 Window: {{.Window}}
@@ -14,6 +15,10 @@ Project: {{data .Project}}
 {{if .Truncated}}Events truncated: showing {{.Used}} of {{.Total}} ({{.Dropped}} dropped due to cap).{{end}}
 
 {{.Events}}
-</data>
+{{if .Blocked}}
+Classifier note: something in this week's activity looks blocked (confidence {{.BlockedScore}}). That is a hint, not a finding — the events above are the evidence. Say WHICH item is blocked and what it is waiting on, or say plainly that none of them are.
+{{end}}{{if .PeerRelevant}}
+Classifier note: a peer team may need to know about this week (confidence {{.PeerScore}}). Check the events above for a changed interface, a new capability, a deprecation or a shared dependency, and say so if there is one.
+{{end}}</data>
 
-Write the team-facing weekly update. Cover: what shipped, what is blocked, what is queued, who drove the most movement this week.
+Write the team-facing weekly update. Cover: what shipped, what is queued, who drove the most movement this week{{if .Blocked}}, and what is blocked{{end}}, and what a peer team needs to know.
