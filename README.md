@@ -291,18 +291,30 @@ a multi-byte character and put invalid UTF-8 in the team prompt. Both
 now respect rune boundaries; the units still differ because each cap is
 applied in the unit its own code uses.
 
-| Cap | Value | Unit | Source |
-|---|---|---|---|
-| Projects per run | `--max-projects`, default 50 | count | `internal/run/pipeline.go` `DefaultMaxProjects` |
-| Events per project in the prompt | `--max-events`, default 200 | count | `internal/prompt/prompt.go` `capEvents` |
-| Event list pages per project per week | 20 pages = 2,000 records | count | `internal/gitlab/client.go` `maxEventPages` |
-| Active-project scan pages | 10 pages = 1,000 candidates | count | `internal/gitlab/client.go` `maxActiveScanPages` |
-| Active epics per project in the epic rollup | 20 | count | `internal/run/pipeline.go` `maxActiveEpics` |
-| Per-file diff (decode-time, memory bound) | 600 | **runes** | `internal/gitlab/client.go` `maxDiffRunesPerFile` |
-| Rollup body, per input | 4,000 | **runes** | `internal/prompt/prompt.go` `rollupPerBodyCap` |
-| Rollup body, total across all inputs | 16,000, oldest inputs dropped first | **bytes** | `internal/prompt/prompt.go` `rollupTotalCap` |
-| Per-MR diff total (prompt-time) | 4,000 | **bytes** | `internal/prompt/prompt.go` `diffMaxPerMR` |
-| HTTP response body read | 16 MB (GitLab, publisher), 8 MB (LLM) | bytes | `maxResponseBytes` |
+Five of them are yours to set, in `summarizer.yaml` (and `--max-events`
+on the command line). The rest are structural bounds on what the
+tool talks to, and are listed so you know what they are.
+
+| Cap | Default | Unit | Config key | Source |
+|---|---|---|---|---|
+| Projects per run | 50 | count | `--max-projects` | `internal/run/pipeline.go` `DefaultMaxProjects` |
+| Events per project in the prompt | 200 | count | `max_events` / `--max-events` | `internal/prompt/prompt.go` `capEvents` |
+| **Completion tokens per LLM call** | **4096** | tokens | `max_tokens` | `internal/llm/provider.go` `DefaultMaxTokens` |
+| Event list pages per project per week | 20 pages = 2,000 records | count | — | `internal/gitlab/client.go` `maxEventPages` |
+| Active-project scan pages | 10 pages = 1,000 candidates | count | — | `internal/gitlab/client.go` `maxActiveScanPages` |
+| Active epics per project in the epic rollup | 20 | count | — | `internal/run/pipeline.go` `maxActiveEpics` |
+| Per-file diff (decode-time, memory bound) | 600 | **runes** | `max_diff_runes_per_file` | `internal/gitlab/client.go` `maxDiffRunesPerFile` |
+| Rollup body, per input | 4,000 | **runes** | `rollup_body_cap` | `internal/prompt/prompt.go` `DefaultRollupPerBody` |
+| Rollup body, total across all inputs | 16,000, least-active inputs dropped first | **bytes** | `rollup_total_cap` | `internal/prompt/prompt.go` `DefaultRollupTotal` |
+| Per-MR diff total (prompt-time) | 4,000 | **bytes** | `diff_max_per_mr` | `internal/prompt/prompt.go` `DefaultDiffMaxPerMR` |
+| HTTP response body read | 16 MB (GitLab, publisher), 8 MB (LLM) | bytes | — | `maxResponseBytes` |
+
+**`max_tokens` is the one that bites.** A completion that hits the cap
+is *detected* — both providers return a truncation error rather than a
+finished-looking fragment — so it fails the project, and a failed
+project means the cross-project rollups are skipped for the week (a
+rollup over a partial set would silently read as a complete week). The
+cap was 2048 and a busy week could reach it; it is 4096 now.
 
 The 16,000-byte total is the rollup's whole budget across every input,
 so on a wide run most projects never reach it — measured at 20 projects
