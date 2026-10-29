@@ -58,6 +58,7 @@ go build -ldflags "-X main.version=vX.Y.Z -X main.commit=$(git rev-parse HEAD) -
 | Document | Purpose |
 |---|---|
 | [`docs/quickstart.md`](docs/quickstart.md) | 30-second operator view: install, env vars, one example run |
+| [`docs/kubernetes.md`](docs/kubernetes.md) | CronJob deployment: manifest, secrets, scheduling, exit codes |
 | [`README.md`](README.md) | Full feature reference (this file) |
 | [`docs/how-it-works.md`](docs/how-it-works.md) | Data flow diagram + component map; for extending |
 | [`docs/frontmatter-schema.md`](docs/frontmatter-schema.md) | Every docbuilder key in the published output; for docbuilder operators |

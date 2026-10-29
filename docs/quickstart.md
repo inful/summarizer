@@ -133,6 +133,7 @@ file per audience. Needs `publish.enabled: true` in the config.
 ## Next
 
 - `README.md` — full feature reference, exit codes, output layout, local-provider config
+- `docs/kubernetes.md` — CronJob deployment: manifest, secrets, scheduling, exit codes
 - `docs/how-it-works.md` — data flow + component map; useful if you're going to extend
 - `docs/frontmatter-schema.md` — every docbuilder key in the published output; for docbuilder operators
 - `docs/runbook.md` — what to do when X breaks; for the operator on call
