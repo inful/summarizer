@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/inful/summarizer/internal/gitlab"
+	"github.com/inful/summarizer/internal/llm"
+	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/triage"
 )
 
@@ -29,6 +32,11 @@ gitlab_host: "https://gitlab.example.com"
 model: "gpt-4o"
 output_dir: "/tmp/out"
 max_events: 42
+max_tokens: 4096
+rollup_total_cap: 32000
+rollup_body_cap: 8000
+diff_max_per_mr: 8000
+max_diff_runes_per_file: 1200
 provider: "anthropic"
 openai_base_url: "http://localhost:11434/v1"
 internal_only_projects:
@@ -81,6 +89,21 @@ triage:
 	}
 	if cfg.MaxEvents != 42 {
 		t.Errorf("max_events: got %d, want 42", cfg.MaxEvents)
+	}
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"max_tokens", cfg.MaxTokens, 4096},
+		{"rollup_total_cap", cfg.RollupTotalCap, 32000},
+		{"rollup_body_cap", cfg.RollupBodyCap, 8000},
+		{"diff_max_per_mr", cfg.DiffMaxPerMR, 8000},
+		{"max_diff_runes_per_file", cfg.MaxDiffRunesPerFile, 1200},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s: got %d, want %d", c.name, c.got, c.want)
+		}
 	}
 	if cfg.Safety.InjectionThreshold != 0.9 {
 		t.Errorf("safety.injection_threshold: got %v, want 0.9", cfg.Safety.InjectionThreshold)
@@ -283,6 +306,7 @@ func TestValidate_TrimsInternalOnlyProjects(t *testing.T) {
 			"group/third",
 		},
 	}
+	cfg.Defaults() // Validate runs after Defaults: it fills the budgets.
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -297,11 +321,97 @@ func TestValidate_TrimsInternalOnlyProjects(t *testing.T) {
 	}
 }
 
+// TestDefaults_Caps: every budget has a documented default, and the
+// default is the one the code used before the budget was configurable.
+// A default that drifts from the old constant changes every report
+// nobody asked to change.
+func TestDefaults_Caps(t *testing.T) {
+	c := &Config{GitLabHost: "https://gitlab.example.com"}
+	c.Defaults()
+	for _, tc := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"max_events", c.MaxEvents, 200},
+		{"max_tokens", c.MaxTokens, llm.DefaultMaxTokens},
+		{"rollup_total_cap", c.RollupTotalCap, prompt.DefaultRollupTotal},
+		{"rollup_body_cap", c.RollupBodyCap, prompt.DefaultRollupPerBody},
+		{"diff_max_per_mr", c.DiffMaxPerMR, prompt.DefaultDiffMaxPerMR},
+		{"max_diff_runes_per_file", c.MaxDiffRunesPerFile, gitlab.DefaultMaxDiffRunesPerFile},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+	// The completion cap was 2048 and was reachable on a busy week.
+	if llm.DefaultMaxTokens != 4096 {
+		t.Errorf("llm.DefaultMaxTokens = %d, want 4096", llm.DefaultMaxTokens)
+	}
+}
+
+// TestValidate_NegativeCapIsRejected: a budget of zero means "send
+// nothing" — an empty prompt, or a diff truncated to nothing. A
+// negative number is a typo, and Defaults() has already turned an
+// unset zero into the documented default, so a negative is all that is
+// left to catch.
+func TestValidate_NegativeCapIsRejected(t *testing.T) {
+	base := func() *Config {
+		c := &Config{GitLabHost: "https://gitlab.example.com"}
+		c.Defaults()
+		return c
+	}
+	for _, tc := range []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"max_tokens", func(c *Config) { c.MaxTokens = -1 }},
+		{"rollup_total_cap", func(c *Config) { c.RollupTotalCap = -1 }},
+		{"rollup_body_cap", func(c *Config) { c.RollupBodyCap = -1 }},
+		{"diff_max_per_mr", func(c *Config) { c.DiffMaxPerMR = -1 }},
+		{"max_diff_runes_per_file", func(c *Config) { c.MaxDiffRunesPerFile = -1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base()
+			tc.mut(c)
+			if err := c.Validate(); err == nil {
+				t.Errorf("a negative %s was accepted", tc.name)
+			}
+		})
+	}
+}
+
+// TestLimits_MapsEveryCap: the config's keys and the prompt package's
+// struct are two names for the same budgets. A key that is not mapped
+// would leave the prompt builder on its default while the operator
+// believes they changed it.
+func TestLimits_MapsEveryCap(t *testing.T) {
+	c := &Config{
+		GitLabHost:          "https://gitlab.example.com",
+		RollupBodyCap:       111,
+		RollupTotalCap:      222,
+		DiffMaxPerMR:        333,
+		MaxDiffRunesPerFile: 444,
+	}
+	c.Defaults()
+	c.RollupBodyCap = 111
+	c.RollupTotalCap = 222
+	c.DiffMaxPerMR = 333
+	lim := c.Limits()
+	if lim.RollupPerBody != 111 || lim.RollupTotal != 222 || lim.DiffPerMR != 333 {
+		t.Errorf("Limits() = %+v, want the config's own numbers", lim)
+	}
+}
+
 // TestValidate_NilListStaysNil: a config with no internal_only_projects
 // block must not turn into an empty non-nil slice, so "unset" stays
 // distinguishable from "set to nothing" the way CustomerCodes does.
 func TestValidate_NilListStaysNil(t *testing.T) {
 	cfg := &Config{GitLabHost: "https://gitlab.example.com", Provider: "openai", MaxEvents: 200}
+	// Defaults() first: Validate is documented as running after it, and
+	// it is what fills the budget defaults. Without it the caps are
+	// still zero and Validate correctly refuses them.
+	cfg.Defaults()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}

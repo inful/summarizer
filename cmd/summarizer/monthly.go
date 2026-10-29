@@ -126,6 +126,8 @@ Example:
 		LLM:       llmProvider,
 		Guard:     guard,
 		Model:     cfg.Model,
+		MaxTokens: cfg.MaxTokens,
+		Limits:    cfg.Limits(),
 		DryRun:    *dryRun,
 		// Off the publisher, not off the config: NewGitLab normalises
 		// the prefix (TrimSpace, then strip "/") and the reader has to

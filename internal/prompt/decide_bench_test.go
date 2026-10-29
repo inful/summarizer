@@ -138,7 +138,7 @@ func TestBenchmark_DecideTriageShapes(t *testing.T) {
 	all, mrs := realisticWeek(200)
 
 	// The LLM baseline: the real team prompt for this project.
-	_, user, err := Render(AudienceTeam, "group/sub/project", all, 200, nil, Hint{})
+	_, user, err := Render(AudienceTeam, "group/sub/project", all, 200, nil, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

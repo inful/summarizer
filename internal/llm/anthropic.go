@@ -12,7 +12,7 @@ type AnthropicProvider struct {
 	APIKey    string
 	BaseURL   string // default https://api.anthropic.com
 	Model     string // default claude-3-5-haiku-latest
-	MaxTokens int    // default 2048
+	MaxTokens int    // default DefaultMaxTokens
 	HTTP      *http.Client
 }
 
@@ -21,7 +21,7 @@ func NewAnthropic(apiKey, model, baseURL string) *AnthropicProvider {
 		APIKey:    apiKey,
 		BaseURL:   normalizeBaseURL(firstNonEmpty(baseURL, "https://api.anthropic.com")),
 		Model:     firstNonEmpty(model, "claude-3-5-haiku-latest"),
-		MaxTokens: 2048,
+		MaxTokens: DefaultMaxTokens,
 		HTTP:      &http.Client{Timeout: 60 * time.Second},
 	}
 }

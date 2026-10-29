@@ -177,7 +177,7 @@ func TestKeepNewestMRs_AgreesWithCapEvents(t *testing.T) {
 		}
 
 		kept, _ := keepNewestMRs(mrs, 1)
-		_, user, err := prompt.Render(prompt.AudienceTeam, "group/p", evs, 1, nil, prompt.Hint{})
+		_, user, err := prompt.Render(prompt.AudienceTeam, "group/p", evs, 1, nil, prompt.Hint{}, prompt.Limits{})
 		if err != nil {
 			t.Fatalf("Render: %v", err)
 		}

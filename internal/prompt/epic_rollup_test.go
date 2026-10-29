@@ -12,7 +12,7 @@ import (
 // pair. Caller (the pipeline) is responsible for not publishing
 // the empty file — RenderEpicRollup doesn't gate on count.
 func TestRenderEpicRollup_Empty(t *testing.T) {
-	_, user, err := RenderEpicRollup(AudienceCustomer, nil)
+	_, user, err := RenderEpicRollup(AudienceCustomer, nil, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestRenderEpicRollup_SingleProjectOneEpic(t *testing.T) {
 			{Epic: epic, EventCount: 3},
 		}},
 	}
-	_, user, err := RenderEpicRollup(AudienceCustomer, entries)
+	_, user, err := RenderEpicRollup(AudienceCustomer, entries, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestRenderEpicRollup_MultipleProjectsEachWithEpics(t *testing.T) {
 			},
 		},
 	}
-	_, user, err := RenderEpicRollup(AudienceCustomer, included)
+	_, user, err := RenderEpicRollup(AudienceCustomer, included, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -104,11 +104,11 @@ func TestRenderEpicRollup_DifferentAudiencesProduceDifferentOutput(t *testing.T)
 			{Epic: &gitlab.Epic{IID: 1, Title: "Auth", State: "opened"}, EventCount: 1},
 		}},
 	}
-	_, custUser, err := RenderEpicRollup(AudienceCustomer, entries)
+	_, custUser, err := RenderEpicRollup(AudienceCustomer, entries, Limits{})
 	if err != nil {
 		t.Fatalf("render customer: %v", err)
 	}
-	_, teamUser, err := RenderEpicRollup(AudienceTeam, entries)
+	_, teamUser, err := RenderEpicRollup(AudienceTeam, entries, Limits{})
 	if err != nil {
 		t.Fatalf("render team: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestRenderEpicRollup_DifferentAudiencesProduceDifferentOutput(t *testing.T)
 // public: true. RenderRollup already builds its project list before
 // capping for exactly this reason.
 func TestRenderEpicRollup_DisclosesProjectsDroppedByTheCap(t *testing.T) {
-	// rollupTotalCap is 16000 and capEpicEntries sizes an entry at
+	// DefaultRollupTotal is 16000 and capEpicEntries sizes an entry at
 	// ~(project + 72 + title + URL) per epic. Twenty epics of a long
 	// title is ~9 KB per entry, so three entries overshoot the budget
 	// twice over and the cap drops two of them.
@@ -141,12 +141,12 @@ func TestRenderEpicRollup_DisclosesProjectsDroppedByTheCap(t *testing.T) {
 	entries := []EpicRollupEntry{big("g/quiet"), big("g/also-quiet"), big("g/busy")}
 
 	// The budget must bite, or this test proves nothing.
-	kept := len(capEpicEntries(entries, rollupTotalCap))
+	kept := len(capEpicEntries(entries, DefaultRollupTotal))
 	if kept == len(entries) {
 		t.Fatalf("the budget did not bite (%d of %d entries kept)", kept, len(entries))
 	}
 
-	_, user, err := RenderEpicRollup(AudienceCustomer, entries)
+	_, user, err := RenderEpicRollup(AudienceCustomer, entries, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -162,8 +162,8 @@ func TestRenderEpicRollup_DisclosesProjectsDroppedByTheCap(t *testing.T) {
 			"model cannot present a subset as the whole fleet:\n%s", firstLines(user, 6))
 	}
 	// And the prompt must still respect the budget it advertises.
-	if len(user) > rollupTotalCap {
-		t.Errorf("prompt is %d bytes for 3 entries; the cap is %d", len(user), rollupTotalCap)
+	if len(user) > DefaultRollupTotal {
+		t.Errorf("prompt is %d bytes for 3 entries; the cap is %d", len(user), DefaultRollupTotal)
 	}
 }
 

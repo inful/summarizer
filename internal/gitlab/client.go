@@ -799,7 +799,31 @@ func (c *Client) fetchMRChangesRaw(ctx context.Context, projectPath string, iid 
 // to capture intent (function signature + first hunk) and small enough
 // to keep per-MR memory bounded. The prompt formatter applies
 // additional per-MR and total caps.
-const maxDiffRunesPerFile = 600
+//
+// It is a variable rather than a constant because the cap is applied
+// inside a JSON unmarshaller, which cannot be handed the client that
+// fetched the response: encoding/json constructs the values it decodes
+// into, so anything set on them before the decode is overwritten.
+// SetMaxDiffRunes writes it once, at startup, before any request is
+// made; nothing writes it afterwards, so there is no concurrent access
+// to reason about.
+var maxDiffRunesPerFile = DefaultMaxDiffRunesPerFile
+
+// DefaultMaxDiffRunesPerFile is the default per-file diff cap.
+const DefaultMaxDiffRunesPerFile = 600
+
+// SetMaxDiffRunes sets the per-file diff cap. Call it once, at startup,
+// before making any request. A non-positive value is ignored, so a
+// misconfigured limit leaves the default in place rather than
+// truncating every diff to nothing.
+//
+// It is a package-level setting rather than a field on the Client
+// because of where the cap is enforced — see maxDiffRunesPerFile.
+func SetMaxDiffRunes(n int) {
+	if n > 0 {
+		maxDiffRunesPerFile = n
+	}
+}
 
 // DiffChunk is one file's worth of /changes data. Diff is the raw text and
 // is bounded at decode time by maxDiffRunesPerFile.

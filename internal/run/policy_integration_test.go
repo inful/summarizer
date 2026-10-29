@@ -260,6 +260,8 @@ type countingLLM struct {
 	// seen records each call's prompt, so a test can assert on what
 	// the model actually saw.
 	seen []seenPrompt
+	// maxTokens records the completion cap each call carried.
+	maxTokens []int
 }
 
 // seenPrompt is one recorded call: enough to identify its audience and
@@ -294,6 +296,7 @@ func (c *countingLLM) Complete(_ context.Context, req llm.Request) (llm.Response
 	// verify the pipeline's per-audience iteration.
 	isTeam := strings.Contains(req.System, "internal engineering")
 	c.seen = append(c.seen, seenPrompt{team: isTeam, user: req.User})
+	c.maxTokens = append(c.maxTokens, req.MaxTokens)
 	if isTeam {
 		c.teamCalls.Add(1)
 	} else {

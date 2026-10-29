@@ -57,7 +57,7 @@ func TestRender_ConfidentialNeverReachesTheCustomerPrompt(t *testing.T) {
 	evs := []events.NormalizedEvent{childOfSecret, secretIssueEv, ordinary}
 	epics := []*gitlab.Epic{confEpic}
 
-	_, user, err := Render(AudienceCustomer, "g/p", evs, 200, epics, Hint{})
+	_, user, err := Render(AudienceCustomer, "g/p", evs, 200, epics, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("customer render: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestRender_ConfidentialNeverReachesTheCustomerPrompt(t *testing.T) {
 
 	// The team document is internal and keeps everything, or the flag
 	// would be hiding work from the people who set it.
-	_, teamUser, err := Render(AudienceTeam, "g/p", evs, 200, epics, Hint{})
+	_, teamUser, err := Render(AudienceTeam, "g/p", evs, 200, epics, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("team render: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestRender_ConfidentialDoesNotConsumeTheEventBudget(t *testing.T) {
 	}
 	// Cap of 1. Filtered first, the one surviving event is the ordinary
 	// one; unfiltered, the secret wins the slot.
-	_, user, err := Render(AudienceCustomer, "g/p", []events.NormalizedEvent{secret, ordinary}, 1, nil, Hint{})
+	_, user, err := Render(AudienceCustomer, "g/p", []events.NormalizedEvent{secret, ordinary}, 1, nil, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

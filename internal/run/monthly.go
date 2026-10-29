@@ -51,7 +51,13 @@ type MonthlyRunner struct {
 	LLM       llm.Provider
 	Guard     safety.Guard // injection guard; NoopGuard when disabled
 	Model     string
-	DryRun    bool
+	// MaxTokens caps the completion per call. Zero means the llm
+	// package's own default.
+	MaxTokens int
+	// Limits are the prompt-builder budgets. The zero value means the
+	// prompt package's own defaults.
+	Limits prompt.Limits
+	DryRun bool
 
 	// ReportPrefix is the publisher's path prefix, e.g. "reports". The
 	// weekly files live at <prefix>/<week>/<name>, so the reader has to
@@ -172,7 +178,7 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 		if len(weeks) == 0 {
 			continue
 		}
-		system, user, err := prompt.RenderMonthlyRollup(aud, month, weeks)
+		system, user, err := prompt.RenderMonthlyRollup(aud, month, weeks, r.Limits)
 		if err != nil {
 			return res, fmt.Errorf("render monthly rollup %s: %w", aud, err)
 		}
@@ -185,7 +191,7 @@ func (r *MonthlyRunner) Run(ctx context.Context, month string) (MonthlyResult, e
 			return res, err
 		}
 		resp, err := r.LLM.Complete(ctx, llm.Request{
-			System: system, User: user, Model: r.Model, MaxTokens: 2048,
+			System: system, User: user, Model: r.Model, MaxTokens: r.MaxTokens,
 		})
 		if err != nil {
 			return res, fmt.Errorf("llm monthly %s: %w", aud, err)

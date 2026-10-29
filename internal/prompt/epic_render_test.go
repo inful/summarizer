@@ -45,7 +45,7 @@ func TestRender_EpicGrouped(t *testing.T) {
 	}
 	epics := []*gitlab.Epic{epicA, epicB}
 
-	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, epics, Hint{})
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, epics, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestRender_FallsBackToFlatWhenNoEpics(t *testing.T) {
 		makeEvent(events.KindMR, "#1", "first PR", "alice", now.Add(-24*time.Hour)),
 		makeEvent(events.KindIssue, "#2", "weird bug", "bob", now.Add(-12*time.Hour)),
 	}
-	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, nil, Hint{})
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, nil, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRender_EmptyEpicsSliceAlsoFlat(t *testing.T) {
 	evs := []events.NormalizedEvent{
 		makeEvent(events.KindMR, "#1", "first PR", "alice", now),
 	}
-	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, []*gitlab.Epic{}, Hint{})
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, []*gitlab.Epic{}, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRender_OnlyOrphansBecomesOtherActivity(t *testing.T) {
 		makeEvent(events.KindMR, "#1", "first PR", "alice", now),
 	}
 	epics := []*gitlab.Epic{epicRef(99, "Inert epic")}
-	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, epics, Hint{})
+	_, user, err := Render(AudienceCustomer, "group/proj", evs, 200, epics, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestRender_OnlyOrphansBecomesOtherActivity(t *testing.T) {
 }
 
 // TestRenderEpicRollup_IsBounded: the two sibling renderers cap their
-// input at rollupTotalCap. This one did not, and its ceiling is
+// input at DefaultRollupTotal. This one did not, and its ceiling is
 // structural — MaxProjects × maxActiveEpics — so a full instance
 // rendered 1,000 epic blocks at roughly 8× the combined rollup's
 // budget, on the customer path, every week.
@@ -156,13 +156,13 @@ func TestRenderEpicRollup_IsBounded(t *testing.T) {
 			})
 		}
 	}
-	_, user, err := RenderEpicRollup(AudienceCustomer, entries)
+	_, user, err := RenderEpicRollup(AudienceCustomer, entries, Limits{})
 	if err != nil {
 		t.Fatalf("RenderEpicRollup: %v", err)
 	}
-	if n := len(user); n > rollupTotalCap*2 {
+	if n := len(user); n > DefaultRollupTotal*2 {
 		t.Errorf("prompt is %d bytes for %d entries, over the %d budget; "+
-			"the epic renderer is the only one without a cap", n, len(entries), rollupTotalCap)
+			"the epic renderer is the only one without a cap", n, len(entries), DefaultRollupTotal)
 	}
 	// Dropped from the FRONT, which Pipeline.Run orders
 	// least-active-first — so the quiet projects are the ones that go.

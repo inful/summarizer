@@ -23,7 +23,7 @@ func TestRender_BlockedIsAskedOnlyWhenTheClassifierFoundSome(t *testing.T) {
 		Title: "Ship the exporter", Updated: time.Now(),
 	}}
 
-	_, without, err := Render(AudienceTeam, "g/p", evs, 200, nil, Hint{})
+	_, without, err := Render(AudienceTeam, "g/p", evs, 200, nil, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestRender_BlockedIsAskedOnlyWhenTheClassifierFoundSome(t *testing.T) {
 
 	_, with, err := Render(AudienceTeam, "g/p", evs, 200, nil, Hint{
 		Blocked: true, BlockedScore: 0.83,
-	})
+	}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRender_ClassifierHintStaysOutOfTheCustomerPrompt(t *testing.T) {
 	}}
 	hint := Hint{Blocked: true, BlockedScore: 0.83, PeerRelevant: true, PeerScore: 0.7}
 
-	_, team, err := Render(AudienceTeam, "g/p", evs, 200, nil, hint)
+	_, team, err := Render(AudienceTeam, "g/p", evs, 200, nil, hint, Limits{})
 	if err != nil {
 		t.Fatalf("team render: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestRender_ClassifierHintStaysOutOfTheCustomerPrompt(t *testing.T) {
 		t.Errorf("the team prompt lost the hint:\n%s", team)
 	}
 
-	_, customer, err := Render(AudienceCustomer, "g/p", evs, 200, nil, hint)
+	_, customer, err := Render(AudienceCustomer, "g/p", evs, 200, nil, hint, Limits{})
 	if err != nil {
 		t.Fatalf("customer render: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestRender_TeamPromptAsksWhatPeerTeamsNeedToKnow(t *testing.T) {
 		Kind: events.KindMR, Action: "merged", Ref: "#1",
 		Title: "Ship the exporter", Updated: time.Now(),
 	}}
-	_, user, err := Render(AudienceTeam, "g/p", evs, 200, nil, Hint{})
+	_, user, err := Render(AudienceTeam, "g/p", evs, 200, nil, Hint{}, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

@@ -345,6 +345,12 @@ Env:
 		return exitEnv
 	}
 
+	// The per-file diff cap is enforced inside the GitLab client's JSON
+	// decoder, which cannot be handed the client itself, so it is a
+	// package-level setting. Set it before the first request. See
+	// gitlab.SetMaxDiffRunes.
+	gitlab.SetMaxDiffRunes(cfg.MaxDiffRunesPerFile)
+
 	gc := gitlab.New(cfg.GitLabHost, gitlabTokenVal, 30*time.Second)
 
 	// Resolve LLM provider and keys.

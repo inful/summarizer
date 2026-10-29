@@ -492,7 +492,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			continue
 		}
 
-		system, user, err := prompt.Render(aud, project, all, p.Cfg.MaxEvents, epics, hint)
+		system, user, err := prompt.Render(aud, project, all, p.Cfg.MaxEvents, epics, hint, p.Cfg.Limits())
 		if err != nil {
 			return res, fmt.Errorf("render %s: %w", aud, err)
 		}
@@ -503,7 +503,7 @@ func (p *Pipeline) runOneProject(ctx context.Context, project string) (ProjectRe
 			System:    system,
 			User:      user,
 			Model:     p.Opts.Model,
-			MaxTokens: 2048,
+			MaxTokens: p.Cfg.MaxTokens,
 		})
 		if err != nil {
 			return res, fmt.Errorf("llm %s: %w", aud, err)
@@ -629,7 +629,7 @@ func (p *Pipeline) runAudienceRollups(ctx context.Context, projects []ProjectRes
 				System:    part.system,
 				User:      part.user,
 				Model:     p.Opts.Model,
-				MaxTokens: 2048,
+				MaxTokens: p.Cfg.MaxTokens,
 			})
 			if err != nil {
 				return files, closed, tokens, fmt.Errorf("llm %s %s: %w", label, aud, err)
@@ -699,7 +699,7 @@ func (p *Pipeline) runRollup(ctx context.Context, projects []ProjectResult) ([]s
 				}
 				reports = append(reports, prompt.ProjectReport{Name: pr.Project, Body: body})
 			}
-			system, user, err := prompt.RenderRollup(aud, reports)
+			system, user, err := prompt.RenderRollup(aud, reports, p.Cfg.Limits())
 			if err != nil {
 				return nil, fmt.Errorf("render rollup %s: %w", aud, err)
 			}
@@ -941,7 +941,7 @@ func (p *Pipeline) runEpicRollup(ctx context.Context, projects []ProjectResult) 
 			}
 			parts := make([]rollupPart, 0, len(buckets))
 			for _, b := range buckets {
-				system, user, err := prompt.RenderEpicRollup(aud, b.Entries)
+				system, user, err := prompt.RenderEpicRollup(aud, b.Entries, p.Cfg.Limits())
 				if err != nil {
 					return nil, fmt.Errorf("render epics rollup %s: %w", aud, err)
 				}

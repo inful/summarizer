@@ -20,6 +20,26 @@ model: "gpt-4o-mini"
 # project's typical weekly volume.
 max_events: 200
 
+# Completion cap for every LLM call, in tokens. A response that hits it
+# is detected and FAILS the run rather than publishing a half-written
+# report — so raise this when a report is being cut off mid-sentence.
+# The default was 2048, which a busy week could reach.
+max_tokens: 4096
+
+# Cross-project rollup budgets. The rollup prompt carries one entry per
+# project, and these bound it: the per-body cap truncates a single
+# project's report (in runes), and the total cap drops the least-active
+# projects until the whole prompt fits (in bytes).
+rollup_body_cap: 4000
+rollup_total_cap: 16000
+
+# Diff-text budgets, for --include-diffs. diff_max_per_mr bounds the
+# diff text per merge request in the team prompt (bytes);
+# max_diff_runes_per_file bounds what the GitLab client keeps per file
+# in memory (runes).
+diff_max_per_mr: 4000
+max_diff_runes_per_file: 600
+
 # OpenAI-compatible base URL. Default points at api.openai.com. For local
 # servers, set to e.g. "http://localhost:11434/v1" (Ollama),
 # "http://localhost:1234/v1" (LM Studio), or "http://localhost:8000/v1"

@@ -17,7 +17,7 @@ type OpenAIProvider struct {
 	APIKey    string
 	BaseURL   string // default https://api.openai.com/v1
 	Model     string // default gpt-4o-mini
-	MaxTokens int    // default 2048
+	MaxTokens int    // default DefaultMaxTokens
 	HTTP      *http.Client
 }
 
@@ -26,7 +26,7 @@ func NewOpenAI(apiKey, model, baseURL string) *OpenAIProvider {
 		APIKey:    apiKey,
 		BaseURL:   normalizeBaseURL(firstNonEmpty(baseURL, "https://api.openai.com/v1")),
 		Model:     firstNonEmpty(model, "gpt-4o-mini"),
-		MaxTokens: 2048,
+		MaxTokens: DefaultMaxTokens,
 		HTTP:      &http.Client{Timeout: 60 * time.Second},
 	}
 }
@@ -138,5 +138,5 @@ func pickMaxTokens(req, def int) int {
 	if def > 0 {
 		return def
 	}
-	return 1024
+	return DefaultMaxTokens
 }

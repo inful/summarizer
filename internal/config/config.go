@@ -18,6 +18,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/inful/summarizer/internal/gitlab"
+	"github.com/inful/summarizer/internal/llm"
+	"github.com/inful/summarizer/internal/prompt"
 	"github.com/inful/summarizer/internal/triage"
 )
 
@@ -37,6 +40,31 @@ type Config struct {
 	// Hard cap on events sent to the LLM. Default 200. Excess is dropped
 	// (most-recent-wins) and the truncation is disclosed in the prompt.
 	MaxEvents int `yaml:"max_events"`
+
+	// MaxTokens caps the completion the LLM may produce, per call.
+	// Default 4096. A response that hits the cap is detected by both
+	// providers and fails the run rather than publishing a fragment —
+	// so this is the number to raise when a report is being cut off
+	// mid-sentence.
+	MaxTokens int `yaml:"max_tokens"`
+
+	// RollupTotalCap caps the whole cross-project rollup prompt's
+	// project text, in bytes. Default 16000. When it bites, the
+	// least-active projects are dropped from the rollup.
+	RollupTotalCap int `yaml:"rollup_total_cap"`
+
+	// RollupBodyCap caps one project's report text inside a rollup
+	// prompt, in runes. Default 4000.
+	RollupBodyCap int `yaml:"rollup_body_cap"`
+
+	// DiffMaxPerMR caps the total diff text per merge request in the
+	// team prompt, in bytes. Default 4000. Only applies with
+	// --include-diffs.
+	DiffMaxPerMR int `yaml:"diff_max_per_mr"`
+
+	// MaxDiffRunesPerFile caps the per-file diff body the GitLab
+	// client retains in memory, in runes. Default 600.
+	MaxDiffRunesPerFile int `yaml:"max_diff_runes_per_file"`
 
 	// Per-project default provider: "openai" or "anthropic". CLI flag overrides.
 	Provider string `yaml:"provider"`
@@ -130,6 +158,19 @@ type TriageConfig struct {
 	Mode string `yaml:"mode"`
 }
 
+// Limits returns the prompt-builder budgets this config asks for.
+//
+// It is the one place the config's individual keys are mapped onto the
+// prompt package's struct, so the mapping is stated once instead of at
+// every call site.
+func (c *Config) Limits() prompt.Limits {
+	return prompt.Limits{
+		RollupPerBody: c.RollupBodyCap,
+		RollupTotal:   c.RollupTotalCap,
+		DiffPerMR:     c.DiffMaxPerMR,
+	}
+}
+
 // PublishTarget is the project summarizer writes its reports into, or
 // "" when there is none to skip.
 //
@@ -171,6 +212,21 @@ func (c *Config) Defaults() {
 	if c.MaxEvents == 0 {
 		c.MaxEvents = 200
 	}
+	if c.MaxTokens == 0 {
+		c.MaxTokens = llm.DefaultMaxTokens
+	}
+	if c.RollupTotalCap == 0 {
+		c.RollupTotalCap = prompt.DefaultRollupTotal
+	}
+	if c.RollupBodyCap == 0 {
+		c.RollupBodyCap = prompt.DefaultRollupPerBody
+	}
+	if c.DiffMaxPerMR == 0 {
+		c.DiffMaxPerMR = prompt.DefaultDiffMaxPerMR
+	}
+	if c.MaxDiffRunesPerFile == 0 {
+		c.MaxDiffRunesPerFile = gitlab.DefaultMaxDiffRunesPerFile
+	}
 	if c.Provider == "" {
 		c.Provider = "openai"
 	}
@@ -190,6 +246,24 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxEvents < 1 {
 		return fmt.Errorf("config: max_events must be ≥ 1, got %d", c.MaxEvents)
+	}
+	// Every cap is a budget, and a budget of zero means "send nothing" —
+	// an empty prompt or a truncated-to-nothing diff. Defaults() has
+	// already replaced a zero with the documented default, so anything
+	// still ≤ 0 here was set to a negative number by the operator.
+	for _, cap := range []struct {
+		name string
+		val  int
+	}{
+		{"max_tokens", c.MaxTokens},
+		{"rollup_total_cap", c.RollupTotalCap},
+		{"rollup_body_cap", c.RollupBodyCap},
+		{"diff_max_per_mr", c.DiffMaxPerMR},
+		{"max_diff_runes_per_file", c.MaxDiffRunesPerFile},
+	} {
+		if cap.val < 1 {
+			return fmt.Errorf("config: %s must be ≥ 1, got %d", cap.name, cap.val)
+		}
 	}
 	if c.Triage.Enabled {
 		switch c.Triage.Mode {

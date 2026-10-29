@@ -16,7 +16,7 @@ func TestRenderMonthlyRollup_LabelsWeeksNotProjects(t *testing.T) {
 		{Name: "2026-W38", Body: "fixed the importer's timezone bug"},
 		{Name: "2026-W39", Body: "importer rolled out to two customers"},
 	}
-	system, user, err := RenderMonthlyRollup(AudienceCustomer, "2026-09", weeks)
+	system, user, err := RenderMonthlyRollup(AudienceCustomer, "2026-09", weeks, Limits{})
 	if err != nil {
 		t.Fatalf("RenderMonthlyRollup: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestRenderMonthlyRollup_KeepsEveryWeekUnderCap(t *testing.T) {
 			Body: strings.Repeat("body ", 100),
 		})
 	}
-	_, user, err := RenderMonthlyRollup(AudienceTeam, "2026-09", weeks)
+	_, user, err := RenderMonthlyRollup(AudienceTeam, "2026-09", weeks, Limits{})
 	if err != nil {
 		t.Fatalf("RenderMonthlyRollup: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestRenderMonthlyRollup_KeepsEveryWeekUnderCap(t *testing.T) {
 // produces a prompt rather than panicking. The runner refuses to call
 // it in that state, but the renderer should not explode if it does.
 func TestRenderMonthlyRollup_EmptyStillRenders(t *testing.T) {
-	if _, _, err := RenderMonthlyRollup(AudienceCustomer, "2026-09", nil); err != nil {
+	if _, _, err := RenderMonthlyRollup(AudienceCustomer, "2026-09", nil, Limits{}); err != nil {
 		t.Errorf("empty input should still render: %v", err)
 	}
 }
@@ -83,11 +83,11 @@ func TestRenderMonthlyRollup_EmptyStillRenders(t *testing.T) {
 // vocabulary, the team one keeps it.
 func TestRenderMonthlyRollup_AudienceTemplatesDiffer(t *testing.T) {
 	weeks := []ProjectReport{{Name: "2026-W37", Body: "x"}}
-	_, cust, err := RenderMonthlyRollup(AudienceCustomer, "2026-09", weeks)
+	_, cust, err := RenderMonthlyRollup(AudienceCustomer, "2026-09", weeks, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, team, err := RenderMonthlyRollup(AudienceTeam, "2026-09", weeks)
+	_, team, err := RenderMonthlyRollup(AudienceTeam, "2026-09", weeks, Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}

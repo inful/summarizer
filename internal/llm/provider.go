@@ -43,6 +43,20 @@ type Usage struct {
 // half-empty report.
 var ErrEmptyResponse = errors.New("llm returned empty response")
 
+// DefaultMaxTokens is the completion cap a request gets when neither
+// the request nor the adapter says otherwise.
+//
+// 2048 was the old value, and it was reachable: a per-project prompt
+// carries up to max_events events plus diffs, and the model writes a
+// report about all of it. 4096 doubles the headroom. It is still a
+// cap — raising it moves the cliff, it does not remove it.
+//
+// It is a default, not a policy: config.MaxTokens is what an operator
+// sets, and the pipeline passes that on every request. This is the
+// fallback for a caller that says nothing, and the one number the
+// package has.
+const DefaultMaxTokens = 4096
+
 // ErrTruncated signals the provider stopped generating because it hit
 // the token cap, not because it finished.
 //
@@ -50,8 +64,8 @@ var ErrEmptyResponse = errors.New("llm returned empty response")
 // because the dangerous case is the one that looks fine: a response cut
 // off mid-sentence is still non-empty, still decodes, and still looks
 // like a finished answer to every check this package used to make.
-// MaxTokens is 2048 and a per-project prompt carries up to 200 events
-// plus diffs, so the cap is reachable on a busy week — and the
+// The default cap and a per-project prompt carrying up to 200 events
+// plus diffs mean the cap IS reachable on a busy week — and the
 // pipeline would publish the fragment as that customer's report,
 // public: true, merged by a human who sees a normal-looking file.
 // Raising MaxTokens moves the cliff; it does not remove it.

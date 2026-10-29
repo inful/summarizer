@@ -10,7 +10,7 @@ func TestRenderRollup_EmbedsAllProjects(t *testing.T) {
 		{Name: "group/alpha", Body: "# alpha\nShipped login."},
 		{Name: "group/beta", Body: "# beta\nFixed pagination."},
 	}
-	system, user, err := RenderRollup(AudienceTeam, projects)
+	system, user, err := RenderRollup(AudienceTeam, projects, Limits{})
 	if err != nil {
 		t.Fatalf("render rollup: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestRenderRollup_EmbedsAllProjects(t *testing.T) {
 
 func TestRenderRollup_DropsOverflowByTotal(t *testing.T) {
 	// Per-body cap is 4000 runes; each body is 5000 chars (gets capped
-	// to 4000 + truncation marker = ~4008 runes). rollupTotalCap is 16000.
+	// to 4000 + truncation marker = ~4008 runes). DefaultRollupTotal is 16000.
 	// With 5 projects, capped total = ~20040 > 16000 — oldest projects
 	// are dropped until the total fits.
 	mkBody := func(ch byte) string { return strings.Repeat(string(ch), 5000) }
@@ -43,7 +43,7 @@ func TestRenderRollup_DropsOverflowByTotal(t *testing.T) {
 		{Name: "p4", Body: mkBody('D')},
 		{Name: "p5", Body: mkBody('E')},
 	}
-	_, user, err := RenderRollup(AudienceTeam, projects)
+	_, user, err := RenderRollup(AudienceTeam, projects, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -62,10 +62,10 @@ func TestRenderRollup_DropsOverflowByTotal(t *testing.T) {
 }
 
 func TestRenderRollup_CapsIndividualBody(t *testing.T) {
-	// One body of 10 KB — should be truncated to rollupPerBodyCap=4000 runes.
+	// One body of 10 KB — should be truncated to DefaultRollupPerBody=4000 runes.
 	big := strings.Repeat("a", 10000)
 	projects := []ProjectReport{{Name: "only", Body: big}}
-	_, user, err := RenderRollup(AudienceCustomer, projects)
+	_, user, err := RenderRollup(AudienceCustomer, projects, Limits{})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}
@@ -84,15 +84,15 @@ func TestCapBodies_DropsFromTheFrontAndKeepsTheNameList(t *testing.T) {
 	// keep everything.
 	names := []string{"a", "b", "c", "d", "e"}
 	bodies := map[string]string{
-		"a": string(make([]byte, rollupPerBodyCap)),
-		"b": string(make([]byte, rollupPerBodyCap)),
-		"c": string(make([]byte, rollupPerBodyCap)),
-		"d": string(make([]byte, rollupPerBodyCap)),
-		"e": string(make([]byte, rollupPerBodyCap)),
+		"a": string(make([]byte, DefaultRollupPerBody)),
+		"b": string(make([]byte, DefaultRollupPerBody)),
+		"c": string(make([]byte, DefaultRollupPerBody)),
+		"d": string(make([]byte, DefaultRollupPerBody)),
+		"e": string(make([]byte, DefaultRollupPerBody)),
 	}
 	before := len(names)
 
-	capBodies(names, bodies)
+	capBodies(names, bodies, DefaultRollupTotal)
 
 	if len(names) != before {
 		t.Errorf("names shrank from %d to %d; the model must still see every "+
@@ -106,7 +106,7 @@ func TestCapBodies_DropsFromTheFrontAndKeepsTheNameList(t *testing.T) {
 	}
 	if len(bodies) >= len(names) {
 		t.Errorf("nothing was dropped: %d of %d bodies kept under a %d cap",
-			len(bodies), len(names), rollupTotalCap)
+			len(bodies), len(names), DefaultRollupTotal)
 	}
 	if _, ok := bodies["a"]; ok {
 		t.Error("a is the front of the list and the first to go, but its body survived")
@@ -120,7 +120,7 @@ func TestCapBodies_DropsFromTheFrontAndKeepsTheNameList(t *testing.T) {
 func TestCapBodies_UnderTheCapChangesNothing(t *testing.T) {
 	names := []string{"a", "b"}
 	bodies := map[string]string{"a": "small", "b": "small"}
-	capBodies(names, bodies)
+	capBodies(names, bodies, DefaultRollupTotal)
 	if len(bodies) != 2 {
 		t.Errorf("bodies = %v, want both kept", bodies)
 	}
@@ -130,8 +130,8 @@ func TestCapBodies_UnderTheCapChangesNothing(t *testing.T) {
 // oversized body must not leave the template empty.
 func TestCapBodies_KeepsOneEvenWhenOneAloneExceedsTheCap(t *testing.T) {
 	names := []string{"only"}
-	bodies := map[string]string{"only": string(make([]byte, rollupTotalCap*2))}
-	capBodies(names, bodies)
+	bodies := map[string]string{"only": string(make([]byte, DefaultRollupTotal*2))}
+	capBodies(names, bodies, DefaultRollupTotal)
 	if len(bodies) != 1 {
 		t.Errorf("bodies = %v, want the one entry kept", bodies)
 	}

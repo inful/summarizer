@@ -103,7 +103,8 @@ type Hint struct {
 // hint carries what the pipeline already knows. It is only used for the
 // team audience: the customer document is published public: true, and
 // "our team is blocked on X" is not a customer update.
-func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int, epics []*gitlab.Epic, hint Hint) (system, user string, err error) {
+func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int, epics []*gitlab.Epic, hint Hint, limits Limits) (system, user string, err error) {
+	limits = limits.withDefaults()
 	tplName := string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -141,7 +142,7 @@ func Render(aud Audience, project string, evs []events.NormalizedEvent, cap int,
 		Used:         len(kept),
 		Total:        total,
 		Dropped:      dropped,
-		Events:       renderEvents(kept, aud, epics),
+		Events:       renderEvents(kept, aud, epics, limits),
 		Blocked:      hint.Blocked,
 		BlockedScore: fmt.Sprintf("%.2f", hint.BlockedScore),
 		PeerRelevant: hint.PeerRelevant,
@@ -250,10 +251,12 @@ func systemPrompt(aud Audience, subj subject) string {
 // as the per-project prompts).
 //
 // Caller passes the per-project results from the pipeline; this function
-// does not touch disk. Per-project report text is capped at rollupPerBodyCap
-// runes; the total cap (rollupTotalCap) drops oldest projects first so a
-// large fleet of projects stays within the model's context window.
-func RenderRollup(aud Audience, projects []ProjectReport) (system, user string, err error) {
+// does not touch disk. Per-project report text is capped at
+// limits.RollupPerBody runes; the total cap (limits.RollupTotal) drops
+// the least-active projects first so a large fleet of projects stays
+// within the model's context window.
+func RenderRollup(aud Audience, projects []ProjectReport, limits Limits) (system, user string, err error) {
+	limits = limits.withDefaults()
 	tplName := "rollup-" + string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -268,13 +271,13 @@ func RenderRollup(aud Audience, projects []ProjectReport) (system, user string, 
 	names := make([]string, 0, len(projects))
 	for _, p := range projects {
 		body := p.Body
-		if r := []rune(body); len(r) > rollupPerBodyCap {
-			body = string(r[:rollupPerBodyCap]) + "...[truncated]"
+		if r := []rune(body); len(r) > limits.RollupPerBody {
+			body = string(r[:limits.RollupPerBody]) + "...[truncated]"
 		}
 		bodies[p.Name] = body
 		names = append(names, p.Name)
 	}
-	capBodies(names, bodies)
+	capBodies(names, bodies, limits.RollupTotal)
 
 	data := struct {
 		Window        string
@@ -329,7 +332,8 @@ type ProjectReport struct {
 //
 // Same injection defences and the same body-capping strategy as
 // RenderRollup; the only change is which template is loaded.
-func RenderMonthlyRollup(aud Audience, month string, weeks []ProjectReport) (system, user string, err error) {
+func RenderMonthlyRollup(aud Audience, month string, weeks []ProjectReport, limits Limits) (system, user string, err error) {
+	limits = limits.withDefaults()
 	tplName := "monthly-rollup-" + string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -344,8 +348,8 @@ func RenderMonthlyRollup(aud Audience, month string, weeks []ProjectReport) (sys
 	names := make([]string, 0, len(weeks))
 	for _, w := range weeks {
 		body := w.Body
-		if r := []rune(body); len(r) > rollupPerBodyCap {
-			body = string(r[:rollupPerBodyCap]) + "...[truncated]"
+		if r := []rune(body); len(r) > limits.RollupPerBody {
+			body = string(r[:limits.RollupPerBody]) + "...[truncated]"
 		}
 		bodies[w.Name] = body
 		names = append(names, w.Name)
@@ -353,7 +357,7 @@ func RenderMonthlyRollup(aud Audience, month string, weeks []ProjectReport) (sys
 	// A month is 4-5 weekly rollups of ~2-4k runes each. Capped the same
 	// way, dropping the oldest first — the most recent weeks are what a
 	// month-end reader cares about.
-	capBodies(names, bodies)
+	capBodies(names, bodies, limits.RollupTotal)
 
 	data := struct {
 		Month      string
@@ -401,7 +405,8 @@ type EpicSummary struct {
 // detail. Cost: one extra LLM call per audience per run; value:
 // a single page sized for project-management and customer-facing
 // briefings that surfaces epic progress across the fleet.
-func RenderEpicRollup(aud Audience, entries []EpicRollupEntry) (system, user string, err error) {
+func RenderEpicRollup(aud Audience, entries []EpicRollupEntry, limits Limits) (system, user string, err error) {
+	limits = limits.withDefaults()
 	tplName := "epics-rollup-" + string(aud) + ".tmpl"
 	raw, err := templatesFS.ReadFile("templates/" + tplName)
 	if err != nil {
@@ -438,7 +443,7 @@ func RenderEpicRollup(aud Audience, entries []EpicRollupEntry) (system, user str
 			totalProjects++
 		}
 	}
-	entries = capEpicEntries(entries, rollupTotalCap)
+	entries = capEpicEntries(entries, limits.RollupTotal)
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if len(e.Epics) > 0 {
@@ -475,13 +480,74 @@ func RenderEpicRollup(aud Audience, entries []EpicRollupEntry) (system, user str
 	return systemPrompt(aud, subjectEpic), buf.String(), nil
 }
 
-// Caps for the rollup prompt. Same defensive budgeting as per-project
-// prompts: per-project report text capped at 4 KB, total rollup input at
-// ~16 KB (drops oldest projects first).
+// The default budgets. Named so there is exactly one number per cap in
+// the codebase: config's defaults are read from here, and the operators
+// who want a different budget set it in summarizer.yaml.
+//
+// The UNITS differ, and the difference is inherited rather than
+// designed. The per-body rollup cap counts RUNES (the prompt builder
+// cuts on a rune boundary, because a byte slice lands mid-character)
+// while the total rollup cap and the diff caps count BYTES. For ASCII
+// content the two agree; for a body with accents, CJK or emoji the byte
+// count is larger than the rune count, so a non-ASCII fleet fits fewer
+// projects per rollup than an ASCII one of the same size.
 const (
-	rollupPerBodyCap = 4000
-	rollupTotalCap   = 16000
+	// DefaultRollupPerBody caps one project's report text inside a
+	// rollup prompt, in runes.
+	DefaultRollupPerBody = 4000
+	// DefaultRollupTotal caps the whole rollup prompt's project text,
+	// in bytes. When it bites, the projects at the front of the
+	// least-active-first slice are dropped.
+	DefaultRollupTotal = 16000
+	// DefaultDiffMaxPerMR caps the total diff text per event, summed
+	// across files, in bytes — and deliberately different from the
+	// per-chunk cap upstream, which counts runes. Each is applied in
+	// its own unit, and both respect rune boundaries.
+	DefaultDiffMaxPerMR = 4000
 )
+
+// Limits are the budgets the prompt builder applies.
+//
+// A zero field means "use the default" — the same convention
+// pickMaxTokens uses in internal/llm. A caller that does not care about
+// a cap passes a zero Limits and gets the documented default rather
+// than an empty prompt.
+type Limits struct {
+	// RollupPerBody caps one project's report text inside a rollup
+	// prompt, in runes.
+	RollupPerBody int
+	// RollupTotal caps the whole rollup prompt's project text, in
+	// bytes.
+	RollupTotal int
+	// DiffPerMR caps the total diff text per event, summed across
+	// files, in bytes.
+	DiffPerMR int
+}
+
+// DefaultLimits returns the default budgets.
+func DefaultLimits() Limits {
+	return Limits{
+		RollupPerBody: DefaultRollupPerBody,
+		RollupTotal:   DefaultRollupTotal,
+		DiffPerMR:     DefaultDiffMaxPerMR,
+	}
+}
+
+// withDefaults replaces the zero fields with the defaults. Called at the
+// top of every render function, so a caller cannot get an empty prompt
+// by forgetting a cap.
+func (l Limits) withDefaults() Limits {
+	if l.RollupPerBody <= 0 {
+		l.RollupPerBody = DefaultRollupPerBody
+	}
+	if l.RollupTotal <= 0 {
+		l.RollupTotal = DefaultRollupTotal
+	}
+	if l.DiffPerMR <= 0 {
+		l.DiffPerMR = DefaultDiffMaxPerMR
+	}
+	return l
+}
 
 // formatEvents renders events as a compact, deterministic, sorted list.
 // Sort: most-recent first; tiebreak by kind+ref for stable output.
@@ -489,7 +555,7 @@ const (
 // Retained as a low-level helper; the entry point is renderEvents,
 // which dispatches to formatEventsGroupedByEpic when active epics
 // are present, falling back to formatEvents for the flat case.
-func formatEvents(evs []events.NormalizedEvent, aud Audience) string {
+func formatEvents(evs []events.NormalizedEvent, aud Audience, limits Limits) string {
 	sorted := make([]events.NormalizedEvent, len(evs))
 	copy(sorted, evs)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -501,7 +567,7 @@ func formatEvents(evs []events.NormalizedEvent, aud Audience) string {
 
 	var buf bytes.Buffer
 	for _, e := range sorted {
-		writeEventLine(&buf, e, aud)
+		writeEventLine(&buf, e, aud, limits)
 		buf.WriteByte('\n')
 	}
 	return buf.String()
@@ -512,11 +578,11 @@ func formatEvents(evs []events.NormalizedEvent, aud Audience) string {
 // original flat format. Backwards compatible — projects without epics
 // (Free-tier GitLab, user-namespace projects) render flat, same as
 // before this feature.
-func renderEvents(evs []events.NormalizedEvent, aud Audience, epics []*gitlab.Epic) string {
+func renderEvents(evs []events.NormalizedEvent, aud Audience, epics []*gitlab.Epic, limits Limits) string {
 	if len(epics) == 0 && !anyEpicAnnotated(evs) {
-		return formatEvents(evs, aud)
+		return formatEvents(evs, aud, limits)
 	}
-	return formatEventsGroupedByEpic(evs, epics, aud)
+	return formatEventsGroupedByEpic(evs, epics, aud, limits)
 }
 
 // anyEpicAnnotated reports whether at least one event has had an Epic
@@ -542,7 +608,7 @@ func anyEpicAnnotated(evs []events.NormalizedEvent) bool {
 // Single active epic cap is the caller's responsibility (the pipeline
 // passes already-filtered, already-capped epics); this function
 // renders what it's given.
-func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epic, aud Audience) string {
+func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epic, aud Audience, limits Limits) string {
 	var buf bytes.Buffer
 	hasEpicSection := false
 
@@ -580,7 +646,7 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 		}
 		buf.WriteString(")\n\n")
 		for _, ev := range epicEvents {
-			writeEventLine(&buf, ev, aud)
+			writeEventLine(&buf, ev, aud, limits)
 			buf.WriteByte('\n')
 		}
 	}
@@ -604,7 +670,7 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 			return string(others[i].Kind)+others[i].Ref < string(others[j].Kind)+others[j].Ref
 		})
 		for _, ev := range others {
-			writeEventLine(&buf, ev, aud)
+			writeEventLine(&buf, ev, aud, limits)
 			buf.WriteByte('\n')
 		}
 	}
@@ -614,7 +680,7 @@ func formatEventsGroupedByEpic(evs []events.NormalizedEvent, epics []*gitlab.Epi
 // writeEventLine emits one rendering of an event into buf, used by
 // both the grouped and flat paths. Kept private + small so the two
 // formatters can agree byte-for-byte on what an event looks like.
-func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
+func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience, limits Limits) {
 	// Title, author and labels are free-text GitLab fields: anyone with
 	// merge rights on a project controls them, and the title reaches a
 	// customer-facing document. dataBlock escapes the delimiter, so
@@ -640,7 +706,7 @@ func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
 		fmt.Fprintf(buf, "\n  body: %s", dataBlock(e.TeamOnlyDescription))
 	}
 	if aud == AudienceTeam && len(e.DiffChunks) > 0 {
-		diff := formatDiffChunks(e.DiffChunks)
+		diff := formatDiffChunks(e.DiffChunks, limits.DiffPerMR)
 		fmt.Fprintf(buf, "\n  diff: %s", dataBlock(diff))
 	}
 }
@@ -657,9 +723,9 @@ func writeEventLine(buf *bytes.Buffer, e events.NormalizedEvent, aud Audience) {
 // for roughly one MR in four, since diff bodies are source code with
 // accented identifiers, CJK comments and emoji in string literals. The
 // result was invalid UTF-8 in the team prompt, with nothing to say so.
-func formatDiffChunks(chunks []gitlab.DiffChunk) string {
+func formatDiffChunks(chunks []gitlab.DiffChunk, diffCap int) string {
 	var buf bytes.Buffer
-	remaining := diffMaxPerMR
+	remaining := diffCap
 	for _, c := range chunks {
 		if remaining <= 0 {
 			break
@@ -684,13 +750,6 @@ func formatDiffChunks(chunks []gitlab.DiffChunk) string {
 	}
 	return strings.TrimRight(buf.String(), "\n-")
 }
-
-// diffMaxPerMR is the total diff text per event, summed across files.
-// Counted in BYTES, like every other prompt budget in this package, and
-// deliberately different from the per-chunk cap upstream which counts
-// runes — each is applied in its own unit, and both now respect rune
-// boundaries.
-const diffMaxPerMR = 4000
 
 func kindLabel(k events.Kind) string {
 	switch k {
@@ -742,8 +801,8 @@ func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
 }
 
 // capBodies drops entries from `bodies`, front-first, until the total
-// is under rollupTotalCap. At least one entry always survives, so the
-// template still has content.
+// is under `total`. At least one entry always survives, so the template
+// still has content.
 //
 // Measured once and subtracted as entries drop. Both callers had their
 // own copy that re-summed every surviving body on every iteration,
@@ -754,14 +813,14 @@ func capEpicEntries(entries []EpicRollupEntry, total int) []EpicRollupEntry {
 // `names` keeps its original order and its full length, so the template
 // still names every input and the model can tell which ones lost their
 // body.
-func capBodies(names []string, bodies map[string]string) {
+func capBodies(names []string, bodies map[string]string, total int) {
 	sizes := make(map[string]int, len(bodies))
 	sum := 0
 	for n, b := range bodies {
 		sizes[n] = len(b)
 		sum += sizes[n]
 	}
-	for len(bodies) > 1 && sum > rollupTotalCap {
+	for len(bodies) > 1 && sum > total {
 		for _, name := range names {
 			if _, ok := bodies[name]; ok {
 				sum -= sizes[name]
