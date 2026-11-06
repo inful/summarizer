@@ -91,6 +91,32 @@ the team is who marked the work.
 > silently, with no warning and a zero exit code. See the v0.3.0
 > changelog.
 
+### The team rollup is a news report
+
+The cross-project team rollup (`combined--rollup--wk--team.md`) is the
+most-read document summarizer produces, and it is written for the people
+who are **not** in the projects it covers: engineers elsewhere in the
+org, teams that depend on these projects, and people who use what they
+ship.
+
+So it reports news, not performance. It reports what changed — a
+released version, an API or interface change, a deprecation, a behaviour
+change, a new capability, a shared dependency, a migration someone now
+has to make — and for each one, who it affects and what the reader has
+to do about it. It does not rank the teams, count contributions, or
+single out the busiest people. The month-end summary follows the same
+framing.
+
+The per-project team reports feed the rollup, so they lead with the
+same thing: what changed for people outside that project, before what
+shipped. That is why the project report asks for it first.
+
+Two knobs bound this, and both are yours to set: `max_tokens` (the
+completion cap — a rollup that hits it fails the run, so raise it if a
+busy week cuts one off) and `rollup_total_cap` (how much of the
+projects' text reaches the rollup at all — projects beyond it are
+dropped, and the prompt says how many).
+
 ## Configure
 
 Copy `examples/summarizer.yaml` to `./summarizer.yaml` (or pass `--config path/to/file.yaml`). The only required field is `gitlab_host`.

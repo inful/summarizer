@@ -30,6 +30,71 @@ func TestRenderRollup_EmbedsAllProjects(t *testing.T) {
 	}
 }
 
+// TestRenderRollup_TeamRollupIsANewsReport: the team rollup is the
+// most read document summarizer produces, and it is built for people
+// who are NOT part of the projects it covers. It used to ask for
+// cross-team themes and "who is moving the most" — a performance
+// report. It now asks for the news: what changed, who it affects, and
+// what the reader has to do about it.
+func TestRenderRollup_TeamRollupIsANewsReport(t *testing.T) {
+	projects := []ProjectReport{{Name: "group/alpha", Body: "shipped login."}}
+
+	_, user, err := RenderRollup(AudienceTeam, projects, Limits{})
+	if err != nil {
+		t.Fatalf("render rollup: %v", err)
+	}
+	lowered := strings.ToLower(user)
+	for _, want := range []string{
+		"api", "deprecation", "released version", "behaviour change",
+		"not a performance report",
+	} {
+		if !strings.Contains(lowered, want) {
+			t.Errorf("the team rollup prompt does not mention %q:\n%s", want, user)
+		}
+	}
+	// The performance framing is gone, and the per-project detail rule
+	// that suppressed it ("don't repeat per-project detail") went with
+	// it: a news rollup that refuses detail cannot say what changed.
+	if strings.Contains(lowered, "who is moving the most") {
+		t.Errorf("the team rollup still asks for a performance ranking:\n%s", user)
+	}
+	if strings.Contains(lowered, "don't repeat per-project detail") {
+		t.Errorf("the team rollup still suppresses per-project detail:\n%s", user)
+	}
+	// The reader outside the projects is the audience the whole thing
+	// is for, and the summary paragraph has to be written for them.
+	if !strings.Contains(lowered, "they have to do about it") {
+		t.Errorf("the team rollup does not ask what the reader must do:\n%s", user)
+	}
+	// Asking for API changes and released versions invites the model to
+	// produce one when the week's activity has none.
+	if !strings.Contains(lowered, "never invent a version") {
+		t.Errorf("the team rollup does not forbid inventing changes:\n%s", user)
+	}
+}
+
+// TestRenderMonthlyRollup_TeamMonthIsANewsReportToo: the month-end
+// summary is built from the weekly rollups, so it inherits their
+// framing. It asked where the team "spent effort without shipping" —
+// the performance angle again — and now asks for the month's changes.
+func TestRenderMonthlyRollup_TeamMonthIsANewsReportToo(t *testing.T) {
+	weeks := []ProjectReport{{Name: "2026-W37", Body: "shipped the importer"}}
+
+	_, user, err := RenderMonthlyRollup(AudienceTeam, "2026-09", weeks, Limits{})
+	if err != nil {
+		t.Fatalf("RenderMonthlyRollup: %v", err)
+	}
+	lowered := strings.ToLower(user)
+	for _, want := range []string{"not a performance report", "deprecation"} {
+		if !strings.Contains(lowered, want) {
+			t.Errorf("the monthly team rollup prompt does not mention %q:\n%s", want, user)
+		}
+	}
+	if strings.Contains(lowered, "spent effort without shipping") {
+		t.Errorf("the monthly team rollup still asks for a performance read:\n%s", user)
+	}
+}
+
 func TestRenderRollup_DropsOverflowByTotal(t *testing.T) {
 	// Per-body cap is 4000 runes; each body is 5000 chars (gets capped
 	// to 4000 + truncation marker = ~4008 runes). DefaultRollupTotal is 16000.
