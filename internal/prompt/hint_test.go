@@ -77,9 +77,10 @@ func TestRender_ClassifierHintStaysOutOfTheCustomerPrompt(t *testing.T) {
 }
 
 // TestRender_TeamPromptAsksWhatPeerTeamsNeedToKnow: the per-project
-// team report is the artifact most people actually read, and it asked
-// for status — shipped, blocked, queued, who moved — and never for the
-// thing a peer team needs: what changed for them.
+// team report is the input to the cross-project rollup — the most read
+// document summarizer produces — and it asked for status — shipped,
+// blocked, queued, who moved — and never for the thing a peer team
+// needs: what changed for them.
 func TestRender_TeamPromptAsksWhatPeerTeamsNeedToKnow(t *testing.T) {
 	evs := []events.NormalizedEvent{{
 		Kind: events.KindMR, Action: "merged", Ref: "#1",
@@ -99,7 +100,26 @@ func TestRender_TeamPromptAsksWhatPeerTeamsNeedToKnow(t *testing.T) {
 	// visible in a title — so it does not need a producer the way
 	// "what is blocked" does. Gating it on the classifier's score
 	// would make the report's quality depend on a noisy probability.
-	if !strings.Contains(user, "and what a peer team needs to know") {
-		t.Errorf("the closing ask drops the peer question without a hint:\n%s", user)
+	if !strings.Contains(user, "what changed for people outside this project") {
+		t.Errorf("the closing ask drops the outside-impact question without a hint:\n%s", user)
+	}
+}
+
+// TestRender_TeamPromptIsNotAPerformanceReport: "who drove the most
+// movement" made the project report a status contest, and the
+// cross-project rollup is built from these reports — so the rollup
+// inherited the framing it is supposed to replace. The project report
+// still answers "what shipped", but it no longer asks for a leaderboard.
+func TestRender_TeamPromptIsNotAPerformanceReport(t *testing.T) {
+	evs := []events.NormalizedEvent{{
+		Kind: events.KindMR, Action: "merged", Ref: "#1",
+		Title: "Ship the exporter", Updated: time.Now(),
+	}}
+	_, user, err := Render(AudienceTeam, "g/p", evs, 200, nil, Hint{}, Limits{})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(strings.ToLower(user), "drove the most") {
+		t.Errorf("the team prompt still asks for a performance ranking:\n%s", user)
 	}
 }
